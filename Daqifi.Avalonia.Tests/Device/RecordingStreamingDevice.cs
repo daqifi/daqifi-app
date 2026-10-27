@@ -131,7 +131,12 @@ internal sealed class RecordingStreamingDevice : IStreamingDevice
 
     public string DevicePartNumber => string.Empty;
 
-    public uint TimestampFrequency => 0;
+    /// <summary>
+    /// The device's timestamp clock, as a live device reports it. Settable because #464 turns on
+    /// whether this value reaches the SD parser: it stays 0 (the "device reported none" case)
+    /// unless a test says otherwise.
+    /// </summary>
+    public uint TimestampFrequency { get; set; }
 
     public NetworkConfiguration NetworkConfiguration { get; } = new();
 

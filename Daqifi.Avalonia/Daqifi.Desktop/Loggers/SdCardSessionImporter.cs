@@ -353,11 +353,16 @@ public class SdCardSessionImporter : ISdCardSessionImporter
 
         var config = logSession.DeviceConfig;
 
+        // TimestampFreq here is the frequency the PARSER settled on, with the rung it came
+        // from — not the value we handed it. Logging our own override was actively misleading:
+        // it always read 0 and read as "the firmware omitted it" when the importer had zeroed
+        // it itself (#464).
         _logger.Information(
             $"SD card session config: AnalogPorts={config?.AnalogPortCount ?? 0}, " +
             $"DigitalPorts={config?.DigitalPortCount ?? 0}, " +
             $"Device={config?.DeviceSerialNumber ?? "Unknown"}, " +
-            $"TimestampFreq={config?.TimestampFrequency ?? 0}");
+            $"TimestampFreq={logSession.TimestampFrequency} Hz " +
+            $"(source: {logSession.TimestampFrequencySource})");
 
         // Create the logging session in the database. It is committed before a single sample is
         // parsed, and marked SessionStatus.Importing until this method decides otherwise. An
@@ -365,12 +370,20 @@ public class SdCardSessionImporter : ISdCardSessionImporter
         // a concurrent import's row — see CreateSession.
         var (session, superseded) = CreateSession(logSession, options);
 
-        if ((config?.TimestampFrequency ?? 0) == 0)
+        // Only Fallback is worth a warning, and only Fallback is actually a problem: it is the
+        // one outcome where the frequency is a guess rather than something the file or the
+        // device stated. SdCardTimestampSource.None cannot occur here — it means the fallback
+        // was disabled, and this importer never sets FallbackTimestampFrequency, so Core's
+        // 50 MHz default is always in play.
+        if (logSession.TimestampFrequencySource == SdCardTimestampSource.Fallback)
         {
             _logger.Warning(
-                "No TimestampFrequency found in SD card file. " +
-                "Timestamps may not be properly reconstructed. " +
-                "Device firmware may not include TimestampFreq in logged messages.");
+                $"SD card file '{logSession.FileName}' states no timestamp frequency and no " +
+                "connected device supplied one, so timestamps were reconstructed from the " +
+                $"parser's default of {logSession.TimestampFrequency:N0} Hz. Shipped Nyquist " +
+                "firmware reports a 42 MHz timestamp clock; where that default does not match " +
+                "the recording device, every timestamp in this session is scaled by a constant " +
+                "factor.");
         }
 
         var (samplesProcessed, readingsDropped) = await WriteSamplesAsync(
@@ -883,10 +896,15 @@ public class SdCardSessionImporter : ISdCardSessionImporter
     /// <summary>
     /// Builds an <see cref="SdCardDeviceConfiguration"/> from the connected device's channel data.
     /// This provides calibration, resolution, port range, and internal scale values so the
-    /// SD card parser can convert raw ADC counts to real voltage values.
+    /// SD card parser can convert raw ADC counts to real voltage values, plus the device's
+    /// timestamp clock so it can convert raw tick counts to times.
     /// </summary>
+    /// <remarks>
+    /// Internal so tests can assert what is handed to the parser; production code reaches it
+    /// through <see cref="ImportFromDeviceAsync"/>.
+    /// </remarks>
     // @port: Daqifi.Desktop.Loggers.SdCardSessionImporter.BuildDeviceConfiguration
-    private static SdCardDeviceConfiguration? BuildDeviceConfiguration(IStreamingDevice device)
+    internal static SdCardDeviceConfiguration? BuildDeviceConfiguration(IStreamingDevice device)
     {
         var analogChannels = device.DataChannels
             .OfType<AnalogChannel>()
@@ -903,7 +921,15 @@ public class SdCardSessionImporter : ISdCardSessionImporter
         return new SdCardDeviceConfiguration(
             AnalogPortCount: analogChannels.Count,
             DigitalPortCount: digitalCount,
-            TimestampFrequency: 0, // Let the parser use file-embedded or fallback frequency
+            // The device's LIVE clock, not 0. Core resolves the frequency in ranked order —
+            // the file, then this override, then a guess — and this is the middle rung.
+            // Firmware 3.7.2 and earlier embed no frequency in SD logs while still reporting
+            // one in their status message, so for those files this is the only accurate source
+            // available. Passing 0 skipped straight to the guess, and Core's guess is a
+            // historical 50 MHz against shipped firmware's 42 MHz, which makes every
+            // reconstructed timestamp in the session roughly 19% fast (#464). A file that
+            // states its own frequency still wins, so this can only ever improve the outcome.
+            TimestampFrequency: device.TimestampFrequency,
             DeviceSerialNumber: device.DeviceSerialNo,
             DevicePartNumber: device.DevicePartNumber,
             FirmwareRevision: device.DeviceVersion,
