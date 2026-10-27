@@ -4,24 +4,25 @@
     "net10.0-android36.0": {
       "Avalonia.Android": {
         "type": "Direct",
-        "requested": "[12.1.1, )",
-        "resolved": "12.1.1",
-        "contentHash": "r3ePTQtZoyNQsSlp4I2pZg7mca5QD3ijHWAF3BXOK5BarJx22m1lliixdqc0hwPDnJJPYC3A07c3f++qfZXUqA==",
+        "requested": "[12.1.4, )",
+        "resolved": "12.1.4",
+        "contentHash": "ee2ts271gwbg8CJ6L2BmDuipLWe74kmcQKf+HTIAuj+YeJrgJtJhM4OJykzVfrhyG1NzXnDqKymyQjtFjOauOQ==",
         "dependencies": {
-          "Avalonia": "12.1.1",
-          "Avalonia.HarfBuzz": "12.1.1",
-          "Avalonia.Skia": "12.1.1",
+          "Avalonia": "12.1.4",
+          "Avalonia.HarfBuzz": "12.1.4",
+          "Avalonia.Skia": "12.1.4",
           "Xamarin.AndroidX.AppCompat": "1.7.1.3",
+          "Xamarin.AndroidX.DocumentFile": "1.1.0.3",
           "Xamarin.AndroidX.Window": "1.5.1.2"
         }
       },
       "Avalonia.Fonts.Inter": {
         "type": "Direct",
-        "requested": "[12.1.1, )",
-        "resolved": "12.1.1",
-        "contentHash": "V2d7OM1jybcl31KThdhf8XSl5SjQ6Ll/tXIfwQ00kMeWuPegRcOx8DLVpECHOOEKO9JZelXW0enuUu1D7Svikg==",
+        "requested": "[12.1.4, )",
+        "resolved": "12.1.4",
+        "contentHash": "PqzIALObVJ3ZUpfYDkoNNkijaVBUGVrHqAyWPkE39aJrPukbMv49aGMhS+c5HiW1s+/iuo3fW+ISOk34GOc0iw==",
         "dependencies": {
-          "Avalonia": "12.1.1"
+          "Avalonia": "12.1.4"
         }
       },
       "Microsoft.NET.ILLink.Tasks": {
@@ -32,11 +33,11 @@
       },
       "Avalonia": {
         "type": "Transitive",
-        "resolved": "12.1.1",
-        "contentHash": "o8pZ1oE9AQ6gklpGM0lnOBp/JlVH0J/0mYszBf0GsSAcEnzHNCLM9NnrPZwKu4j2q9oNbVHYzzEPkszQeuqaKw==",
+        "resolved": "12.1.4",
+        "contentHash": "Vlz+ebY0PBVsTFXAPIpM+7ySgezMtyJ3GMMGmccHwxXXjgLF2x5+NMwO4AqrdM/lrUPZremnYNO6MSg1r1vuxw==",
         "dependencies": {
           "Avalonia.BuildServices": "11.3.2",
-          "Avalonia.Remote.Protocol": "12.1.1",
+          "Avalonia.Remote.Protocol": "12.1.4",
           "MicroCom.Runtime": "0.11.6"
         }
       },
@@ -55,10 +56,10 @@
       },
       "Avalonia.HarfBuzz": {
         "type": "Transitive",
-        "resolved": "12.1.1",
-        "contentHash": "vgd/Fl4bIXgv3QtYk6WCd6iGAag4i3OOAozo6/DW3xPr5dWjpi1MmJaeE9MYoZBEDJ4egD0gfHz6nYhkDADz9g==",
+        "resolved": "12.1.4",
+        "contentHash": "PxaJL9P/Zn6w89kLokuLcWDnj+w4erpfp57SiDN4JhX4NI2qPLJEmxgogTwyXjCUE8vq7Jg7kjH/z5D2jeGAhA==",
         "dependencies": {
-          "Avalonia": "12.1.1",
+          "Avalonia": "12.1.4",
           "HarfBuzzSharp": "8.3.1.3",
           "HarfBuzzSharp.NativeAssets.Linux": "8.3.1.3",
           "HarfBuzzSharp.NativeAssets.WebAssembly": "8.3.1.3"
@@ -66,15 +67,15 @@
       },
       "Avalonia.Remote.Protocol": {
         "type": "Transitive",
-        "resolved": "12.1.1",
-        "contentHash": "0u77tnOwJnHtVLu+WBY7T56fN9W8n7++Uq9kHW6J+bfv5y13WZUMVS+PBzoBe32taYvz/oSomDGO1V41AHaFcQ=="
+        "resolved": "12.1.4",
+        "contentHash": "9ajC+Ff+U9S21JJKGbJgnwp9fY+zwJG+bSEC//o/vJU2M6IEMRGp+D1+AUoqTR79FAA/iDYgf4f4EF4PZKhZsg=="
       },
       "Avalonia.Skia": {
         "type": "Transitive",
-        "resolved": "12.1.1",
-        "contentHash": "Q0jRMXb212RYIZNV7p6L/zWx8lyPck9dFFW+l86moeN4dNxHjPBdJS3nLdLvAd20Eno7JC4gwRa5Fewg52td8g==",
+        "resolved": "12.1.4",
+        "contentHash": "BA6B1Up9AcX4JmnskD6FyxF+ZEowXDhGvzw1lG+Xx6sQO0VyOE2yDoAmD/S2EsYZUukPfRUJmIyjeM//WdZAxA==",
         "dependencies": {
-          "Avalonia": "12.1.1",
+          "Avalonia": "12.1.4",
           "HarfBuzzSharp": "8.3.1.3",
           "HarfBuzzSharp.NativeAssets.Linux": "8.3.1.3",
           "HarfBuzzSharp.NativeAssets.WebAssembly": "8.3.1.3",
@@ -85,10 +86,10 @@
       },
       "Avalonia.Themes.Fluent": {
         "type": "Transitive",
-        "resolved": "12.1.1",
-        "contentHash": "7vdtZsM9o8I8LpU9dyiB/Ah7WB8a5V3JHLsExe4T433ynn5x57F+DBskctZuNOxml8hbe1GmtNUNkBDsqSVKVg==",
+        "resolved": "12.1.4",
+        "contentHash": "vx7P4as07WLQqA2mhMy4iBsqhkWEGwZI7g9Rd2DlJgz3uKS2tSvY6nZqHq3sWMFDBYBT65jkTsetPrgV8oprsQ==",
         "dependencies": {
-          "Avalonia": "12.1.1"
+          "Avalonia": "12.1.4"
         }
       },
       "CommunityToolkit.Mvvm": {
@@ -183,253 +184,253 @@
       },
       "Microsoft.Data.Sqlite": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "7je7UELzm131GiLYc4PpZvfKXIgIyzPM+v+tjcd/nbnuWRfgcONYKzDTqJlURxwVCFsVnlpmq6y6yn4qvR8QXQ==",
+        "resolved": "10.0.14",
+        "contentHash": "muyroan6rKrf0omZL8UF7Kw5uOGp/yBg1L/XWvkFN3WhKaNtK2IWqRZw93nIwVqjhTVDO0l4CEGhHIh+mb+sKg==",
         "dependencies": {
-          "Microsoft.Data.Sqlite.Core": "10.0.11",
-          "SQLitePCLRaw.bundle_e_sqlite3": "2.1.12",
-          "SQLitePCLRaw.core": "2.1.12"
+          "Microsoft.Data.Sqlite.Core": "10.0.14",
+          "SQLitePCLRaw.bundle_e_sqlite3": "2.1.13",
+          "SQLitePCLRaw.core": "2.1.13"
         }
       },
       "Microsoft.Data.Sqlite.Core": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "hubA20AGenQ4Sx0ElWaPpB8DISjXpdx463+1zOGRslsT0e/t/06ITv+pHsop8CcJ0d8PZLfgnT7juCDVD79Dkw==",
+        "resolved": "10.0.14",
+        "contentHash": "1p9rO3Q2X/L/9YrYog3vaDzi8u+WZfJCOkDYoHqmofqYP0DLPLPyZcS2Rnh/79JXAodgbs1AgsaNwLpIvC3Xew==",
         "dependencies": {
-          "SQLitePCLRaw.core": "2.1.12"
+          "SQLitePCLRaw.core": "2.1.13"
         }
       },
       "Microsoft.EntityFrameworkCore": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "VOSGU8en6HZJs8t7UMFN+9vGcRgVOOn6fA44Ngcg2NyvJ3P1KE94iAb0XzaVaGhXGtt+qaM/VtEn0/hzluQJeg==",
+        "resolved": "10.0.14",
+        "contentHash": "vY3931PYPIDBbKovGHbACmpOWvURvKNyRXfCjMh5yLW+FH6vLWeqUu2xzSCRo4Oz4tgx9GYpd0JlV5LDyAoQdg==",
         "dependencies": {
-          "Microsoft.EntityFrameworkCore.Abstractions": "10.0.11",
-          "Microsoft.EntityFrameworkCore.Analyzers": "10.0.11",
-          "Microsoft.Extensions.Caching.Memory": "10.0.11",
-          "Microsoft.Extensions.Logging": "10.0.11"
+          "Microsoft.EntityFrameworkCore.Abstractions": "10.0.14",
+          "Microsoft.EntityFrameworkCore.Analyzers": "10.0.14",
+          "Microsoft.Extensions.Caching.Memory": "10.0.14",
+          "Microsoft.Extensions.Logging": "10.0.14"
         }
       },
       "Microsoft.EntityFrameworkCore.Abstractions": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "6auJR+9+9VunznKfH7WGrHMrnrmA0F7JZ22EXzwXvVhjfnbu9Xq7NSIWaOf3KJsOanM2qf5ajJ2JR5TlcPZTLA=="
+        "resolved": "10.0.14",
+        "contentHash": "/SaznoTTFfKzxYEbCPAwwKBR3XT92DZgH4jJ3/cqs2skP3o2D+TL6i9Aaj+8Azwtu6/sRd0ve4P2mN12nfVmCw=="
       },
       "Microsoft.EntityFrameworkCore.Analyzers": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "Bv7X4wSSnzCQED9WYXKJ8fwgyvKwf0xZM1GO8xkf6CF9zl+UBnvjxmcPnokJRy0JKjc1SlHSzzhx1HcL4jitTQ=="
+        "resolved": "10.0.14",
+        "contentHash": "gaANlGNTxkgODX2eeVT8jjd3AmlFilQV4DFf8qoW30+wUCm2o4N7nEHtZvnHIwfhaJni2DqcjE47Au7tC0Q5jA=="
       },
       "Microsoft.EntityFrameworkCore.Relational": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "grznnTJgEYxaWpdKAsTzg6j+89jHgCXWYp+QGtlX5O92+w/VuhWM6JLPYb+uw8M9VhGUvOTsO76dYOy9vNPd5Q==",
+        "resolved": "10.0.14",
+        "contentHash": "Ut0kgtfoKX9QElQVEXSEAgdQc79jISWStVWSOhfPDDHNSKMwFzSXG3gtdYFTAbsBoV+8NtXdVaj4xwdqeky8UA==",
         "dependencies": {
-          "Microsoft.EntityFrameworkCore": "10.0.11",
-          "Microsoft.Extensions.Caching.Memory": "10.0.11",
-          "Microsoft.Extensions.Configuration.Abstractions": "10.0.11",
-          "Microsoft.Extensions.Logging": "10.0.11"
+          "Microsoft.EntityFrameworkCore": "10.0.14",
+          "Microsoft.Extensions.Caching.Memory": "10.0.14",
+          "Microsoft.Extensions.Configuration.Abstractions": "10.0.14",
+          "Microsoft.Extensions.Logging": "10.0.14"
         }
       },
       "Microsoft.EntityFrameworkCore.Sqlite": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "jc7iVrhQyInR3loraMESfEFaFOtQOB1mRKHjX6QYC9o7YDbfMNbAPnIwlpffnFwhXd6/27FKaaV+sWSoLd4F1g==",
+        "resolved": "10.0.14",
+        "contentHash": "lxrwnVwvlIfQD4IF4WUVupE6Qxfj3MfFftDVwo7tsGAWCKLL8Ttb8UjIt+gE4e9nRlH7EgdC6TrsArFGnNYREw==",
         "dependencies": {
-          "Microsoft.EntityFrameworkCore.Sqlite.Core": "10.0.11",
-          "Microsoft.Extensions.Caching.Memory": "10.0.11",
-          "Microsoft.Extensions.Configuration.Abstractions": "10.0.11",
-          "Microsoft.Extensions.DependencyModel": "10.0.11",
-          "Microsoft.Extensions.Logging": "10.0.11",
-          "SQLitePCLRaw.bundle_e_sqlite3": "2.1.12",
-          "SQLitePCLRaw.core": "2.1.12"
+          "Microsoft.EntityFrameworkCore.Sqlite.Core": "10.0.14",
+          "Microsoft.Extensions.Caching.Memory": "10.0.14",
+          "Microsoft.Extensions.Configuration.Abstractions": "10.0.14",
+          "Microsoft.Extensions.DependencyModel": "10.0.14",
+          "Microsoft.Extensions.Logging": "10.0.14",
+          "SQLitePCLRaw.bundle_e_sqlite3": "2.1.13",
+          "SQLitePCLRaw.core": "2.1.13"
         }
       },
       "Microsoft.EntityFrameworkCore.Sqlite.Core": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "ywTQKt32xnVhCzjEQAqFufpEyXkOUfvW/EC/s4xnS8Xaor2xXE+TMUyzhgACqXtZEU5IR95y94RDzHto55Fx7w==",
+        "resolved": "10.0.14",
+        "contentHash": "08VGlMQ9WbK869as9Ho+VZQbM5Qu6zdorgeh6ShVwQgLYgfUBiaIm02T7spfW7Xc1MBHCvclwPgGWpvx5BYGXQ==",
         "dependencies": {
-          "Microsoft.Data.Sqlite.Core": "10.0.11",
-          "Microsoft.EntityFrameworkCore.Relational": "10.0.11",
-          "Microsoft.Extensions.Caching.Memory": "10.0.11",
-          "Microsoft.Extensions.Configuration.Abstractions": "10.0.11",
-          "Microsoft.Extensions.DependencyModel": "10.0.11",
-          "Microsoft.Extensions.Logging": "10.0.11",
-          "SQLitePCLRaw.core": "2.1.12"
+          "Microsoft.Data.Sqlite.Core": "10.0.14",
+          "Microsoft.EntityFrameworkCore.Relational": "10.0.14",
+          "Microsoft.Extensions.Caching.Memory": "10.0.14",
+          "Microsoft.Extensions.Configuration.Abstractions": "10.0.14",
+          "Microsoft.Extensions.DependencyModel": "10.0.14",
+          "Microsoft.Extensions.Logging": "10.0.14",
+          "SQLitePCLRaw.core": "2.1.13"
         }
       },
       "Microsoft.Extensions.Caching.Abstractions": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "vUl798SmruTqqlt/xH2gDk3tJlhk6k3HdOXAHirlRfbNKDym4g/kRpUL9S4sl6F6FsOTOMW+ZsDapqlZMOOiEw==",
+        "resolved": "10.0.14",
+        "contentHash": "enSfqeENnSjGH3YAYKsCtsa5ob0HNiwF2nwJiC2yhilNXTlD/0prxrgPkWjoAp9svJcu04AiEIKtdh/A54P2fA==",
         "dependencies": {
-          "Microsoft.Extensions.Primitives": "10.0.11"
+          "Microsoft.Extensions.Primitives": "10.0.14"
         }
       },
       "Microsoft.Extensions.Caching.Memory": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "el1g0mBEbDBGY2bT9mcSfrTWO8QlPdq2nOCnvQugioOFwHV+bVBMeiakoI0dNOdj8d6Hi9K6HY2xzRUWJiDR3w==",
+        "resolved": "10.0.14",
+        "contentHash": "AxK3kyD6sWNpYKf+66huE7wHHjgKHONlD1dUaD/CxjZVBLEpH5N4jaqgszTcZvaM9/XVeXF28K3E0wsTyTA4Xg==",
         "dependencies": {
-          "Microsoft.Extensions.Caching.Abstractions": "10.0.11",
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.11",
-          "Microsoft.Extensions.Logging.Abstractions": "10.0.11",
-          "Microsoft.Extensions.Options": "10.0.11",
-          "Microsoft.Extensions.Primitives": "10.0.11"
+          "Microsoft.Extensions.Caching.Abstractions": "10.0.14",
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.14",
+          "Microsoft.Extensions.Logging.Abstractions": "10.0.14",
+          "Microsoft.Extensions.Options": "10.0.14",
+          "Microsoft.Extensions.Primitives": "10.0.14"
         }
       },
       "Microsoft.Extensions.Configuration": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "wlhRqZW8LcJPa+vk2oLAc/REXDItHtkFQdf/QcXYGZbZOO13izcsKY1pCvuFQYwUiZD+hwSZwsKASjqT+BNaVg==",
+        "resolved": "10.0.14",
+        "contentHash": "UcnvaEaMvRckDDhyqY1OZkFwBqpZArkHFKB6dWaQWT9XTuNttNNX8Cqsb/Sic2LfJxsMLJUXnYrxY3iX5LN9pQ==",
         "dependencies": {
-          "Microsoft.Extensions.Configuration.Abstractions": "10.0.11",
-          "Microsoft.Extensions.Primitives": "10.0.11"
+          "Microsoft.Extensions.Configuration.Abstractions": "10.0.14",
+          "Microsoft.Extensions.Primitives": "10.0.14"
         }
       },
       "Microsoft.Extensions.Configuration.Abstractions": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "fVi053xdpda9Em7vSkmgVxO/PtgC2m78ekReKWsgcyskqY0U82Bz/MONwxpGzI0hElYKJfw+fupqMVeKW3fSaA==",
+        "resolved": "10.0.14",
+        "contentHash": "4YdfvaoWn3tB1xQQHGrhRTFWJ8fGOqxThxduynSZy9ZFTiSaUi3vX4EK/kj8h2HQMwTlks9MWV1fv2WRBv5/1w==",
         "dependencies": {
-          "Microsoft.Extensions.Primitives": "10.0.11"
+          "Microsoft.Extensions.Primitives": "10.0.14"
         }
       },
       "Microsoft.Extensions.Configuration.Binder": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "rFn8RuszZn3qquPVkDytMUlPc2+rXl9MCoygwc1XmAgC5vg5/oXJ8hkOosOrLoBLsqdTy4lFwP6iQdPS9uSYOA==",
+        "resolved": "10.0.14",
+        "contentHash": "brDb5kgle2iY2lWHgeV/KOqnBEpVnlMFigGJ/WW7KP9Nj6C/t53f/h5boYyVXB0bEhgpL+ctbewDJMI+zAMj1w==",
         "dependencies": {
-          "Microsoft.Extensions.Configuration": "10.0.11",
-          "Microsoft.Extensions.Configuration.Abstractions": "10.0.11"
+          "Microsoft.Extensions.Configuration": "10.0.14",
+          "Microsoft.Extensions.Configuration.Abstractions": "10.0.14"
         }
       },
       "Microsoft.Extensions.DependencyInjection": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "PSmotV19c7E3lKed++uYo1kSiXFI+uTl37CBSrhq+CfLC3FCHjG7R91+xPnNehQfHS1b0Tzo/CCLPWH3qaEheg==",
+        "resolved": "10.0.14",
+        "contentHash": "2LzcuVjemeXR+WdY9wGIr8iGb7fYsDAit+IScxXX2XJnX0b++mWcE/WO6fEGIqhdMfSQM2ZS5JGMHYZix7YXZg==",
         "dependencies": {
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.11"
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.14"
         }
       },
       "Microsoft.Extensions.DependencyInjection.Abstractions": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "/a1aJz4m7ylhEDf25ugQChLQoN5XwoGjWw/BoR/ZWWKsO1v4DdJElS1uyngahz4B/eOzjFk1KNTkarRLE5wsIg=="
+        "resolved": "10.0.14",
+        "contentHash": "QtpQzuSZVyTPCuHW058yCs9Nj0394uUkNyFHS813nOmK9UgUdBdaprJ5PPsBgsQIpxADTsTkbaMMonykem6qdw=="
       },
       "Microsoft.Extensions.DependencyModel": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "PJPtFYsZ+r+uz9qqXWUTEyKeJ1EiBGIJtqavkg9ZXijjGSFAk4Fgi5sqIxj+uAyLZwEKgexDUQXhWhvU6l3+og=="
+        "resolved": "10.0.14",
+        "contentHash": "N8OcqM0370wSXMJ3ZxO66rSElHrIgxvpfUn0vV7zRj7NvKo0nfwgEoTmC3Yz3860o60IaQ4KIPyeLIGX9EeNWA=="
       },
       "Microsoft.Extensions.Diagnostics": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "HT70uGPxMLqqnOzKMcnQtDmeV4r0KHr4qVCLhP7SXil9jMEm8sQXwcybxVVFGXZJ1V44xV0mLqQ54aZbcR2OiQ==",
+        "resolved": "10.0.14",
+        "contentHash": "80VqW8eKxQaxBOLDNpLUdxOlxzWn/jqBSxNBCfD8GCjcshNDpFvUgKh8uvvZwvkfBbwmNPWPWHyy9F+RLd1dlQ==",
         "dependencies": {
-          "Microsoft.Extensions.Configuration": "10.0.11",
-          "Microsoft.Extensions.Diagnostics.Abstractions": "10.0.11",
-          "Microsoft.Extensions.Options.ConfigurationExtensions": "10.0.11"
+          "Microsoft.Extensions.Configuration": "10.0.14",
+          "Microsoft.Extensions.Diagnostics.Abstractions": "10.0.14",
+          "Microsoft.Extensions.Options.ConfigurationExtensions": "10.0.14"
         }
       },
       "Microsoft.Extensions.Diagnostics.Abstractions": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "se7Kx8QpJEt+nf26L4qIVAofGTDr1wbexxsh/Fm3Xc04xUkqUXK06KUS7FLwSQYSjqb7q9n+T7MEcXYBhI1Y5g==",
+        "resolved": "10.0.14",
+        "contentHash": "vm+PPso6vOwGeX52MdOPh6z/R6KHgxQUwqq7k7Jc9jhy2JOxO2KB4xfoJQBBp2Ni8M4zKgJ4r2a1dgrYG7+MKw==",
         "dependencies": {
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.11",
-          "Microsoft.Extensions.Options": "10.0.11"
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.14",
+          "Microsoft.Extensions.Options": "10.0.14"
         }
       },
       "Microsoft.Extensions.Http": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "ujx8RvcKzkxPFBguwgiygbwWVHVK0P7HFlNJ6I0JBRb28tzwe42jixBoA+dGmqG9IHepPVcm04vv2IDnU93ekA==",
+        "resolved": "10.0.14",
+        "contentHash": "IDsXLGGz7nJMsqspWnErsP18WyAVf6V9Ixl4p47/8/95Jak3ZA1YWhQ0iesMVwubVhkVZGoO9m9ADUnK0m6HLw==",
         "dependencies": {
-          "Microsoft.Extensions.Configuration.Abstractions": "10.0.11",
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.11",
-          "Microsoft.Extensions.Diagnostics": "10.0.11",
-          "Microsoft.Extensions.Logging": "10.0.11",
-          "Microsoft.Extensions.Logging.Abstractions": "10.0.11",
-          "Microsoft.Extensions.Options": "10.0.11"
+          "Microsoft.Extensions.Configuration.Abstractions": "10.0.14",
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.14",
+          "Microsoft.Extensions.Diagnostics": "10.0.14",
+          "Microsoft.Extensions.Logging": "10.0.14",
+          "Microsoft.Extensions.Logging.Abstractions": "10.0.14",
+          "Microsoft.Extensions.Options": "10.0.14"
         }
       },
       "Microsoft.Extensions.Logging": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "nUOJwgFkSiLHiVGFpU22pIJtuWYewuSYQ3JVuP/gdK8ASMT807Px+TYQiRWs6uSsOmoyFTaVCwKXTasczV6BpA==",
+        "resolved": "10.0.14",
+        "contentHash": "O2fXL6JmtkFwkigxS8fPTQpLXxGDjgZco5D+h88s++Cl0bDCs023PVkpNoifciJ+f30I82jnp8tpwF0wCLdFtA==",
         "dependencies": {
-          "Microsoft.Extensions.DependencyInjection": "10.0.11",
-          "Microsoft.Extensions.Logging.Abstractions": "10.0.11",
-          "Microsoft.Extensions.Options": "10.0.11"
+          "Microsoft.Extensions.DependencyInjection": "10.0.14",
+          "Microsoft.Extensions.Logging.Abstractions": "10.0.14",
+          "Microsoft.Extensions.Options": "10.0.14"
         }
       },
       "Microsoft.Extensions.Logging.Abstractions": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "Ljd0Uxoq5XpScD2Bg0nM/r3mwx7Ao5Uq24eo2ARxbGvqJ7Zht6rt2cJtwVRH4Cv+1ZVMdXz6TB43KbpmsxRrvQ==",
+        "resolved": "10.0.14",
+        "contentHash": "SwcbEBtkECq3D2oywvHkm46fyrX9Dd2JPWphDnHUc2+cUWR1Mdo41atAjh/9iZjgQxuvbKfZKXqostT/LZfefA==",
         "dependencies": {
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.11"
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.14"
         }
       },
       "Microsoft.Extensions.Options": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "eY1GAKcTfD2maP27J84X9IovT3yjHJ2dVDzPmDg6/XqYvt3jMzJhtfQCLjG9pVsZGAd+8DQ2QrjaDcs2+VQLGw==",
+        "resolved": "10.0.14",
+        "contentHash": "EeN/33S418m9oWEaZY4N5T+BNxtOqNTIFoFbIgBKwylh4OJPKIWFAzbIhpTdNbwUs26MhkmbLCAbdY+YCJ1dIQ==",
         "dependencies": {
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.11",
-          "Microsoft.Extensions.Primitives": "10.0.11"
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.14",
+          "Microsoft.Extensions.Primitives": "10.0.14"
         }
       },
       "Microsoft.Extensions.Options.ConfigurationExtensions": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "syEhXQ/sEaSBFaqzlp9gDGHX/nk6gkQkh1sIUpBO1mlBj3Phu1rmb4ML1uCiyPW9N6Kxfxv3y5FGObC+bV01Qw==",
+        "resolved": "10.0.14",
+        "contentHash": "4wcIU0rE04ejEfCwHTftu9O8fgH6CRYCe+tseRapikUBn1Kic3QdO7ku22SwFyLrzdWGYPUZMEgv57ZYuuc5gA==",
         "dependencies": {
-          "Microsoft.Extensions.Configuration.Abstractions": "10.0.11",
-          "Microsoft.Extensions.Configuration.Binder": "10.0.11",
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.11",
-          "Microsoft.Extensions.Options": "10.0.11",
-          "Microsoft.Extensions.Primitives": "10.0.11"
+          "Microsoft.Extensions.Configuration.Abstractions": "10.0.14",
+          "Microsoft.Extensions.Configuration.Binder": "10.0.14",
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.14",
+          "Microsoft.Extensions.Options": "10.0.14",
+          "Microsoft.Extensions.Primitives": "10.0.14"
         }
       },
       "Microsoft.Extensions.Primitives": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "SXcz+kF+4Oo9b1+55zntpJFYfwb1jw66ioxptyNOOTDc8g2FHnBFWjZpsWfCvZIhzr0x+4e2trVTs4OKwQfBtw=="
+        "resolved": "10.0.14",
+        "contentHash": "1bbZqqCJTPba3inTADExbp/9PsGVyvGOX3zr6tFr7ySCgVkX9Lpw7BV0TizktNItd3SsbUu1sQfSAYm1GZMoNw=="
       },
       "NCalc.Core": {
         "type": "Transitive",
-        "resolved": "7.1.0",
-        "contentHash": "AW0R2aiRkZqSv2GZcO5QJ3dirCuiE+1U53NYF2ONzKts9fbE3J3oZPzujJzBuLO1EaXiirzibghgPRavufiDGg==",
+        "resolved": "7.2.0",
+        "contentHash": "svJEf/HlfVhD2igJFLxVS06f+CWUKUrBlWtTw+H+Gq0uEBfHU7VyWF8y3NNkstVjChduDkAS89qAaKH0HkfNZA==",
         "dependencies": {
           "ExtendedNumerics.BigDecimal": "3003.2.0.161",
-          "Microsoft.Extensions.Logging.Abstractions": "10.0.10",
-          "NCalc.Parser": "7.1.0",
-          "Parlot": "1.5.8"
+          "Microsoft.Extensions.Logging.Abstractions": "10.0.12",
+          "NCalc.Parser": "7.2.0",
+          "Parlot": "1.5.9"
         }
       },
       "NCalc.Domain": {
         "type": "Transitive",
-        "resolved": "7.1.0",
-        "contentHash": "+TJaDQ1EkWE9v672uwf2PjjTS9Pd5IxZKPOL/KjvH06DdgFqBGAC+7ws1VVn1vXR59SWfCM1wm1K/Dr5msiMRQ=="
+        "resolved": "7.2.0",
+        "contentHash": "C49UItswWCoTAZgRKST2T3zjX9zxGPaBp7RwIYfsdcrPPxQWp6zOGyA1N4h7h2MIyonV6FPUQI+Q6B9FJBOhrw=="
       },
       "NCalc.Parser": {
         "type": "Transitive",
-        "resolved": "7.1.0",
-        "contentHash": "I93ttSN4BVQ6nC9QB41ttjVTOVlNFRY/5UyGJLNvqiuLAVDW2YLONyyf0CVInI0zMKg6F7TIvaVhDMrtQQ32MA==",
+        "resolved": "7.2.0",
+        "contentHash": "4/kaIIj0xf+Dab2DRZ66wD9Wg6scf226rY31AnTY96lOE15rJOKNFUpWj6ZfAGtO9mQn/POXLBbTx7fGOSQNQA==",
         "dependencies": {
-          "NCalc.Domain": "7.1.0",
-          "Parlot": "1.5.8"
+          "NCalc.Domain": "7.2.0",
+          "Parlot": "1.5.9"
         }
       },
       "NCalcSync": {
         "type": "Transitive",
-        "resolved": "7.1.0",
-        "contentHash": "JTcmTqUGGTUBRRZdFoS2VJxpBRxQ5gOJOCzOjBdMuAAqEFucw0bNxNpVgS5G2+CaVaX85rE7t/Rjg/TL4fPy/w==",
+        "resolved": "7.2.0",
+        "contentHash": "ISmPmIfopiABECx5ncPoi96+Mw7erlyupY+BM0Lc9TRXtl5AtvsS3YdXGdHMHh1p2Jr9+RjTVRSEU2rpcvcu7Q==",
         "dependencies": {
-          "NCalc.Core": "7.1.0"
+          "NCalc.Core": "7.2.0"
         }
       },
       "NetTopologySuite": {
@@ -452,8 +453,8 @@
       },
       "NLog": {
         "type": "Transitive",
-        "resolved": "6.2.0",
-        "contentHash": "CxK6AjM1Wy3hM8YeBpLJJuB/JdoeIVvX0/fMTWeIXD917UozCtzv6cZDamevugeEaBBF0TIatfcNX2iJHI0Cew=="
+        "resolved": "6.2.2",
+        "contentHash": "Hoxigm/d7wY/+y4y2ILF2ERSojhxgLd8ASBZQbrnm52jB5NHkF4AWW5tZzMxJ/HTOp0bLwClGOokrA31iSXuMA=="
       },
       "Optris.Icons.Avalonia": {
         "type": "Transitive",
@@ -478,133 +479,133 @@
       },
       "Parlot": {
         "type": "Transitive",
-        "resolved": "1.5.8",
-        "contentHash": "QBFNAMKQPRvBwrXOl6Gp24a2nbhzqJ5X4pe0I1g1RtR4SqoT2ThyE6RwFAOZLcWMQxzo8YC08VmHspPDeOLYWg=="
+        "resolved": "1.5.9",
+        "contentHash": "Vro4ZKVZLBoPdCftyMUlzhlRpegI3N6TlT0zpyn79a42mH214VDqzkAdV70vu578W6NKS84hBA9H6j81cz0dLg=="
       },
       "runtime.android-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "6V3MEIBgMbF/kwIkY1ibNZB/9E/PN5289IZGdVYJfgMvuQt43YLHFz4i4PBZZ8Jp0/Pii14cyUU88avLfEYLvw=="
+        "resolved": "10.0.14",
+        "contentHash": "gLv34pCoVW0YGWV0IES5GTHp2pva7hWXfSiKAsdtCmK2RE31IAOsPrES9+QS2ZgwXm3WxL0QjepUyrzCtgsQOw=="
       },
       "runtime.android-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "mxz0iV8Vzq/ljCsphMngnoC4tue88i433b5meMihkVdFY8eytNBbubkZLNipCvhNgLFSq1FJ/5gn4VZ3uHOIBA=="
+        "resolved": "10.0.14",
+        "contentHash": "76bkqy+AuJgE8KESzFUQPW3CpildWVXf07IGDZze5NZNCCZV2kz1fUMkWn/tRxXs6tm7sErq2bcrjfydpErXPA=="
       },
       "runtime.android-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "cH7lMdDHZ2/oZC2vDZuCALZkpPz0iLcW0smMngk1fkT6f4yZf916xa0ajMefSFYwpbRVMZi2JK3SRU/jY+Wd6w=="
+        "resolved": "10.0.14",
+        "contentHash": "qcGm46NBd0RAClo/crhqgRFzrNYV9TUSrAz35zJxTkNMCaqN5Wwm4BwcHecQe0AoXaN7G/twkEcxXPLQEpf/zw=="
       },
       "runtime.android-x86.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "7WDZu2EC63A+/z+HCnRET/6vFjTg4UVWvX4BaTd7fdrVuTMZcpPf4SdNfsI3wbY+zSweJ+CbWkeC9yq2WXlQug=="
+        "resolved": "10.0.14",
+        "contentHash": "eLPDMeoCGDqAs3yuUAGO5bEnsuaY++gxyEHnxXaXW4tluUoPLijXQMlx2iHbjf8qN9a2buSmkQ7TNEinrb9uSA=="
       },
       "runtime.linux-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "sf18XX+0LXVZ4iS6YGOGVVFx8tUzXVLZGFcSjGvQWZNgVyQUwqJigNrULJ0mEn5mrF8FdPpvvsQoQ2oZ0GeNYw=="
+        "resolved": "10.0.14",
+        "contentHash": "C+0+w+lgBDKdsqrPQ9MD5xvRuoieJJq0jfc0LlAssg8fHj7dilNySdc0s8deRMrTUBvpIHZlCXhfz7R4XWnHOQ=="
       },
       "runtime.linux-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "YPdZrWEiyI5B9WpWJpy/aFueieCn19956AebWnvY8qmVbmrddgdIag7MYk3jxlUqFfzDbPGD4Bwxn3nPNj1PMA=="
+        "resolved": "10.0.14",
+        "contentHash": "Lb5f7Qwi0U55Pz0t5j9MgwG5E7SWOcKRJjAB+Q09RTrSQ86o0QAVJCQRdqMsCB3IIbEVV4U2UHhn0vzwfjXFPA=="
       },
       "runtime.linux-bionic-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "BwIgA8GupgMtWmjKMTjSR91Mp+msWPJxHIXoKJdPD/+xcp3s0yJNmYeVgLd/6x25ipULyiBfpqsxYeKirOuTcA=="
+        "resolved": "10.0.14",
+        "contentHash": "KitV8FoIw5R1MA1++RdLZ8kLqbLV0bPhZv86MkyvLWI/7DaD6sZ2I9+8Tb6PAaix6+Rmio7UZQTKpg1K/yextQ=="
       },
       "runtime.linux-bionic-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "gxMiB17KzKFH3jRGEeojEEJxbemEvkW9BruuLtF4DlEBgdDAvW+cUN0rIHLtj8yf5H4+vVvY6WiVb8EbTlDvWA=="
+        "resolved": "10.0.14",
+        "contentHash": "VMzjkxsSTRgoO9PbB7fKGn7ic+W6ZIHLyNwDKK+SykBLLyEJ8nj/m/sVfxb3TSCY5J9VO8iX4oWUpZ9DbNhABg=="
       },
       "runtime.linux-musl-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "dqYz32Eb3HnDMgvv+OJz9GLi0d3qqEfkuQnEa43lg3aNmlYmXXWI9SvX0Tvqigd7GRaxWyKX7uEZfxvudO16Dg=="
+        "resolved": "10.0.14",
+        "contentHash": "f5hwBxC3v57d8nTxtiwjZiT6Ji+DkXtgKCBP4o5RTxiz+l+nsYELKJnPGM0vvRI63YKohGo3k0C9l1qYW6Xc/g=="
       },
       "runtime.linux-musl-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "ZiOHYuPdEd7WFICA7U+0KWJmRETWeT/nHg6D5NagHmS3Poe7stluLQ9W/M/Svzz/m7cyFlL7e/d66hpgnG82Ww=="
+        "resolved": "10.0.14",
+        "contentHash": "bHr0QgQ+QUwqkMbj2Sg+/8zefCcRHke/GYug9OaEyjT7PUq0vBuruUkTepu5vHyTL+Hfw18rVCocEhmMm+nZzg=="
       },
       "runtime.linux-musl-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "qeTTy+SXea0z+hgXFkIiI9j9ikfVV8gxYDXKdmsl/X0S9tnk5gciAPQNxfoWfvzQYYrD7rl739JIt+I8z2pAxg=="
+        "resolved": "10.0.14",
+        "contentHash": "gb+SbdESVUpRmDxmtNU5hCQzBZ12wP7XVbTzqpSi2z0+Zms9J+shz1aL4/FTv+/3lOGcMmqQxfFBijS7rAMtYA=="
       },
       "runtime.linux-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "s1FFe7n+ff5XV8SnLcmvW6W/9GsKm/TKkdkSh5ZmCPlry87xyDvGULjv/gIxlcIY5fpUB86nXIQ6EJp4WnL71g=="
+        "resolved": "10.0.14",
+        "contentHash": "yKoFxb8LQDBuAFyxNggJ9uhVuEDoInRpgAUV4zWo+WEfvjbDvV5r15fyaRqjWDcKo9uKnmGzECYcQBTpB6hTRw=="
       },
       "runtime.maccatalyst-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "7Mvev9kKh140KpgoZcmNxzk+1+TohKxLM1dyfjQcM8zUrJDAQenG5w0AGXa52z7Hk+5pS8c75s4s0GdU1Qv0lQ=="
+        "resolved": "10.0.14",
+        "contentHash": "xxJRQVP1RAeDGe8eQRyceb0mc+T6cdFPK0XlRrH4QyCHDP2lBnmmlpNvf4bQva9CbsCIYCgFOvfb91NWbCNMEg=="
       },
       "runtime.maccatalyst-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "8qiWZ3aI5ugu4MouuEDu/vtS8stQEvG/Mf/ImoFSa/TcF11Hz54Ij1931VJnlvgpUB8BV8WFc928xqYah2wglw=="
+        "resolved": "10.0.14",
+        "contentHash": "tmklOnnC1GVqZyqjVv20JLuH8OW0vGQl/V2mnGbZKTVHBsmxFYC/Lf+gMD1fzfL6Xi6Mm7QsxumbvfLT9hvd1w=="
       },
       "runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "O7kVZRLIKBmkf+VRq/5tXgaeDQLuEiItxEdccCLtIW2eQFyH+uHAgW5Jet5idVr2FzIE4J9fj9s9DZSwnaqAhg==",
+        "resolved": "10.0.14",
+        "contentHash": "VAUplmK3hS1jq/WxB7ZHsb6ij+6C9CrkxL9jjbq74k++5pYGGkLkuK3h72y3FO8FrcdkBbJGBiHK4oFsepdH/w==",
         "dependencies": {
-          "runtime.android-arm.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.android-arm64.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.android-x64.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.android-x86.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.linux-arm.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.linux-arm64.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.linux-bionic-arm64.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.linux-bionic-x64.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.linux-musl-arm.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.linux-musl-arm64.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.linux-musl-x64.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.linux-x64.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.maccatalyst-arm64.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.maccatalyst-x64.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.osx-arm64.runtime.native.System.IO.Ports": "10.0.11",
-          "runtime.osx-x64.runtime.native.System.IO.Ports": "10.0.11"
+          "runtime.android-arm.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.android-arm64.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.android-x64.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.android-x86.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.linux-arm.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.linux-arm64.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.linux-bionic-arm64.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.linux-bionic-x64.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.linux-musl-arm.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.linux-musl-arm64.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.linux-musl-x64.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.linux-x64.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.maccatalyst-arm64.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.maccatalyst-x64.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.osx-arm64.runtime.native.System.IO.Ports": "10.0.14",
+          "runtime.osx-x64.runtime.native.System.IO.Ports": "10.0.14"
         }
       },
       "runtime.osx-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "XI/fS9+og9UOwFhHnQFf10NQaM26yOlaNjTVBc0I6KG4xMfw0TR4/PUacSiKnn5agfAQ74zh7T7ZogdWmsOCSg=="
+        "resolved": "10.0.14",
+        "contentHash": "smqBl+Pt3WMZYkhCokYCS4UgexGe08afgLzleTBCG6cyKMfVhQSieJf836PT51ULZMLluXzI6SGdPamxxH0lZw=="
       },
       "runtime.osx-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "BCn5TG2WdJADWTdW6N/OluNWRb/kw63AnMU5wKV0rludx8uewlZQ9AHoEbxL6lQ2W9zNn1RX06A5ZoAZiq4Znw=="
+        "resolved": "10.0.14",
+        "contentHash": "g8byPDtP2LDNkHcnyuhrJpS16Y09jppi71t7vD2t5B3Hqcz0YrZJMLBDWN9AsJVW50yZ54iM70YSPOC6+3X0IA=="
       },
       "Sentry": {
         "type": "Transitive",
-        "resolved": "6.9.0",
-        "contentHash": "qQIvEwuvjAB6fDLVLLcDj/5f8n5jOyPyHjj3a/GQ1ogTLLQqsSxgQj1fEEquNT9HQuj4ZTyCg3c1DCBMUIvJGQ==",
+        "resolved": "6.12.1",
+        "contentHash": "yCHz3cLGZ3TVik3rLV6rp6SaqJ0Ai7PyIi2KdoHNGpZYWEkcX7kx13IV46mufAzPW7pqZZoKNoru0w0RpmkmrA==",
         "dependencies": {
-          "Sentry.Android.AssemblyReader": "6.9.0",
-          "Sentry.Bindings.Android": "6.9.0"
+          "Sentry.Android.AssemblyReader": "6.12.1",
+          "Sentry.Bindings.Android": "6.12.1"
         }
       },
       "Sentry.Android.AssemblyReader": {
         "type": "Transitive",
-        "resolved": "6.9.0",
-        "contentHash": "SpWwY/xte4kP5p7zJzQA9wVyHZ0nqQ+y6mxCLJPu1FjNLhBglRG5lm7f6NmfC4cZTIMrL8z19TjuitoSD+chFw==",
+        "resolved": "6.12.1",
+        "contentHash": "b/8EVwBS3CTXcklKkh9I/dlp7hdA/Q6vE/Un/qVy62TOsJ/z3F5DLJNyD+CXiM5b+JJotVmCvDnE3ZDt0jEG9A==",
         "dependencies": {
           "K4os.Compression.LZ4": "1.3.6"
         }
       },
       "Sentry.Bindings.Android": {
         "type": "Transitive",
-        "resolved": "6.9.0",
-        "contentHash": "sG7jXfVyS2ttWJMoUbP45j576FvbE7vHK1mekiDMxdid5ZL0JSuqkwQ69YUq+1vyZn7WLycwcMqyBeYMh2F8Zw==",
+        "resolved": "6.12.1",
+        "contentHash": "Ra+KjvjRUcezM1ciEAwMyYmwSXMECIDxRFp18Kozgb3NE92G1tZXnPuAatgT0wfRv5VL4LUT4MyQimkQhuPlrw==",
         "dependencies": {
           "Xamarin.AndroidX.Core": "1.17.0",
           "Xamarin.AndroidX.Lifecycle.Common.Java8": "2.9.2.1",
@@ -672,43 +673,43 @@
       },
       "System.CodeDom": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "v40pNeBoZTYsiVxz+PzyZmmIr2JIhpK4VsFpQqZSZCXa51PDlNXIN2ESm8kDU0voZYVfLhxF9HvmBsxCJmkiRg=="
+        "resolved": "10.0.14",
+        "contentHash": "oJYTzyBcc2g06mU699LaJfm964mdlFg6l7BPeqdu8bmK6Fdy9fL9BWugGsZAqWtjnNWp4tanZZ9DlZwHJmmhgg=="
       },
       "System.Configuration.ConfigurationManager": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "vFA8K0xj520MnLp+zkpTmLc3LOGUhkIDxHvhfm8Cr4b+ZVVeAXnfe1+2oixuITbsZfr4ALcU2NrAqQKhooX9yw==",
+        "resolved": "10.0.14",
+        "contentHash": "F/bLtwG0JuJ2OnTCsvJbnulvN7hr+BIFJLtE3PzgmW3AWkV8LYO5XF0j+zB4tHn/b4yfR7PAO0dZmoYeaINtnQ==",
         "dependencies": {
-          "System.Diagnostics.EventLog": "10.0.11",
-          "System.Security.Cryptography.ProtectedData": "10.0.11"
+          "System.Diagnostics.EventLog": "10.0.14",
+          "System.Security.Cryptography.ProtectedData": "10.0.14"
         }
       },
       "System.Diagnostics.EventLog": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "QTXEoQBzz00SFWbo7nAg1Ogd4f99lwqcO9uAJ7MYSLEUR28f6As32QktrqG2Fr9cfAfd1GjLyGYspE7Ipj7P6w=="
+        "resolved": "10.0.14",
+        "contentHash": "O/RzNwWoDzehkLlAG9hR8xooY5L41U7VUaYlcKvE3+FhHohBJqF10oLUzuv0v59VeJ62hv3uw9VoeX12zej7Sg=="
       },
       "System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "92gu68qcsZXcHhSyGxNdoVoDKxn9nV240k3jdq5b/vAzTt0QsFFE+bCmLKQ5p1XhAgelE5v+VaQEaAFH/JvZSA==",
+        "resolved": "10.0.14",
+        "contentHash": "70Jq6HRBQT0iMM/D8hVTo8nYLnDFf7xluPPn2S+brVRc8uExUUYh3lGO4nzsK2nc4nIVH3pVIphI0Jm8zZZ4jQ==",
         "dependencies": {
-          "runtime.native.System.IO.Ports": "10.0.11"
+          "runtime.native.System.IO.Ports": "10.0.14"
         }
       },
       "System.Management": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "xyNn8KGbWI88LoUwg3rB8qcpFFST6dr8Ro/qS8GBu2GOwR0v7J82kVFHTiiPtvEKS79VbMTxs/sIKQ+Cq1Zs1g==",
+        "resolved": "10.0.14",
+        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
         "dependencies": {
-          "System.CodeDom": "10.0.11"
+          "System.CodeDom": "10.0.14"
         }
       },
       "System.Security.Cryptography.ProtectedData": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "PNoxCTPb+Tlux+GJyq4c89ddYdpioVSqfGx8pqOF6shCSKwUNNctXhQtRkCICjbJmGrJJsW8NY52kVYO/b8mlQ=="
+        "resolved": "10.0.14",
+        "contentHash": "UuaBUHgmtc9h6CMxaQqFDDJxkS5JVy7XEB+DbtCvD68GFcVM9/AccuNwFpARx8nwCnvjaxzoOBjG3gPz32P1Eg=="
       },
       "Xamarin.AndroidX.Activity": {
         "type": "Transitive",
@@ -907,6 +908,16 @@
         "dependencies": {
           "Xamarin.AndroidX.Annotation": "1.9.1.7",
           "Xamarin.AndroidX.Collection": "1.5.0.5",
+          "Xamarin.AndroidX.Core": "1.17.0.2",
+          "Xamarin.JSpecify": "1.0.0.6"
+        }
+      },
+      "Xamarin.AndroidX.DocumentFile": {
+        "type": "Transitive",
+        "resolved": "1.1.0.3",
+        "contentHash": "E4thKXkeDijyl7jQ/9U/4S5+kgKyyoJ/AuJd9cUsMHUiwgdjt2AsJKM83/LTDAT1g6XkO6VKjuY70n+0QkB+eg==",
+        "dependencies": {
+          "Xamarin.AndroidX.Annotation": "1.9.1.7",
           "Xamarin.AndroidX.Core": "1.17.0.2",
           "Xamarin.JSpecify": "1.0.0.6"
         }
@@ -1467,35 +1478,35 @@
       "daqifi.avalonia": {
         "type": "Project",
         "dependencies": {
-          "Avalonia": "[12.1.1, )",
+          "Avalonia": "[12.1.4, )",
           "Avalonia.Controls.DataGrid": "[12.1.2, )",
-          "Avalonia.Fonts.Inter": "[12.1.1, )",
-          "Avalonia.Themes.Fluent": "[12.1.1, )",
+          "Avalonia.Fonts.Inter": "[12.1.4, )",
+          "Avalonia.Themes.Fluent": "[12.1.4, )",
           "CommunityToolkit.Mvvm": "[8.4.2, )",
           "Daqifi.Core": "[1.8.0, )",
           "EFCore.BulkExtensions.Sqlite": "[10.0.1, )",
-          "Microsoft.Data.Sqlite": "[10.0.11, )",
-          "Microsoft.EntityFrameworkCore": "[10.0.11, )",
-          "Microsoft.EntityFrameworkCore.Sqlite": "[10.0.11, )",
-          "Microsoft.Extensions.Http": "[10.0.11, )",
-          "NCalcSync": "[7.1.0, )",
-          "NLog": "[6.2.0, )",
+          "Microsoft.Data.Sqlite": "[10.0.14, )",
+          "Microsoft.EntityFrameworkCore": "[10.0.14, )",
+          "Microsoft.EntityFrameworkCore.Sqlite": "[10.0.14, )",
+          "Microsoft.Extensions.Http": "[10.0.14, )",
+          "NCalcSync": "[7.2.0, )",
+          "NLog": "[6.2.2, )",
           "Newtonsoft.Json": "[13.0.4, )",
           "Optris.Icons.Avalonia.MaterialDesign": "[12.0.7, )",
           "OxyPlot.Avalonia": "[2.1.2, )",
           "OxyPlot.Core": "[2.2.0, )",
           "SQLitePCLRaw.bundle_e_sqlite3": "[3.0.5, )",
-          "Sentry": "[6.9.0, )",
-          "System.Configuration.ConfigurationManager": "[10.0.11, )",
-          "System.IO.Ports": "[10.0.11, )",
-          "System.Management": "[10.0.11, )",
+          "Sentry": "[6.12.1, )",
+          "System.Configuration.ConfigurationManager": "[10.0.14, )",
+          "System.IO.Ports": "[10.0.14, )",
+          "System.Management": "[10.0.14, )",
           "Xaml.Behaviors.Avalonia": "[12.0.7, )"
         }
       },
       "oxyplot.avalonia": {
         "type": "Project",
         "dependencies": {
-          "Avalonia": "[12.1.1, )",
+          "Avalonia": "[12.1.4, )",
           "OxyPlot.Core": "[2.2.0, )"
         }
       }
@@ -1513,83 +1524,83 @@
       },
       "runtime.android-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "6V3MEIBgMbF/kwIkY1ibNZB/9E/PN5289IZGdVYJfgMvuQt43YLHFz4i4PBZZ8Jp0/Pii14cyUU88avLfEYLvw=="
+        "resolved": "10.0.14",
+        "contentHash": "gLv34pCoVW0YGWV0IES5GTHp2pva7hWXfSiKAsdtCmK2RE31IAOsPrES9+QS2ZgwXm3WxL0QjepUyrzCtgsQOw=="
       },
       "runtime.android-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "mxz0iV8Vzq/ljCsphMngnoC4tue88i433b5meMihkVdFY8eytNBbubkZLNipCvhNgLFSq1FJ/5gn4VZ3uHOIBA=="
+        "resolved": "10.0.14",
+        "contentHash": "76bkqy+AuJgE8KESzFUQPW3CpildWVXf07IGDZze5NZNCCZV2kz1fUMkWn/tRxXs6tm7sErq2bcrjfydpErXPA=="
       },
       "runtime.android-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "cH7lMdDHZ2/oZC2vDZuCALZkpPz0iLcW0smMngk1fkT6f4yZf916xa0ajMefSFYwpbRVMZi2JK3SRU/jY+Wd6w=="
+        "resolved": "10.0.14",
+        "contentHash": "qcGm46NBd0RAClo/crhqgRFzrNYV9TUSrAz35zJxTkNMCaqN5Wwm4BwcHecQe0AoXaN7G/twkEcxXPLQEpf/zw=="
       },
       "runtime.android-x86.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "7WDZu2EC63A+/z+HCnRET/6vFjTg4UVWvX4BaTd7fdrVuTMZcpPf4SdNfsI3wbY+zSweJ+CbWkeC9yq2WXlQug=="
+        "resolved": "10.0.14",
+        "contentHash": "eLPDMeoCGDqAs3yuUAGO5bEnsuaY++gxyEHnxXaXW4tluUoPLijXQMlx2iHbjf8qN9a2buSmkQ7TNEinrb9uSA=="
       },
       "runtime.linux-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "sf18XX+0LXVZ4iS6YGOGVVFx8tUzXVLZGFcSjGvQWZNgVyQUwqJigNrULJ0mEn5mrF8FdPpvvsQoQ2oZ0GeNYw=="
+        "resolved": "10.0.14",
+        "contentHash": "C+0+w+lgBDKdsqrPQ9MD5xvRuoieJJq0jfc0LlAssg8fHj7dilNySdc0s8deRMrTUBvpIHZlCXhfz7R4XWnHOQ=="
       },
       "runtime.linux-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "YPdZrWEiyI5B9WpWJpy/aFueieCn19956AebWnvY8qmVbmrddgdIag7MYk3jxlUqFfzDbPGD4Bwxn3nPNj1PMA=="
+        "resolved": "10.0.14",
+        "contentHash": "Lb5f7Qwi0U55Pz0t5j9MgwG5E7SWOcKRJjAB+Q09RTrSQ86o0QAVJCQRdqMsCB3IIbEVV4U2UHhn0vzwfjXFPA=="
       },
       "runtime.linux-bionic-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "BwIgA8GupgMtWmjKMTjSR91Mp+msWPJxHIXoKJdPD/+xcp3s0yJNmYeVgLd/6x25ipULyiBfpqsxYeKirOuTcA=="
+        "resolved": "10.0.14",
+        "contentHash": "KitV8FoIw5R1MA1++RdLZ8kLqbLV0bPhZv86MkyvLWI/7DaD6sZ2I9+8Tb6PAaix6+Rmio7UZQTKpg1K/yextQ=="
       },
       "runtime.linux-bionic-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "gxMiB17KzKFH3jRGEeojEEJxbemEvkW9BruuLtF4DlEBgdDAvW+cUN0rIHLtj8yf5H4+vVvY6WiVb8EbTlDvWA=="
+        "resolved": "10.0.14",
+        "contentHash": "VMzjkxsSTRgoO9PbB7fKGn7ic+W6ZIHLyNwDKK+SykBLLyEJ8nj/m/sVfxb3TSCY5J9VO8iX4oWUpZ9DbNhABg=="
       },
       "runtime.linux-musl-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "dqYz32Eb3HnDMgvv+OJz9GLi0d3qqEfkuQnEa43lg3aNmlYmXXWI9SvX0Tvqigd7GRaxWyKX7uEZfxvudO16Dg=="
+        "resolved": "10.0.14",
+        "contentHash": "f5hwBxC3v57d8nTxtiwjZiT6Ji+DkXtgKCBP4o5RTxiz+l+nsYELKJnPGM0vvRI63YKohGo3k0C9l1qYW6Xc/g=="
       },
       "runtime.linux-musl-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "ZiOHYuPdEd7WFICA7U+0KWJmRETWeT/nHg6D5NagHmS3Poe7stluLQ9W/M/Svzz/m7cyFlL7e/d66hpgnG82Ww=="
+        "resolved": "10.0.14",
+        "contentHash": "bHr0QgQ+QUwqkMbj2Sg+/8zefCcRHke/GYug9OaEyjT7PUq0vBuruUkTepu5vHyTL+Hfw18rVCocEhmMm+nZzg=="
       },
       "runtime.linux-musl-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "qeTTy+SXea0z+hgXFkIiI9j9ikfVV8gxYDXKdmsl/X0S9tnk5gciAPQNxfoWfvzQYYrD7rl739JIt+I8z2pAxg=="
+        "resolved": "10.0.14",
+        "contentHash": "gb+SbdESVUpRmDxmtNU5hCQzBZ12wP7XVbTzqpSi2z0+Zms9J+shz1aL4/FTv+/3lOGcMmqQxfFBijS7rAMtYA=="
       },
       "runtime.linux-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "s1FFe7n+ff5XV8SnLcmvW6W/9GsKm/TKkdkSh5ZmCPlry87xyDvGULjv/gIxlcIY5fpUB86nXIQ6EJp4WnL71g=="
+        "resolved": "10.0.14",
+        "contentHash": "yKoFxb8LQDBuAFyxNggJ9uhVuEDoInRpgAUV4zWo+WEfvjbDvV5r15fyaRqjWDcKo9uKnmGzECYcQBTpB6hTRw=="
       },
       "runtime.maccatalyst-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "7Mvev9kKh140KpgoZcmNxzk+1+TohKxLM1dyfjQcM8zUrJDAQenG5w0AGXa52z7Hk+5pS8c75s4s0GdU1Qv0lQ=="
+        "resolved": "10.0.14",
+        "contentHash": "xxJRQVP1RAeDGe8eQRyceb0mc+T6cdFPK0XlRrH4QyCHDP2lBnmmlpNvf4bQva9CbsCIYCgFOvfb91NWbCNMEg=="
       },
       "runtime.maccatalyst-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "8qiWZ3aI5ugu4MouuEDu/vtS8stQEvG/Mf/ImoFSa/TcF11Hz54Ij1931VJnlvgpUB8BV8WFc928xqYah2wglw=="
+        "resolved": "10.0.14",
+        "contentHash": "tmklOnnC1GVqZyqjVv20JLuH8OW0vGQl/V2mnGbZKTVHBsmxFYC/Lf+gMD1fzfL6Xi6Mm7QsxumbvfLT9hvd1w=="
       },
       "runtime.osx-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "XI/fS9+og9UOwFhHnQFf10NQaM26yOlaNjTVBc0I6KG4xMfw0TR4/PUacSiKnn5agfAQ74zh7T7ZogdWmsOCSg=="
+        "resolved": "10.0.14",
+        "contentHash": "smqBl+Pt3WMZYkhCokYCS4UgexGe08afgLzleTBCG6cyKMfVhQSieJf836PT51ULZMLluXzI6SGdPamxxH0lZw=="
       },
       "runtime.osx-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "BCn5TG2WdJADWTdW6N/OluNWRb/kw63AnMU5wKV0rludx8uewlZQ9AHoEbxL6lQ2W9zNn1RX06A5ZoAZiq4Znw=="
+        "resolved": "10.0.14",
+        "contentHash": "g8byPDtP2LDNkHcnyuhrJpS16Y09jppi71t7vD2t5B3Hqcz0YrZJMLBDWN9AsJVW50yZ54iM70YSPOC6+3X0IA=="
       },
       "SkiaSharp.NativeAssets.Android": {
         "type": "Transitive",
@@ -1608,23 +1619,23 @@
       },
       "System.Diagnostics.EventLog": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "QTXEoQBzz00SFWbo7nAg1Ogd4f99lwqcO9uAJ7MYSLEUR28f6As32QktrqG2Fr9cfAfd1GjLyGYspE7Ipj7P6w=="
+        "resolved": "10.0.14",
+        "contentHash": "O/RzNwWoDzehkLlAG9hR8xooY5L41U7VUaYlcKvE3+FhHohBJqF10oLUzuv0v59VeJ62hv3uw9VoeX12zej7Sg=="
       },
       "System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "92gu68qcsZXcHhSyGxNdoVoDKxn9nV240k3jdq5b/vAzTt0QsFFE+bCmLKQ5p1XhAgelE5v+VaQEaAFH/JvZSA==",
+        "resolved": "10.0.14",
+        "contentHash": "70Jq6HRBQT0iMM/D8hVTo8nYLnDFf7xluPPn2S+brVRc8uExUUYh3lGO4nzsK2nc4nIVH3pVIphI0Jm8zZZ4jQ==",
         "dependencies": {
-          "runtime.native.System.IO.Ports": "10.0.11"
+          "runtime.native.System.IO.Ports": "10.0.14"
         }
       },
       "System.Management": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "xyNn8KGbWI88LoUwg3rB8qcpFFST6dr8Ro/qS8GBu2GOwR0v7J82kVFHTiiPtvEKS79VbMTxs/sIKQ+Cq1Zs1g==",
+        "resolved": "10.0.14",
+        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
         "dependencies": {
-          "System.CodeDom": "10.0.11"
+          "System.CodeDom": "10.0.14"
         }
       }
     },
@@ -1641,83 +1652,83 @@
       },
       "runtime.android-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "6V3MEIBgMbF/kwIkY1ibNZB/9E/PN5289IZGdVYJfgMvuQt43YLHFz4i4PBZZ8Jp0/Pii14cyUU88avLfEYLvw=="
+        "resolved": "10.0.14",
+        "contentHash": "gLv34pCoVW0YGWV0IES5GTHp2pva7hWXfSiKAsdtCmK2RE31IAOsPrES9+QS2ZgwXm3WxL0QjepUyrzCtgsQOw=="
       },
       "runtime.android-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "mxz0iV8Vzq/ljCsphMngnoC4tue88i433b5meMihkVdFY8eytNBbubkZLNipCvhNgLFSq1FJ/5gn4VZ3uHOIBA=="
+        "resolved": "10.0.14",
+        "contentHash": "76bkqy+AuJgE8KESzFUQPW3CpildWVXf07IGDZze5NZNCCZV2kz1fUMkWn/tRxXs6tm7sErq2bcrjfydpErXPA=="
       },
       "runtime.android-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "cH7lMdDHZ2/oZC2vDZuCALZkpPz0iLcW0smMngk1fkT6f4yZf916xa0ajMefSFYwpbRVMZi2JK3SRU/jY+Wd6w=="
+        "resolved": "10.0.14",
+        "contentHash": "qcGm46NBd0RAClo/crhqgRFzrNYV9TUSrAz35zJxTkNMCaqN5Wwm4BwcHecQe0AoXaN7G/twkEcxXPLQEpf/zw=="
       },
       "runtime.android-x86.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "7WDZu2EC63A+/z+HCnRET/6vFjTg4UVWvX4BaTd7fdrVuTMZcpPf4SdNfsI3wbY+zSweJ+CbWkeC9yq2WXlQug=="
+        "resolved": "10.0.14",
+        "contentHash": "eLPDMeoCGDqAs3yuUAGO5bEnsuaY++gxyEHnxXaXW4tluUoPLijXQMlx2iHbjf8qN9a2buSmkQ7TNEinrb9uSA=="
       },
       "runtime.linux-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "sf18XX+0LXVZ4iS6YGOGVVFx8tUzXVLZGFcSjGvQWZNgVyQUwqJigNrULJ0mEn5mrF8FdPpvvsQoQ2oZ0GeNYw=="
+        "resolved": "10.0.14",
+        "contentHash": "C+0+w+lgBDKdsqrPQ9MD5xvRuoieJJq0jfc0LlAssg8fHj7dilNySdc0s8deRMrTUBvpIHZlCXhfz7R4XWnHOQ=="
       },
       "runtime.linux-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "YPdZrWEiyI5B9WpWJpy/aFueieCn19956AebWnvY8qmVbmrddgdIag7MYk3jxlUqFfzDbPGD4Bwxn3nPNj1PMA=="
+        "resolved": "10.0.14",
+        "contentHash": "Lb5f7Qwi0U55Pz0t5j9MgwG5E7SWOcKRJjAB+Q09RTrSQ86o0QAVJCQRdqMsCB3IIbEVV4U2UHhn0vzwfjXFPA=="
       },
       "runtime.linux-bionic-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "BwIgA8GupgMtWmjKMTjSR91Mp+msWPJxHIXoKJdPD/+xcp3s0yJNmYeVgLd/6x25ipULyiBfpqsxYeKirOuTcA=="
+        "resolved": "10.0.14",
+        "contentHash": "KitV8FoIw5R1MA1++RdLZ8kLqbLV0bPhZv86MkyvLWI/7DaD6sZ2I9+8Tb6PAaix6+Rmio7UZQTKpg1K/yextQ=="
       },
       "runtime.linux-bionic-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "gxMiB17KzKFH3jRGEeojEEJxbemEvkW9BruuLtF4DlEBgdDAvW+cUN0rIHLtj8yf5H4+vVvY6WiVb8EbTlDvWA=="
+        "resolved": "10.0.14",
+        "contentHash": "VMzjkxsSTRgoO9PbB7fKGn7ic+W6ZIHLyNwDKK+SykBLLyEJ8nj/m/sVfxb3TSCY5J9VO8iX4oWUpZ9DbNhABg=="
       },
       "runtime.linux-musl-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "dqYz32Eb3HnDMgvv+OJz9GLi0d3qqEfkuQnEa43lg3aNmlYmXXWI9SvX0Tvqigd7GRaxWyKX7uEZfxvudO16Dg=="
+        "resolved": "10.0.14",
+        "contentHash": "f5hwBxC3v57d8nTxtiwjZiT6Ji+DkXtgKCBP4o5RTxiz+l+nsYELKJnPGM0vvRI63YKohGo3k0C9l1qYW6Xc/g=="
       },
       "runtime.linux-musl-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "ZiOHYuPdEd7WFICA7U+0KWJmRETWeT/nHg6D5NagHmS3Poe7stluLQ9W/M/Svzz/m7cyFlL7e/d66hpgnG82Ww=="
+        "resolved": "10.0.14",
+        "contentHash": "bHr0QgQ+QUwqkMbj2Sg+/8zefCcRHke/GYug9OaEyjT7PUq0vBuruUkTepu5vHyTL+Hfw18rVCocEhmMm+nZzg=="
       },
       "runtime.linux-musl-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "qeTTy+SXea0z+hgXFkIiI9j9ikfVV8gxYDXKdmsl/X0S9tnk5gciAPQNxfoWfvzQYYrD7rl739JIt+I8z2pAxg=="
+        "resolved": "10.0.14",
+        "contentHash": "gb+SbdESVUpRmDxmtNU5hCQzBZ12wP7XVbTzqpSi2z0+Zms9J+shz1aL4/FTv+/3lOGcMmqQxfFBijS7rAMtYA=="
       },
       "runtime.linux-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "s1FFe7n+ff5XV8SnLcmvW6W/9GsKm/TKkdkSh5ZmCPlry87xyDvGULjv/gIxlcIY5fpUB86nXIQ6EJp4WnL71g=="
+        "resolved": "10.0.14",
+        "contentHash": "yKoFxb8LQDBuAFyxNggJ9uhVuEDoInRpgAUV4zWo+WEfvjbDvV5r15fyaRqjWDcKo9uKnmGzECYcQBTpB6hTRw=="
       },
       "runtime.maccatalyst-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "7Mvev9kKh140KpgoZcmNxzk+1+TohKxLM1dyfjQcM8zUrJDAQenG5w0AGXa52z7Hk+5pS8c75s4s0GdU1Qv0lQ=="
+        "resolved": "10.0.14",
+        "contentHash": "xxJRQVP1RAeDGe8eQRyceb0mc+T6cdFPK0XlRrH4QyCHDP2lBnmmlpNvf4bQva9CbsCIYCgFOvfb91NWbCNMEg=="
       },
       "runtime.maccatalyst-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "8qiWZ3aI5ugu4MouuEDu/vtS8stQEvG/Mf/ImoFSa/TcF11Hz54Ij1931VJnlvgpUB8BV8WFc928xqYah2wglw=="
+        "resolved": "10.0.14",
+        "contentHash": "tmklOnnC1GVqZyqjVv20JLuH8OW0vGQl/V2mnGbZKTVHBsmxFYC/Lf+gMD1fzfL6Xi6Mm7QsxumbvfLT9hvd1w=="
       },
       "runtime.osx-arm64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "XI/fS9+og9UOwFhHnQFf10NQaM26yOlaNjTVBc0I6KG4xMfw0TR4/PUacSiKnn5agfAQ74zh7T7ZogdWmsOCSg=="
+        "resolved": "10.0.14",
+        "contentHash": "smqBl+Pt3WMZYkhCokYCS4UgexGe08afgLzleTBCG6cyKMfVhQSieJf836PT51ULZMLluXzI6SGdPamxxH0lZw=="
       },
       "runtime.osx-x64.runtime.native.System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "BCn5TG2WdJADWTdW6N/OluNWRb/kw63AnMU5wKV0rludx8uewlZQ9AHoEbxL6lQ2W9zNn1RX06A5ZoAZiq4Znw=="
+        "resolved": "10.0.14",
+        "contentHash": "g8byPDtP2LDNkHcnyuhrJpS16Y09jppi71t7vD2t5B3Hqcz0YrZJMLBDWN9AsJVW50yZ54iM70YSPOC6+3X0IA=="
       },
       "SkiaSharp.NativeAssets.Android": {
         "type": "Transitive",
@@ -1736,23 +1747,23 @@
       },
       "System.Diagnostics.EventLog": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "QTXEoQBzz00SFWbo7nAg1Ogd4f99lwqcO9uAJ7MYSLEUR28f6As32QktrqG2Fr9cfAfd1GjLyGYspE7Ipj7P6w=="
+        "resolved": "10.0.14",
+        "contentHash": "O/RzNwWoDzehkLlAG9hR8xooY5L41U7VUaYlcKvE3+FhHohBJqF10oLUzuv0v59VeJ62hv3uw9VoeX12zej7Sg=="
       },
       "System.IO.Ports": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "92gu68qcsZXcHhSyGxNdoVoDKxn9nV240k3jdq5b/vAzTt0QsFFE+bCmLKQ5p1XhAgelE5v+VaQEaAFH/JvZSA==",
+        "resolved": "10.0.14",
+        "contentHash": "70Jq6HRBQT0iMM/D8hVTo8nYLnDFf7xluPPn2S+brVRc8uExUUYh3lGO4nzsK2nc4nIVH3pVIphI0Jm8zZZ4jQ==",
         "dependencies": {
-          "runtime.native.System.IO.Ports": "10.0.11"
+          "runtime.native.System.IO.Ports": "10.0.14"
         }
       },
       "System.Management": {
         "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "xyNn8KGbWI88LoUwg3rB8qcpFFST6dr8Ro/qS8GBu2GOwR0v7J82kVFHTiiPtvEKS79VbMTxs/sIKQ+Cq1Zs1g==",
+        "resolved": "10.0.14",
+        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
         "dependencies": {
-          "System.CodeDom": "10.0.11"
+          "System.CodeDom": "10.0.14"
         }
       }
     }

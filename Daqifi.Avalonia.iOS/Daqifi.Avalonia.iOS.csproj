@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 	<PropertyGroup>
 		<TargetFramework>net10.0-ios</TargetFramework>
-		<!-- Deployment floor, NOT the SDK version. Avalonia.iOS 12.1.1 ships its
+		<!-- Deployment floor, NOT the SDK version. Avalonia.iOS 12.1.4 ships its
 		     lib under net10.0-ios26.0, which pins the SDK it is compiled against;
 		     the app itself still runs back to this minimum. -->
 		<SupportedOSPlatformVersion>13.0</SupportedOSPlatformVersion>
@@ -117,8 +117,8 @@
 		<!-- Pinned to the exact version the other heads use. A split Avalonia
 		     graph is silent at compile time and throws MissingMethodException at
 		     runtime; .github/scripts/check_avalonia_versions.py gates it. -->
-		<PackageReference Include="Avalonia.iOS" Version="12.1.1" />
-		<PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.1" />
+		<PackageReference Include="Avalonia.iOS" Version="12.1.4" />
+		<PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.4" />
 	</ItemGroup>
 
 	<ItemGroup>
