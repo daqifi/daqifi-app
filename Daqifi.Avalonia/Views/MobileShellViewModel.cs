@@ -49,6 +49,13 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
 
     public ObservableCollection<MobileDeviceItem> Devices { get; } = [];
 
+    public MobileShellViewModel()
+    {
+        // Static, so this subscription outlives the view-model unless Dispose runs — which it
+        // does, from MobileShellView's DetachedFromVisualTree handler.
+        MobileUsbConnector.AvailabilityChanged += OnUsbAvailabilityChanged;
+    }
+
     [ObservableProperty]
     private string _status = "Tap Scan to find DAQiFi devices on this WiFi network.";
 
@@ -263,7 +270,18 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     // USB streaming in this tab additionally needs _connected generalized off the
     // WiFi device type; SD offload needs only the registration. See
     // docs/mobile-usb-feasibility.md.
+    //
+    // A get-only read of a mutable static is a one-shot value to a one-way binding: Avalonia
+    // reads it when the DataContext is assigned and never again unless PropertyChanged names
+    // it. That is how #460 hid this button for three months — the Android head registered its
+    // connector from MainActivity.OnCreate, 171 ms after Avalonia 12 had already built the view
+    // tree from Application.OnCreate, so IsVisible latched false and attaching to the visual
+    // tree did not re-read it. OnUsbAvailabilityChanged below is the half of the fix that makes
+    // the registration's timing stop mattering.
     public bool IsUsbAvailable => MobileUsbConnector.IsAvailable;
+
+    private void OnUsbAvailabilityChanged(object? sender, EventArgs e) =>
+        OnPropertyChanged(nameof(IsUsbAvailable));
 
     [RelayCommand]
     private async Task ConnectUsb()
@@ -806,6 +824,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        MobileUsbConnector.AvailabilityChanged -= OnUsbAvailabilityChanged;
         if (IsScanning) { StopScan(); }
         if (IsStreaming) { StopStream(); }
         // Unconditional backstop: StopStream only runs when the shell still believes it is

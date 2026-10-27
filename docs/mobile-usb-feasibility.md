@@ -1,5 +1,13 @@
 # Phone → DAQiFi over USB (OTG): SD offload + lossless streaming
 
+> **Reachability note (2026-10-27, #460).** Everything below was true of the transport the
+> whole time, but between 2026-07-30 (the Avalonia 11.3 → 12.0.5 migration, #75) and
+> 2026-10-27 none of it was reachable from the phone: the "Connect via USB (OTG)" button did
+> not render, so there was no way to ask for a USB connection and therefore no way to reach SD
+> offload on mobile. "VALIDATED" below means the transport works, not that a user could get to
+> it — read it with that date range in mind. Fixed in #460; the button renders and fires again,
+> re-confirmed on the A16 on 2026-10-27.
+
 **Status: SD offload VALIDATED ON DEVICE (2026-07-17).** A Samsung A16 connected to
 a Nyquist over a USB-C OTG hub, asserted DTR, and listed + offloaded the SD card
 (`SD:LIST?` / `SD:GET`) through the app's `AndroidUsbStreamTransport`. Observed
