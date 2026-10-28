@@ -41,9 +41,8 @@
 	<!-- The reverse-DNS id, matching the Android head's ApplicationId. That value was
 	     chosen to be platform- and framework-neutral precisely so Apple and Play could
 	     share one namespace - see the comment on <ApplicationId> in
-	     Daqifi.Avalonia.Android.csproj. (The iOS head still carries the older
-	     com.daqifi.avalonia; reconciling it is that head's call, not this one's, and it
-	     is unpublished so it can still move.) -->
+	     Daqifi.Avalonia.Android.csproj. All three heads now carry this same id - the iOS
+	     head's older com.daqifi.avalonia was reconciled while it was still unpublished. -->
 	<key>CFBundleIdentifier</key>
 	<string>com.daqifi.app</string>
 

@@ -8,7 +8,14 @@
 		<OutputType>Exe</OutputType>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
-		<ApplicationId>com.daqifi.avalonia</ApplicationId>
+		<!-- Shares one reverse-DNS namespace with the Android head's ApplicationId,
+		     which was deliberately platform- and framework-neutral so Apple and Play
+		     could use the same id - see the comment on <ApplicationId> in
+		     Daqifi.Avalonia.Android.csproj. Moved off com.daqifi.avalonia while this
+		     head is still unpublished: that id named the UI framework, an internal
+		     detail with no business in a public one, and an App Store id is permanent
+		     from the first upload - so this was the last point it could change. -->
+		<ApplicationId>com.daqifi.app</ApplicationId>
 		<ApplicationVersion>1</ApplicationVersion>
 		<!-- CFBundleShortVersionString. From Directory.Build.props, the single place the app's
 		     version is declared, so the store version and the version a crash is tagged with in
