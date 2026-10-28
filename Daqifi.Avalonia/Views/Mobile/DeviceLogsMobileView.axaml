@@ -17,7 +17,14 @@
        project, so the DataType needs the CompileBindings beside it. The one construction site,
        StorageMobileView.OnDeviceLogs, hands this view a new DeviceLogsViewModel. The file-row
        template declares nothing: its scope is inferred from DeviceFiles, and the Import button's
-       $parent[ItemsControl].DataContext reaches back out to the view model on its own. -->
+       $parent[ItemsControl].DataContext reaches back out to the view model on its own.
+
+       The device combo's DisplayMemberBinding is a third inferred scope: it resolves against
+       ConnectedDevices' item type (IStreamingDevice), not against the DataType above. It is not
+       decoration (#462) — a ComboBox told neither DisplayMemberBinding nor ItemTemplate renders
+       each item with ToString(), and only DaqifiStreamingDevice (WiFi) overrides that. On
+       UsbStreamingDevice the dropdown read
+       "Daqifi.Desktop.Device.UsbDevice.UsbStreamingDevice". -->
   <Grid Background="{DynamicResource Surface}">
     <ScrollViewer>
       <StackPanel Classes="paneContent" Spacing="14" Margin="16,20">
@@ -33,7 +40,8 @@
             <TextBlock Text="CONNECTED DEVICE" Classes="sectionLabel" />
             <ComboBox HorizontalAlignment="Stretch"
                       ItemsSource="{Binding ConnectedDevices}"
-                      SelectedItem="{Binding SelectedDevice}" />
+                      SelectedItem="{Binding SelectedDevice}"
+                      DisplayMemberBinding="{Binding DeviceDisplayName}" />
             <StackPanel Orientation="Horizontal" Spacing="6"
                         IsVisible="{Binding SelectedDevice, Converter={x:Static ObjectConverters.IsNotNull}}">
               <Border Classes="chip">
