@@ -24,10 +24,17 @@ public partial class StorageMobileView : UserControl
         AppLogsHost.DataContext = new LoggedSessionsMobileViewModel();
     }
 
-    /// <summary>Re-hydrate the locally-logged session list. Called by the shell each time
-    /// the Storage pane is shown: the pane is cached (built once), so its ctor reload runs
-    /// only once — without this, a session logged since the last visit stays hidden until
-    /// the user manually taps Refresh.</summary>
+    /// <summary>Re-hydrate the locally-logged session list. Called by the shell each time the
+    /// Storage pane is shown, and by <see cref="OnAppLogs"/> each time the user pivots back to
+    /// this half: the pane is cached (built once), so its ctor reload runs only once — without
+    /// this, a session logged or imported since the last visit stays hidden until the user
+    /// manually taps Refresh.</summary>
+    /// <remarks>
+    /// Safe to call as often as this. <c>LoggedSessionsMobileViewModel.Reload</c> reads through
+    /// <c>GetLoggingSessionsSnapshot</c>, which only SELECTs — it does not purge empty-session
+    /// rows the way <c>LoadPersistedLoggingSessions</c> does, so a reload cannot disturb an
+    /// import that is still in flight.
+    /// </remarks>
     public void Refresh()
     {
         if (AppLogsHost.DataContext is LoggedSessionsMobileViewModel vm && vm.ReloadCommand.CanExecute(null))
@@ -38,6 +45,13 @@ public partial class StorageMobileView : UserControl
 
     private void OnAppLogs(object? sender, RoutedEventArgs e)
     {
+        // Reload on the way back in, not just when the Storage TAB is entered (#463). The two
+        // halves own separate DataContexts and nothing bridges them, so an SD import — which can
+        // only be started from the other half — leaves this list exactly as it was when the pane
+        // was last shown. It read "NO LOGGED SESSIONS" directly after an import of 4,876 samples,
+        // telling the user their import produced nothing. Refresh() already existed for this
+        // failure; it was simply never wired to the one route that reaches it.
+        Refresh();
         AppLogsHost.IsVisible = true;
         DeviceLogsHost.IsVisible = false;
     }
