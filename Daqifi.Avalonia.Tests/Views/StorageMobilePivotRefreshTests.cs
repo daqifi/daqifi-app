@@ -4,27 +4,34 @@ using Xunit;
 namespace Daqifi.Avalonia.Tests.Views;
 
 /// <summary>
-/// Issue #463: importing an SD file on the Storage pane's DEVICE LOGS half and switching back to
-/// APP LOGS showed <c>NO LOGGED SESSIONS</c> — directly after an import of 4,876 samples, on a
-/// real Galaxy A16. The session was persisted; only the view was stale, and a manual Refresh tap
-/// brought it straight back.
+/// Issue #463, guarded. Importing an SD file on the Storage pane's DEVICE LOGS half and switching
+/// back to APP LOGS showed <c>NO LOGGED SESSIONS</c> — directly after an import of 4,876 samples,
+/// on a real Galaxy A16. The session was persisted; only the view was stale, and a manual Refresh
+/// tap brought it straight back, so the app told the user their import produced nothing.
 ///
 /// <para>
 /// The two halves own separate DataContexts (<c>LoggedSessionsMobileViewModel</c> and
 /// <c>DeviceLogsViewModel</c>) and nothing bridges them. <c>StorageMobileView.Refresh()</c> exists
 /// precisely for this and was called when the Storage TAB is entered — but not by the pivot
-/// handler that returns from DEVICE LOGS, which is the only route an import can take. The method's
-/// own doc comment described the failure it was written to prevent, on the one path it did not
-/// cover.
+/// handler that returns from DEVICE LOGS, which is the only route an import can take. The fix
+/// (PR #467) added that call; these tests pin it there, and were written against the defect rather
+/// than after the fix.
+/// </para>
+///
+/// <para>
+/// #467 landed without a test, on the argument that a source-text assertion would only restate the
+/// line. The counter-argument, and why this file exists: restating the line is the point. The call
+/// is the entire fix, the defect was its absence for months, and there is no seam below the view to
+/// reach it from — so a guard that fails when the line goes away is the only coverage available,
+/// and is worth more than none. It is the same shape as this repo's dialog call-site guard.
 /// </para>
 ///
 /// <para>
 /// Read off the source rather than by constructing the view. <c>StorageMobileView</c> is a
 /// <c>UserControl</c> whose constructor builds a <c>LoggedSessionsMobileViewModel</c>, which opens
 /// the application database and fires a reload; these tests run with no Avalonia lifetime, where
-/// <c>Dispatcher.UIThread</c> and <c>LoggingManager.Instance</c> are both unusable. The guard is
-/// therefore the same shape as this repo's dialog call-site guard, and leans on the same
-/// <c>BindingFacts.CodeOnly</c> so that a commented-out call cannot satisfy it.
+/// <c>Dispatcher.UIThread</c> and <c>LoggingManager.Instance</c> are both unusable. The guard leans
+/// on <c>BindingFacts.CodeOnly</c> so that a commented-out call cannot satisfy it.
 /// </para>
 /// </summary>
 public class StorageMobilePivotRefreshTests
@@ -34,7 +41,8 @@ public class StorageMobilePivotRefreshTests
     /// <summary>
     /// The regression. Returning to APP LOGS must re-hydrate the list, or anything imported or
     /// logged while the user was on the other half stays invisible until they think to tap
-    /// Refresh — which reads as "the import did nothing".
+    /// Refresh — which reads as "the import did nothing". Verified red against the handler as it
+    /// stood before PR #467.
     /// </summary>
     [Fact]
     public void Pivoting_back_to_app_logs_reloads_the_session_list() =>
