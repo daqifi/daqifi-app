@@ -1,4 +1,4 @@
-# Contributing to daqifi-avalonia
+# Contributing to daqifi-app
 
 Thanks for taking the time to contribute!
 
@@ -11,7 +11,7 @@ than here.
 
 ## Reporting bugs & requesting features
 
-[Open an issue](https://github.com/daqifi/daqifi-avalonia/issues) with as much detail as
+[Open an issue](https://github.com/daqifi/daqifi-app/issues) with as much detail as
 you can: repro steps, expected vs. actual behaviour, which platform you saw it on, the
 app version (Help → About, or the title bar), and your device model and firmware version.
 

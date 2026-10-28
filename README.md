@@ -1,4 +1,4 @@
-# daqifi-avalonia
+# daqifi-app
 
 Cross-platform DAQiFi application built on [Avalonia UI](https://avaloniaui.net/),
 targeting **Windows, Linux, macOS, Android, and iOS** from one codebase.
@@ -14,7 +14,7 @@ watch signals live, and record them to CSV.
 ## Status
 
 **Beta.** The current release is
-[v3.3.0-beta.1](https://github.com/daqifi/daqifi-avalonia/releases).
+[v3.3.0-beta.1](https://github.com/daqifi/daqifi-app/releases).
 
 Maturity differs sharply by platform, so it is worth being specific:
 
