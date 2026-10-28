@@ -84,9 +84,13 @@ SUPPORTED DEVICES
 Nyquist 1 (16 analog inputs, 16 digital I/O). Nyquist 2 and 3 share the same
 protocol family.
 
+OPEN SOURCE
+This app is open source under the MIT License. Read or build the code yourself
+at github.com/daqifi/daqifi-app.
+
 Questions or problems: daqifi.com/contact
 ```
-`1572 / 4000`
+`1697 / 4000`
 
 ---
 
@@ -166,10 +170,14 @@ Sentry crash reporting is now active, and the Data safety form declares Crash lo
 Diagnostics. Claiming "no analytics" beside that declaration reads as a contradiction. The
 replacement text distinguishes tracking (none) from crash diagnostics (yes, anonymous).
 
-**3. The OPEN SOURCE paragraph — removed.**
-It advertised GPL-3.0 with source at `github.com/daqifi/daqifi-android`. That is the wrong repo
-for this app, and `daqifi/daqifi-avalonia` is currently **private with no LICENSE file**. Restore
-the paragraph only once the repo is public and licensed, pointing at the right URL.
+**3. The OPEN SOURCE paragraph — removed, then restored 2026-10-27 with corrections.**
+The inherited text advertised GPL-3.0 with source at `github.com/daqifi/daqifi-android` — the
+wrong licence and the wrong repo. It was removed while this repo was private and unlicensed, on
+the stated condition that it return "once the repo is public and licensed, pointing at the right
+URL". All three now hold: the repo is **public**, carries an **MIT** `LICENSE`, and was renamed
+to `daqifi/daqifi-app` to match `com.daqifi.app`, the id both stores share. The restored
+paragraph says MIT and points at the new URL. **Do not reintroduce the GPL-3.0 claim** — this
+repo has never been under it, and the listing must agree with the `LICENSE` file in the tree.
 
 Two further claims were softened rather than removed, because they are plausible but were not
 verified on this build:
