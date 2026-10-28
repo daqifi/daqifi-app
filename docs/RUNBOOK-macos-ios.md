@@ -470,7 +470,7 @@ Mirror `Daqifi.Avalonia.Android` exactly — it is the template:
     <OutputType>Exe</OutputType>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <ApplicationId>com.daqifi.avalonia</ApplicationId>
+    <ApplicationId>com.daqifi.app</ApplicationId>
     <ApplicationVersion>1</ApplicationVersion>
     <ApplicationDisplayVersion>3.3.0</ApplicationDisplayVersion>
   </PropertyGroup>
