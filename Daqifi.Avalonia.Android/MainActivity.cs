@@ -32,25 +32,33 @@ public class MainActivity : AvaloniaMainActivity
 {
     protected override void OnCreate(Bundle? savedInstanceState)
     {
-        // Register the platform discovery scope BEFORE Avalonia loads any
-        // view, so the mobile shell's WiFi scan holds the MulticastLock —
-        // without it Android power-save-filters the broadcast replies and
+        // Register the platform discovery scope so the mobile shell's WiFi scan holds the
+        // MulticastLock — without it Android power-save-filters the broadcast replies and
         // discovery silently finds nothing.
         //
+        // This is NOT ahead of Avalonia's view load, and nothing in this method can be. Measured
+        // on a Galaxy A16 (#460): under Avalonia 12 the framework builds the entire view tree
+        // from MainApplication.OnCreate, and MobileShellView's DataContext was assigned 161 ms
+        // before this method was even entered. An earlier version of this comment claimed the
+        // opposite and was the stated reason the USB connector lived here; that registration has
+        // moved to MainApplication, the only place in this process that genuinely does run
+        // first.
+        //
+        // The discovery scope stays because nothing reads it during view construction: its one
+        // consumer calls NetworkDiscoveryScope.Enter() at scan time, when the user taps Scan —
+        // long after this line. Keep that true. A new consumer that reads it eagerly, through a
+        // binding or a field initializer, reintroduces #460 in a different pane.
+        //
         // Passing `this` does NOT retain the activity: each constructor promotes its argument to
-        // ApplicationContext and keeps only that plus a system service (WifiManager / UsbManager),
-        // so leaving these statics set across an activity destroy+recreate cannot pin a dead
-        // MainActivity. That also means MainApplication — itself a Context, and constructed first —
-        // would work just as well as a home for them; they sit here only because the ordering
-        // requirement above is stated against the activity's own view load.
+        // ApplicationContext and keeps only that plus a system service (WifiManager), so leaving
+        // this static set across an activity destroy+recreate cannot pin a dead MainActivity.
         NetworkDiscoveryScope.Current = new MulticastDiscoveryScope(this);
-        // Register the USB (OTG) host connector so the mobile shell can offer a
-        // "Connect via USB" affordance (experimental — see Usb/AndroidUsbStreamTransport).
-        MobileUsbConnector.Current = new Usb.AndroidUsbConnector(this);
         // Run a foreground service whenever a device is connected, so an acquisition is not
         // torn down when the app leaves the screen. Attached here rather than in
-        // MainApplication only for consistency with the registrations above; the coordinator
-        // promotes to ApplicationContext and is idempotent across activity recreation.
+        // MainApplication only for consistency with the registration above; the coordinator
+        // promotes to ApplicationContext and is idempotent across activity recreation. Like the
+        // discovery scope it is read lazily — off ConnectionManager's change notification — so
+        // the ordering above does not reach it.
         ForegroundServiceCoordinator.Attach(this);
         base.OnCreate(savedInstanceState);
 

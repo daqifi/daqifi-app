@@ -24,17 +24,11 @@ public partial class StorageMobileView : UserControl
         AppLogsHost.DataContext = new LoggedSessionsMobileViewModel();
     }
 
-    /// <summary>Re-hydrate the locally-logged session list. Called by the shell each time the
-    /// Storage pane is shown, and by <see cref="OnAppLogs"/> each time the user pivots back to
-    /// this half: the pane is cached (built once), so its ctor reload runs only once — without
-    /// this, a session logged or imported since the last visit stays hidden until the user
-    /// manually taps Refresh.</summary>
-    /// <remarks>
-    /// Safe to call as often as this. <c>LoggedSessionsMobileViewModel.Reload</c> reads through
-    /// <c>GetLoggingSessionsSnapshot</c>, which only SELECTs — it does not purge empty-session
-    /// rows the way <c>LoadPersistedLoggingSessions</c> does, so a reload cannot disturb an
-    /// import that is still in flight.
-    /// </remarks>
+    /// <summary>Re-hydrate the locally-logged session list. Called each time the APP LOGS half
+    /// becomes visible: by the shell when the Storage pane is shown, and by <see cref="OnAppLogs"/>
+    /// when the user pivots back from DEVICE LOGS. The pane is cached (built once), so its ctor
+    /// reload runs only once — without this, a session logged since the last visit stays hidden
+    /// until the user manually taps Refresh.</summary>
     public void Refresh()
     {
         if (AppLogsHost.DataContext is LoggedSessionsMobileViewModel vm && vm.ReloadCommand.CanExecute(null))
@@ -45,15 +39,18 @@ public partial class StorageMobileView : UserControl
 
     private void OnAppLogs(object? sender, RoutedEventArgs e)
     {
-        // Reload on the way back in, not just when the Storage TAB is entered (#463). The two
-        // halves own separate DataContexts and nothing bridges them, so an SD import — which can
-        // only be started from the other half — leaves this list exactly as it was when the pane
-        // was last shown. It read "NO LOGGED SESSIONS" directly after an import of 4,876 samples,
-        // telling the user their import produced nothing. Refresh() already existed for this
-        // failure; it was simply never wired to the one route that reaches it.
-        Refresh();
         AppLogsHost.IsVisible = true;
         DeviceLogsHost.IsVisible = false;
+
+        // The pivot is the one route into this half that the shell's Refresh does not cover, and
+        // it is the route an SD import takes: importing happens on the DEVICE LOGS half, over its
+        // own DataContext, and nothing bridges the two (#463). Without this the user comes back to
+        // "NO LOGGED SESSIONS" and is told the import produced nothing, when it produced a session
+        // that is already persisted. Reload is safe to re-run — it reads GetLoggingSessionsSnapshot,
+        // which only SELECTs and purges nothing — and it is also what drops a viewer or confirm
+        // overlay left open before the pivot, which LoggedSessionsMobileViewModel.Reload's own
+        // comment already assumes happens on this path.
+        Refresh();
     }
 
     private void OnDeviceLogs(object? sender, RoutedEventArgs e)
