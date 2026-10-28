@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:i="https://github.com/projektanker/icons.avalonia"
              xmlns:vm="using:Daqifi.Desktop.ViewModels"
+             xmlns:device="using:Daqifi.Desktop.Device"
              x:Class="Daqifi.Avalonia.Views.Mobile.DeviceLogsMobileView"
              x:DataType="vm:DeviceLogsViewModel"
              x:CompileBindings="True">
@@ -31,9 +32,16 @@
                 CornerRadius="8" Padding="14,12">
           <StackPanel Spacing="8">
             <TextBlock Text="CONNECTED DEVICE" Classes="sectionLabel" />
+            <!-- DisplayMemberBinding is not optional here (#462). Without it a ComboBox
+                 renders each item with ToString(), and only the WiFi device overrides that;
+                 a USB device fell through to object.ToString() and this dropdown read
+                 "Daqifi.Desktop.Device.UsbDevice.UsbStreamingDevice". Binding the name the
+                 base class already computes keeps every transport right, including the next
+                 one, instead of relying on each subclass remembering to override ToString(). -->
             <ComboBox HorizontalAlignment="Stretch"
                       ItemsSource="{Binding ConnectedDevices}"
-                      SelectedItem="{Binding SelectedDevice}" />
+                      SelectedItem="{Binding SelectedDevice}"
+                      DisplayMemberBinding="{Binding DeviceDisplayName, x:DataType=device:IStreamingDevice}" />
             <StackPanel Orientation="Horizontal" Spacing="6"
                         IsVisible="{Binding SelectedDevice, Converter={x:Static ObjectConverters.IsNotNull}}">
               <Border Classes="chip">
