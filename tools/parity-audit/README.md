@@ -511,6 +511,25 @@ captures once and verifies against the one for the current host, failing on a ch
 screen, a missing one, and one the baseline does not list (`shasum -c` only checks the
 names it was given, so the extra-file direction is checked separately).
 
+The five **portrait** mobile screens were re-recorded 2026-10-29 (macOS 26.5 / 25F71, Apple
+silicon, .NET SDK 10.0.302) for #361, which takes the theme's 11px-a-side button padding off
+the portrait bottom-nav buttons and carries their labels as `TextBlock`s that wrap and trim.
+Five hashes moved — `mobile-portrait-1` through `-5`, which are every screen in this manifest
+that renders the bottom bar — and the other thirty-four are byte-for-byte unchanged, the four
+`mobile-landscape` screens among them. That split is the measurement, not a claim: landscape
+draws the rail instead of the bar and the change does not reach it. Within the five, the diff
+against the pre-change capture is 884 pixels on `mobile-portrait-1-stream`, all inside
+`y 754..767` — one text line of the bar, on a 384x800 screen.
+
+Nothing is newly legible here. 384 logical px gives each of four cells 96, and the issue was
+filed from 360, where they get 90; at 384 all four labels already fit and the recorded shift is
+the sub-pixel recentring that follows from the content box going 74px wide to 92. The screen
+that reproduces #361 is not in this manifest and cannot be — the harness renders one portrait
+size, the Galaxy A16's — so the fix itself is evidenced on the phone, in the pull request, and
+what these five hashes gate is that it moved the bar and nothing else. Five `--determinism`
+runs agreed 39/39 after the change, and the pre-change capture reproduced the then-committed
+manifest on all 39, so the bytes replaced here are the ones that were shipping.
+
 Seven screens were re-recorded 2026-09-05 (macOS 26.5, Apple silicon, .NET SDK 10.0.302) for
 the empty-state consolidation: the five desktop panes that hand-rolled the badge/title/sentence
 pattern with literal attributes — Devices, Channels, Logged Data, Profiles and Device Logs — now
