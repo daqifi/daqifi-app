@@ -1036,7 +1036,7 @@ public class FirmwareUpdateCoordinator
 
         var existingNotification = _host.Notifications.FirstOrDefault(n => n.DeviceSerialNo != null
                                                                         && n.IsFirmwareUpdate
-                                                                        && n.DeviceSerialNo == device.DeviceSerialNo);
+                                                                        && DeviceSerials.SameDevice(n.DeviceSerialNo, device.DeviceSerialNo));
 
         if (existingNotification == null)
         {
@@ -1081,7 +1081,7 @@ public class FirmwareUpdateCoordinator
         var serial = serialStreamingDevice.DeviceSerialNo;
 
         if (_host.Notifications.Any(notification =>
-                notification.Message == message && notification.DeviceSerialNo == serial))
+                notification.Message == message && DeviceSerials.SameDevice(notification.DeviceSerialNo, serial)))
         {
             return;
         }
@@ -1107,7 +1107,9 @@ public class FirmwareUpdateCoordinator
         }
 
         var notificationsToRemove = _host.Notifications
-            .FirstOrDefault(x => x.DeviceSerialNo != null && x.DeviceSerialNo == deviceToRemove.DeviceSerialNo && x.IsFirmwareUpdate);
+            .FirstOrDefault(x => x.DeviceSerialNo != null
+                                 && DeviceSerials.SameDevice(x.DeviceSerialNo, deviceToRemove.DeviceSerialNo)
+                                 && x.IsFirmwareUpdate);
 
         if (notificationsToRemove != null)
         {

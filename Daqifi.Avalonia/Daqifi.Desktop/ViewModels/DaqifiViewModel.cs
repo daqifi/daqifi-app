@@ -1784,7 +1784,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             }
 
             var deviceIsDisconnected = !ConnectionManager.Instance.ConnectedDevices
-                .Any(device => device.DeviceSerialNo == notification.DeviceSerialNo);
+                .Any(device => DeviceSerials.SameDevice(device.DeviceSerialNo, notification.DeviceSerialNo));
 
             if (deviceIsDisconnected)
             {
@@ -2638,7 +2638,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
         var existingNotification = NotificationList.FirstOrDefault(n => n.IsWifiFirmwareUpdate
                                                                         && !string.IsNullOrWhiteSpace(n.DeviceSerialNo)
-                                                                        && string.Equals(n.DeviceSerialNo, device.DeviceSerialNo, StringComparison.OrdinalIgnoreCase));
+                                                                        && DeviceSerials.SameDevice(n.DeviceSerialNo, device.DeviceSerialNo));
 
         // Notifications.Message is init-only, so to refresh stale text (e.g. the reported WiFi
         // version changed on re-probe) replace the existing entry rather than mutating it.
@@ -2672,7 +2672,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         var notificationToRemove = NotificationList
             .FirstOrDefault(x => x.IsWifiFirmwareUpdate
                                  && !string.IsNullOrWhiteSpace(x.DeviceSerialNo)
-                                 && string.Equals(x.DeviceSerialNo, deviceToRemove.DeviceSerialNo, StringComparison.OrdinalIgnoreCase));
+                                 && DeviceSerials.SameDevice(x.DeviceSerialNo, deviceToRemove.DeviceSerialNo));
 
         if (notificationToRemove != null)
         {
