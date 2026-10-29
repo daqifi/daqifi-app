@@ -200,8 +200,9 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         IsScanning = true;
         AppLogger.Instance.AddBreadcrumb("ui", "Tapped Scan — discovery started");
 
-        _cts = new CancellationTokenSource();
-        var token = _cts.Token;
+        var cts = new CancellationTokenSource();
+        _cts = cts;
+        var token = cts.Token;
         _scanTask = Task.Run(async () =>
         {
             // Hold the platform discovery scope for the whole sweep — on
@@ -220,17 +221,41 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             catch (OperationCanceledException) { /* stop requested */ }
             catch (Exception ex)
             {
-                Dispatcher.UIThread.Post(() => Status = $"Scan failed: {ex.Message}");
+                Dispatcher.UIThread.Post(() =>
+                {
+                    Status = $"Scan failed: {ex.Message}";
+                    // The sweep is over and the scope already released by the time this runs,
+                    // so the button must stop offering to stop it — otherwise the next tap
+                    // lands on the stop branch above and the user has to tap Scan twice to
+                    // scan again (#359). Only if THIS sweep is still the current one: the
+                    // user may have tapped Scan again in the meantime, and ending that
+                    // newer sweep would release a lock it is still relying on.
+                    if (ReferenceEquals(_cts, cts)) { EndScanSweep(); }
+                });
             }
         }, token);
     }
 
-    private void StopScan()
+    /// <summary>
+    /// End the discovery sweep: cancel it, which disposes the platform discovery scope the
+    /// sweep holds (on Android, releases the <c>WifiManager.MulticastLock</c>), and clear the
+    /// scanning state so the button reads "Scan for devices" again.
+    /// </summary>
+    /// <remarks>
+    /// Leaves <see cref="Status"/> alone — every caller says its own thing about why the sweep
+    /// ended, and a connect in particular has a far more useful line to show.
+    /// </remarks>
+    private void EndScanSweep()
     {
         IsScanning = false;
         _cts?.Cancel();
         _cts?.Dispose();
         _cts = null;
+    }
+
+    private void StopScan()
+    {
+        EndScanSweep();
         Status = Devices.Count == 0
             ? "Scan stopped — no devices found."
             : $"Scan stopped — {Devices.Count} device(s).";
@@ -351,6 +376,25 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     /// </summary>
     private void AdoptConnectedDevice(AbstractStreamingDevice device)
     {
+        // A connect that got this far succeeded, and there is nothing left to discover: the
+        // user has chosen a device. The sweep used to keep running for the rest of the session
+        // (#359), and on Android it holds a WifiManager MulticastLock for as long as it does —
+        // the lock that keeps WiFi power-save broadcast filtering OFF, on a battery-powered
+        // phone, next to the FULL_HIGH_PERF WifiLock the streaming service takes. It also kept
+        // broadcasting for a device the user had already picked, and left a button offering to
+        // stop something nothing on screen said was running.
+        //
+        // Every connect route lands here — tapping a discovered device, Connect by IP, and USB
+        // (OTG) — so this one place covers all three. A FAILED connect never reaches here, which
+        // is deliberate: a user whose connect was refused still has a running sweep and a device
+        // list to pick from again. Re-scanning stays one tap away either way.
+        if (IsScanning)
+        {
+            AppLogger.Instance.AddBreadcrumb(
+                "discovery", "Discovery stopped — a device is connected");
+            EndScanSweep();
+        }
+
         var previous = _connected;
         if (previous != null && !ReferenceEquals(previous, device))
         {
