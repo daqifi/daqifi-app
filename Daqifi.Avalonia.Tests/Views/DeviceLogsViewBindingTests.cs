@@ -129,8 +129,41 @@ public class DeviceLogsViewBindingTests
     /// <summary>
     /// The structural half of the same fact: a template's scope comes from where it sits. Every
     /// <c>DataTemplate</c> in this view is inside the list whose items it renders; lifting one into
-    /// <c>UserControl.Resources</c> would leave it resolving against whatever scope it inherited
-    /// instead, which is a change in meaning that reads as a tidy-up.
+    /// <c>UserControl.Resources</c> is a <b>build error</b>, not a silent re-scope.
+    ///
+    /// <para>
+    /// <b>The rule</b>, because the earlier wording here had it wrong (issue #336): under
+    /// <c>x:CompileBindings="True"</c> a <c>DataTemplate</c>'s bindings resolve against its own
+    /// <c>x:DataType</c> where it has one, which <b>overrides</b> everything else; else against a
+    /// scope <b>inferred</b> from the <c>ItemsSource</c> beside it; else against
+    /// <c>XamlX.TypeSystem.XamlPseudoType</c>, on which no member resolves at all. It never falls
+    /// back to the ancestor or view-model scope. Measured on this view, Avalonia 12.1.4, one change
+    /// at a time: the NAME cell template copied into <c>UserControl.Resources</c> with its member
+    /// name <b>unchanged</b> is <c>AVLN2000: Unable to resolve property or method of name 'FileName'
+    /// on type 'XamlX.TypeSystem.XamlPseudoType'</c>; and the same lifted template binding
+    /// <c>BusyMessage</c> — a <c>DeviceLogsViewModel</c> member, the very type this view's root
+    /// <c>x:DataType</c> names — fails identically, which is what rules the inherited scope out.
+    /// </para>
+    ///
+    /// <para>
+    /// So this guard is not what stops the lift; the compiler is. It exists so the failure arrives
+    /// <b>explained rather than debugged</b>. <c>AVLN2000</c> against a pseudo-type reads like a
+    /// broken toolchain rather than like a template in the wrong place, and the obvious way to make
+    /// it go away is to write an <c>x:DataType</c> on the lifted template — which clears the error
+    /// and leaves the template out of its list. This test fails first and names the move instead.
+    /// </para>
+    ///
+    /// <para>
+    /// Which is also why not to reach for <c>x:DataType</c> by reflex. An explicit declaration is an
+    /// override, so a plausible-but-wrong one is <b>worse than none</b>: measured here, this view's
+    /// NAME cell binding swapped from <c>{Binding FileName}</c> to the view model's
+    /// <c>{Binding BusyMessage}</c> is <c>AVLN2000 … on type 'Daqifi.Desktop.Models.SdCardFile'</c>
+    /// while undeclared, and builds with <c>0 Error(s)</c> the moment
+    /// <c>x:DataType="vm:DeviceLogsViewModel"</c> is added to that template — green markup rendering
+    /// the view model's busy text in every row. Declare a scope where the build asks for one, or
+    /// where a template needs to narrow a wider item type, and not otherwise. See
+    /// <see cref="BindingFacts.AssertTemplateScopedTo"/> for the full shape-by-shape rule.
+    /// </para>
     /// </summary>
     [Fact]
     public void Every_data_template_sits_inside_the_list_whose_items_it_renders()
@@ -141,8 +174,11 @@ public class DeviceLogsViewBindingTests
         Assert.NotEmpty(templates);
         Assert.All(templates, template => Assert.True(
             template.Ancestors().Any(a => a.Attribute("ItemsSource")?.Value.StartsWith("{Binding", StringComparison.Ordinal) == true),
-            $"{View}: a DataTemplate sits outside any list with a bound ItemsSource, so its bindings "
-            + "resolve against an inherited scope rather than against the item."));
+            $"{View}: a DataTemplate sits outside any list with a bound ItemsSource, so there is no "
+            + "item scope for the compiler to infer and its bindings resolve against XamlPseudoType "
+            + "— a hard AVLN2000 even with correct member names, not an inherited scope. Move the "
+            + "template back inside its list; adding x:DataType would clear the build error and "
+            + "leave it in the wrong place."));
     }
 
     /// <summary>
