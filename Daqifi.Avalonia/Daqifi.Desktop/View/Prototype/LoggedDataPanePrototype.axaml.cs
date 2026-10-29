@@ -67,9 +67,10 @@ public partial class LoggedDataPanePrototype : UserControl
         }
 
         // Treat blank input as "reset to default" so the DB and the Name getter
-        // (which renders whitespace as "Session {ID}") stay consistent on reload.
-        var trimmed = textBox.Text?.Trim();
-        var newName = string.IsNullOrEmpty(trimmed) ? null : trimmed;
+        // (which renders whitespace as "Session {ID}") stay consistent on reload. Empty, not null:
+        // Sessions.Name is NOT NULL, so a null read the same in memory but could never be saved
+        // (#427), which left the pane showing the default and the next launch showing the old name.
+        var newName = textBox.Text?.Trim() ?? string.Empty;
         session.Name = newName;
 
         _renameSessionCts?.Cancel();
