@@ -43,6 +43,18 @@
       <Setter Property="FontSize"         Value="{DynamicResource FontSizeBody}"/>
     </Style>
 
+    <!-- ACTIVATE / DEACTIVATE PROFILE puts a Panel in its Content and swaps which of
+         two TextBlocks is visible, so its automation peer has no string to fall back on
+         and announces "Avalonia.Controls.Panel" (#356). The name has to follow whichever
+         label is showing, which is what the class pair does — the same shape
+         LiveGraphPane.axaml uses for its LOGGING ON/OFF readout. -->
+    <Style Selector="Button.profileToggle">
+      <Setter Property="(AutomationProperties.Name)" Value="ACTIVATE PROFILE"/>
+    </Style>
+    <Style Selector="Button.profileToggle.profileActive">
+      <Setter Property="(AutomationProperties.Name)" Value="DEACTIVATE PROFILE"/>
+    </Style>
+
   </UserControl.Styles>
 
   <!-- Root Grid so the confirm overlay can layer over the scrolling content. -->
@@ -289,6 +301,7 @@
                           <ItemsControl.ItemTemplate>
                             <DataTemplate>
                               <CheckBox IsChecked="{Binding IsChannelActive}"
+                                        AutomationProperties.Name="{Binding Name}"
                                         MinHeight="44"
                                         Margin="0,0,16,4">
                                 <TextBlock Text="{Binding Name}"
@@ -309,6 +322,8 @@
                    the two IsVisible bindings below. Primary → AccentPillButton. -->
               <Button Theme="{StaticResource AccentPillButton}"
                       MinHeight="44"
+                      Classes="profileToggle"
+                      Classes.profileActive="{Binding SelectedProfile.IsProfileActive}"
                       AutomationProperties.AutomationId="ActivateProfileButton"
                       Command="{Binding ActivateProfileCommand}"
                       CommandParameter="{Binding SelectedProfile}">
@@ -374,6 +389,7 @@
                       <StackPanel Spacing="10">
                         <CheckBox MinHeight="44"
                                   AutomationProperties.AutomationId="NewProfileDeviceCheckbox"
+                                  AutomationProperties.Name="{Binding Name}"
                                   IsChecked="{Binding IsSelected}">
                           <StackPanel Orientation="Horizontal" Spacing="10">
                             <TextBlock Text="{Binding Name}"
@@ -400,6 +416,7 @@
                             <ItemsControl.ItemTemplate>
                               <DataTemplate>
                                 <CheckBox IsChecked="{Binding IsSelected}"
+                                          AutomationProperties.Name="{Binding Name}"
                                           MinHeight="44"
                                           Margin="0,0,16,4">
                                   <TextBlock Text="{Binding Name}"

@@ -101,7 +101,8 @@
       <StackPanel x:Name="TopCommandBar" x:DataType="mobile:MobileNotificationsViewModel"
                   Orientation="Horizontal"
                   HorizontalAlignment="Right" Margin="0,4">
-        <Button Classes="topCommand" Click="OnNotifications" ToolTip.Tip="Notifications">
+        <Button Classes="topCommand" Click="OnNotifications" ToolTip.Tip="Notifications"
+                AutomationProperties.Name="Notifications">
           <Panel>
             <StackPanel Orientation="Horizontal" Spacing="4">
               <i:Icon Value="mdi-bell-outline" FontSize="18" VerticalAlignment="Center" />
@@ -117,13 +118,13 @@
             </Border>
           </Panel>
         </Button>
-        <Button Classes="topCommand" Click="OnSettings">
+        <Button Classes="topCommand" Click="OnSettings" AutomationProperties.Name="Settings">
           <StackPanel Orientation="Horizontal" Spacing="4">
             <i:Icon Value="mdi-cog" FontSize="18" VerticalAlignment="Center" />
             <TextBlock Text="settings" VerticalAlignment="Center" />
           </StackPanel>
         </Button>
-        <Button Classes="topCommand" Click="OnHelp">
+        <Button Classes="topCommand" Click="OnHelp" AutomationProperties.Name="Help">
           <StackPanel Orientation="Horizontal" Spacing="4">
             <i:Icon Value="mdi-help-circle-outline" FontSize="18" VerticalAlignment="Center" />
             <TextBlock Text="help" VerticalAlignment="Center" />
@@ -137,25 +138,25 @@
             Background="{DynamicResource Surface}"
             BorderBrush="{DynamicResource BorderDim}" BorderThickness="0,0,1,0">
       <StackPanel>
-        <Button x:Name="RailStream" Classes="rail" Click="OnStream">
+        <Button x:Name="RailStream" Classes="rail" Click="OnStream" AutomationProperties.Name="Live Graph">
           <StackPanel>
             <i:Icon Value="mdi-chart-timeline-variant" FontSize="24" HorizontalAlignment="Center" />
             <TextBlock Classes="railLabel" Text="Live Graph" />
           </StackPanel>
         </Button>
-        <Button x:Name="RailStorage" Classes="rail" Click="OnStorage">
+        <Button x:Name="RailStorage" Classes="rail" Click="OnStorage" AutomationProperties.Name="Logged Data">
           <StackPanel>
             <i:Icon Value="mdi-database-outline" FontSize="24" HorizontalAlignment="Center" />
             <TextBlock Classes="railLabel" Text="Logged Data" />
           </StackPanel>
         </Button>
-        <Button x:Name="RailChannels" Classes="rail" Click="OnChannels">
+        <Button x:Name="RailChannels" Classes="rail" Click="OnChannels" AutomationProperties.Name="Channels">
           <StackPanel>
             <i:Icon Value="mdi-hub-outline" FontSize="24" HorizontalAlignment="Center" />
             <TextBlock Classes="railLabel" Text="Channels" />
           </StackPanel>
         </Button>
-        <Button x:Name="RailProfiles" Classes="rail" Click="OnProfiles">
+        <Button x:Name="RailProfiles" Classes="rail" Click="OnProfiles" AutomationProperties.Name="Profiles">
           <StackPanel>
             <i:Icon Value="mdi-tune-variant" FontSize="24" HorizontalAlignment="Center" />
             <TextBlock Classes="railLabel" Text="Profiles" />
