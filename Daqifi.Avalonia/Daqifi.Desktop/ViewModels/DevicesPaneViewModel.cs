@@ -249,7 +249,7 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         // otherwise close the drawer so it doesn't point at a removed device.
         if (IsSettingsOpen && openSerial != null)
         {
-            var match = Devices.FirstOrDefault(d => d.Device.DeviceSerialNo == openSerial);
+            var match = Devices.FirstOrDefault(d => DeviceSerials.SameDevice(d.Device.DeviceSerialNo, openSerial));
             if (match != null)
             {
                 SelectedTile = match;

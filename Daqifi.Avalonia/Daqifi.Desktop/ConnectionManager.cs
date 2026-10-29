@@ -1102,7 +1102,7 @@ public partial class ConnectionManager : ObservableObject
         }
 
         return !string.IsNullOrWhiteSpace(updating.DeviceSerialNo)
-            && string.Equals(updating.DeviceSerialNo, device.DeviceSerialNo, StringComparison.OrdinalIgnoreCase);
+            && DeviceSerials.SameDevice(updating.DeviceSerialNo, device.DeviceSerialNo);
     }
 
     /// <summary>

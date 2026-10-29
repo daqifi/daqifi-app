@@ -332,7 +332,7 @@ public partial class ProfilesPaneViewModel : ObservableObject
         {
             var exact = connected.FirstOrDefault(cd =>
                 !string.IsNullOrEmpty(pd.DeviceSerialNo) &&
-                string.Equals(cd.DeviceSerialNo, pd.DeviceSerialNo, StringComparison.OrdinalIgnoreCase) &&
+                DeviceSerials.SameDevice(cd.DeviceSerialNo, pd.DeviceSerialNo) &&
                 !claimed.Contains(cd));
             if (exact != null)
             {
