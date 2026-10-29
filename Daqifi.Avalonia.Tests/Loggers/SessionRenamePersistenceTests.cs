@@ -1,6 +1,5 @@
 using Daqifi.Desktop.Logger;
 using Microsoft.Data.Sqlite;
-using Microsoft.EntityFrameworkCore;
 using Xunit;
 
 namespace Daqifi.Avalonia.Tests.Loggers;
@@ -16,10 +15,11 @@ namespace Daqifi.Avalonia.Tests.Loggers;
 /// reachable test. Moving it to <see cref="LoggingManager"/> — which already owns the sessions this
 /// pane lists and the context factory they live in — is what makes these rows possible.</para>
 ///
-/// <para>These tests are characterization, not regression: the behaviour is unchanged by the move,
-/// so none of them can fail against <c>origin/main</c> — they name a member that does not exist
-/// there, which is "does not compile", not "0 failed". What shows they bite is the mutation run
-/// recorded on the PR, where each row is killed by exactly the mutation its name claims.</para>
+/// <para>Most of these rows are characterization: the behaviour was unchanged by that move, and
+/// what shows they bite is the mutation run recorded on its PR, where each is killed by exactly
+/// the mutation its name claims. The blank-name rows are the exception — they are regression
+/// tests for issue #427 and go red without the <see cref="string.Empty"/> normalization in
+/// <see cref="LoggingManager.PersistSessionNameAsync"/>.</para>
 /// </summary>
 public sealed class SessionRenamePersistenceTests : IDisposable
 {
@@ -56,29 +56,54 @@ public sealed class SessionRenamePersistenceTests : IDisposable
     }
 
     /// <summary>
-    /// The blank case, pinned AS IT BEHAVES TODAY, which is broken — issue #427.
+    /// The blank case — the fix for issue #427.
     ///
-    /// <para>The pane sends <c>null</c> when the user empties the box, meaning "go back to the
-    /// default label". <c>Sessions.Name</c> is <c>nullable: false</c>, and EF writes the backing
-    /// field rather than <c>LoggingSession.Name</c>'s substituting getter, so the save throws
-    /// <c>NOT NULL constraint failed: Sessions.Name</c> and the row keeps its old name. The
-    /// in-memory object has already changed, so the pane shows the default until the next launch
-    /// brings the old name back. The code-behind logged the throw and showed the user nothing,
-    /// which is why this has gone unnoticed.</para>
-    ///
-    /// <para>Not fixed here on purpose: this PR moves the write without changing it, and the fix
-    /// is a schema or storage decision (nullable column vs storing <c>""</c>) that deserves its own
-    /// change — #427. When it lands, this row is the one that has to be rewritten.</para>
+    /// <para>The pane sends an empty name when the user empties the box, meaning "go back to the
+    /// default label". That is stored as <c>""</c>, which <c>LoggingSession.Name</c>'s getter
+    /// already renders as <c>"Session {ID}"</c> for any session that was never named, so the row
+    /// reads back as the default on the next launch. A <c>null</c> arriving from any caller means
+    /// the same thing and is normalized to <c>""</c> rather than written: <c>Sessions.Name</c> is
+    /// <c>nullable: false</c>, and EF writes the backing field rather than that substituting
+    /// getter, so a null used to throw <c>NOT NULL constraint failed: Sessions.Name</c> and leave
+    /// the row holding its old name while the pane already showed the default. The code-behind
+    /// logged the throw and showed the user nothing, which is why it went unnoticed.</para>
     /// </summary>
-    [Fact]
-    public async Task Clearing_the_box_fails_to_persist_today_and_leaves_the_old_name_in_place()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Clearing_the_box_stores_a_blank_name_and_the_row_reloads_as_the_default_label(string? cleared)
     {
         SeedSession();
 
-        await Assert.ThrowsAsync<DbUpdateException>(
-            () => Manager().PersistSessionNameAsync(SessionId, null));
+        await Manager().PersistSessionNameAsync(SessionId, cleared);
 
-        Assert.Equal(SeededName, StoredName());
+        Assert.Equal(string.Empty, StoredName());
+
+        // Through a fresh context, which is what the next launch does: the stored blank renders as
+        // the default label, so clearing the box is durable rather than cosmetic. Note this is not
+        // the seeded name — SeededName is "Session", the default is "Session 1".
+        await using var context = TestDatabase.Contexts(DatabasePath).CreateDbContext();
+        Assert.Equal($"Session {SessionId}", context.Sessions.Single(session => session.ID == SessionId).Name);
+    }
+
+    /// <summary>
+    /// The exception path the #427 fix must not take away with the bug. A rename that genuinely
+    /// cannot be written still reaches the caller, which is the only thing that logs it — if this
+    /// method started swallowing, a failed rename would be silent in both the UI and the log.
+    /// </summary>
+    [Fact]
+    public async Task A_write_that_cannot_reach_the_database_still_surfaces_to_the_caller()
+    {
+        SeedSession();
+
+        // What a half-finished "Delete All" leaves at the same path: a valid, table-less database
+        // (the shape DeleteAllSessionsRecoveryTests uses for the same purpose).
+        File.Delete(DatabasePath);
+        File.WriteAllBytes(DatabasePath, []);
+
+        await Assert.ThrowsAnyAsync<SqliteException>(
+            () => Manager().PersistSessionNameAsync(SessionId, "Bench run 3"));
     }
 
     /// <summary>

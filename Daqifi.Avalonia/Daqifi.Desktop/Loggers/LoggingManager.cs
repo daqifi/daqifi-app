@@ -896,15 +896,19 @@ public partial class LoggingManager : ObservableObject
     /// <para>Throws rather than swallowing, unlike <see cref="DeleteLoggingSessionIfPresent"/>: the
     /// caller debounces keystrokes, so it is the one that knows whether a failure means "the user is
     /// still typing" (<see cref="OperationCanceledException"/>) or "the rename did not stick".</para>
-    /// <para><b>A <c>null</c> name does not currently save.</b> The caller sends <c>null</c> for an
-    /// emptied box, meaning "go back to the default label", and <c>LoggingSession.Name</c>'s getter
-    /// honours that in memory — but <c>Sessions.Name</c> is <c>nullable: false</c> and EF writes the
-    /// backing field rather than that getter, so the save throws <c>DbUpdateException</c> and the row
-    /// keeps its old name. Tracked as issue #427; this method relays the behaviour it inherited from
-    /// the view code-behind rather than changing it.</para>
+    /// <para>"No name" is stored as <see cref="string.Empty"/>, never as <c>null</c>.
+    /// <c>Sessions.Name</c> is <c>nullable: false</c> and EF writes the backing field rather than
+    /// <c>LoggingSession.Name</c>'s substituting getter, so a <c>null</c> here used to throw
+    /// <c>NOT NULL constraint failed: Sessions.Name</c> and leave the row holding its old name while
+    /// the pane already showed the default (issue #427). The getter renders a blank stored name as
+    /// <c>"Session {ID}"</c>, so an empty string reloads as the default label — which is what an
+    /// emptied name box asks for — without a schema migration on databases that are already out
+    /// there. A caller that still sends <c>null</c> is normalized here rather than rejected: it
+    /// means the same thing.</para>
     /// </remarks>
     /// <param name="sessionId">The session to rename. A row that is no longer there is a no-op.</param>
-    /// <param name="name">The new name. <c>null</c> throws on save — see the remark.</param>
+    /// <param name="name">The new name. <c>null</c> or blank stores <see cref="string.Empty"/>, which
+    /// reloads as the default <c>"Session {ID}"</c> label.</param>
     /// <param name="cancellationToken">Cancelled by the caller when another keystroke supersedes this write.</param>
     public async Task PersistSessionNameAsync(
         int sessionId, string? name, CancellationToken cancellationToken = default)
@@ -913,7 +917,7 @@ public partial class LoggingManager : ObservableObject
         var tracked = await context.Sessions.FindAsync([sessionId], cancellationToken);
         if (tracked != null)
         {
-            tracked.Name = name;
+            tracked.Name = string.IsNullOrWhiteSpace(name) ? string.Empty : name;
             await context.SaveChangesAsync(cancellationToken);
         }
     }
