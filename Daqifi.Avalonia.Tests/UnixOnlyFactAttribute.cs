@@ -33,8 +33,9 @@ namespace Daqifi.Avalonia.Tests;
 /// <para>
 /// <b>The reason is required, and it belongs to the row rather than to this type.</b> "Unix-only"
 /// is the condition, not the explanation, and these rows stand down for related but different
-/// causes — one is about the file-mode bits, one about symbolic links, one about a name length
-/// that would trip <c>MAX_PATH</c> for an entirely unrelated reason. A skip reporting the wrong
+/// causes — the file-mode bits, symbolic links, a name length that would trip <c>MAX_PATH</c> for
+/// an entirely unrelated reason, the absence of the Windows Firewall COM objects that makes a
+/// positive control a control at all. A skip reporting the wrong
 /// cause is the same defect this attribute exists to fix, one step along: honest that it did not
 /// run, misleading about why. Pass the row's own sentence — normally the one its
 /// <c>&lt;remarks&gt;</c> already gives — as a <c>const</c>, and give the in-body guard that same

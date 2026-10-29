@@ -74,6 +74,22 @@ public sealed class GraphImageSaveTests : IDisposable
         "Unix-only: UnixFileMode does not exist on Windows, where the equivalent guarantee is the "
         + "ACL carried by File.Replace.";
 
+    /// <summary>Why <see cref="Read_only_destination_folder_is_reported_not_thrown"/> cannot run
+    /// on some hosts — the runner shows this against the skipped row.</summary>
+    private const string ReadOnlyFolderMustBeEnforced =
+        "This host does not enforce a read-only directory for the current user — Windows, which "
+        + "has no UnixFileMode, or a run as root, where 0555 is advisory. Without a folder the "
+        + "user genuinely cannot write to there is no access-denied vector to provoke. The "
+        + "wording this row checks is pinned portably by "
+        + nameof(Destination_that_is_a_directory_is_reported_not_thrown) + ".";
+
+    /// <summary>Why <see cref="A_writable_file_in_a_read_only_folder_can_still_be_overwritten"/>
+    /// cannot run on some hosts — the runner shows this against the skipped row.</summary>
+    private const string WritableFileInAReadOnlyFolderMustBeEnforced =
+        "This host does not enforce a read-only directory for the current user — Windows, which "
+        + "has no UnixFileMode, or a run as root, where 0555 is advisory. The whole point of the "
+        + "row is a directory that accepts no new entries, which such a host cannot produce.";
+
     /// <summary>Why <see cref="Saving_onto_a_symbolic_link_writes_through_to_its_target"/>
     /// cannot run on Windows — the runner shows this against the skipped row.</summary>
     private const string SymbolicLinksAreUnixOnly =
@@ -93,11 +109,15 @@ public sealed class GraphImageSaveTests : IDisposable
     /// <see cref="Destination_that_is_a_directory_is_reported_not_thrown"/>, which needs no
     /// permissions at all, so CI still covers the wording when this one stands down.
     /// </remarks>
-    [Fact]
+    [EnforcedReadOnlyDirectoryFact(ReadOnlyFolderMustBeEnforced)]
     public void Read_only_destination_folder_is_reported_not_thrown()
     {
+        // Fail-safe, not the skip: [EnforcedReadOnlyDirectoryFact] above probed this host at
+        // discovery and found 0555 binding on the current user, so a directory that turns out to
+        // be writable HERE is a disagreement between the probe and the row — which must be
+        // reported, not read as a pass.
         var directory = CreateEnforcedReadOnlyDirectory();
-        if (directory == null) { return; }
+        if (directory == null) { Assert.Fail(ReadOnlyFolderMustBeEnforced); return; }
 
         var path = Path.Combine(directory, "graph.png");
 
@@ -381,14 +401,18 @@ public sealed class GraphImageSaveTests : IDisposable
     /// there is nothing to be atomic with, and refusing the save outright is the worse of the two
     /// available answers. Unix-only, and stands down unless the mode is genuinely enforced.
     /// </remarks>
-    [Fact]
+    [EnforcedReadOnlyDirectoryFact(WritableFileInAReadOnlyFolderMustBeEnforced)]
     public void A_writable_file_in_a_read_only_folder_can_still_be_overwritten()
     {
         var directory = Path.Combine(_root, "read-only-parent");
         Directory.CreateDirectory(directory);
         var path = Path.Combine(directory, "graph.png");
         File.WriteAllBytes(path, [0x00, 0x01]);
-        if (!MakeReadOnly(directory)) { return; }
+
+        // Fail-safe, not the skip: [EnforcedReadOnlyDirectoryFact] above probed this host at
+        // discovery and found 0555 binding on the current user, so a directory that stays
+        // writable HERE is a disagreement between the probe and the row.
+        if (!MakeReadOnly(directory)) { Assert.Fail(WritableFileInAReadOnlyFolderMustBeEnforced); return; }
 
         // The file itself is still writable — only the directory is not.
         var failure = GraphImageSaver.SaveTo(path, WriteImage);

@@ -63,6 +63,21 @@ public class DiskSpaceMonitorTests
 
     private static long Mb(long megabytes) => megabytes * 1024 * 1024;
 
+    /// <summary>Why <see cref="The_probe_path_follows_a_symlinked_data_directory"/> cannot run on
+    /// some hosts — the runner shows this against the skipped row.</summary>
+    private const string SymbolicLinksMustBeCreatable =
+        "This box refused to create a directory symbolic link, which needs Developer Mode or "
+        + "elevation on Windows and nothing at all anywhere else. Without one there is no link "
+        + "for the resolution to follow, so the row has nothing to assert.";
+
+    /// <summary>Why
+    /// <see cref="The_default_provider_measures_a_second_volume_rather_than_the_root_filesystem"/>
+    /// cannot run on some hosts — the runner shows this against the skipped row.</summary>
+    private const string ASecondVolumeIsRequired =
+        "A single-volume host — which is what CI is, and what a developer box usually is. The "
+        + "defect cannot be reproduced without somewhere else to write; the resolution rows above "
+        + "pin the mechanism that causes it deterministically and run everywhere.";
+
     #region Test doubles
 
     /// <summary>
@@ -904,7 +919,7 @@ public class DiskSpaceMonitorTests
     /// would not, because <c>DriveInfo</c> reduces a path to its drive letter lexically. So the
     /// link is followed here, once, for both.
     /// </summary>
-    [Fact]
+    [DirectorySymbolicLinkFact(SymbolicLinksMustBeCreatable)]
     public void The_probe_path_follows_a_symlinked_data_directory()
     {
         var target = CreateMarkedTempDirectory();
@@ -913,11 +928,13 @@ public class DiskSpaceMonitorTests
         {
             if (!TryCreateDirectorySymbolicLink(link, target))
             {
+                // Fail-safe, not the skip: [DirectorySymbolicLinkFact] above probed this box at
+                // discovery and found links creatable, so a refusal HERE is a disagreement
+                // between the probe and the row — which must be reported, not read as a pass.
                 // Creating a directory symlink needs Developer Mode or elevation on Windows and
-                // nothing at all anywhere else, so a refusal is only ever a Windows fact about
-                // the box — never a fact about the code under test.
-                Assert.True(OperatingSystem.IsWindows(),
-                    "creating a directory symlink should not be refused on this platform");
+                // nothing at all anywhere else, so a refusal is only ever a fact about the box —
+                // never a fact about the code under test.
+                Assert.Fail(SymbolicLinksMustBeCreatable);
                 return;
             }
 
@@ -954,17 +971,17 @@ public class DiskSpaceMonitorTests
     /// question is never close.
     /// </para>
     /// </summary>
-    [Fact]
+    [SecondVolumeFact(ASecondVolumeIsRequired)]
     public void The_default_provider_measures_a_second_volume_rather_than_the_root_filesystem()
     {
-        var rootFilesystem = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(Path.GetTempPath()))!);
-        var secondVolume = FindAVolumeDistinctFrom(rootFilesystem);
+        var rootFilesystem = VolumeProbe.RootFilesystem();
+        var secondVolume = VolumeProbe.FindAVolumeDistinctFrom(rootFilesystem);
         if (secondVolume is null)
         {
-            // A single-volume host — which is what CI is, and what a developer box usually is.
-            // The defect cannot be reproduced without somewhere else to write, and the
-            // resolution tests above pin the mechanism that causes it deterministically, so
-            // there is nothing further to assert here.
+            // Fail-safe, not the skip: [SecondVolumeFact] above ran this same probe at discovery
+            // and found one, so finding none HERE means a volume went away mid-run or the two
+            // answers disagree. Either way the row says so rather than reporting Passed.
+            Assert.Fail(ASecondVolumeIsRequired);
             return;
         }
 
@@ -1018,66 +1035,6 @@ public class DiskSpaceMonitorTests
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return false;
-        }
-    }
-
-    /// <summary>
-    /// A mounted volume that is not <paramref name="other"/> and whose free space differs from it
-    /// by more than half a gigabyte, so the two readings cannot be confused. <c>null</c> on a
-    /// single-volume host.
-    /// </summary>
-    /// <remarks>
-    /// Candidates whose mount point is a symlink are rejected: the resolution under test follows
-    /// links, so such a mount would legitimately resolve somewhere else and the test would be
-    /// asserting against the wrong volume for a reason that has nothing to do with the fix.
-    /// </remarks>
-    private static DriveInfo? FindAVolumeDistinctFrom(DriveInfo other)
-    {
-        var otherFreeSpace = ReadableFreeSpace(other);
-        if (otherFreeSpace is null)
-        {
-            return null;
-        }
-
-        foreach (var drive in DriveInfo.GetDrives())
-        {
-            var root = drive.RootDirectory.FullName;
-            if (string.Equals(root, other.RootDirectory.FullName, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            var freeSpace = ReadableFreeSpace(drive);
-            if (freeSpace is null or 0 || Math.Abs(freeSpace.Value - otherFreeSpace.Value) <= Mb(512))
-            {
-                continue;
-            }
-
-            if (!Directory.Exists(root) || new DirectoryInfo(root).LinkTarget is not null)
-            {
-                continue;
-            }
-
-            return drive;
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// A drive's free space, or <c>null</c> for the pseudo-filesystems and unreadable mounts that
-    /// <see cref="DriveInfo.GetDrives"/> lists alongside the real ones.
-    /// </summary>
-    private static long? ReadableFreeSpace(DriveInfo drive)
-    {
-        try
-        {
-            return drive.IsReady ? drive.AvailableFreeSpace : null;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            // DriveNotFoundException is an IOException, so an unmounted candidate lands here too.
-            return null;
         }
     }
 
