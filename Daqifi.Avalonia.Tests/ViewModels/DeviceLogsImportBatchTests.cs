@@ -328,7 +328,6 @@ public sealed class DeviceLogsImportBatchTests : IDisposable
         public Task<SdCardImportResult> ImportFromDeviceAsync(
             IStreamingDevice device,
             string fileName,
-            ImportOptions? options = null,
             IProgress<ImportProgress>? progress = null,
             CancellationToken ct = default)
         {

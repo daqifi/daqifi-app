@@ -589,7 +589,7 @@ public partial class DeviceLogsViewModel : ObservableObject
             });
 
             var result = await Task.Run(() =>
-                importer.ImportFromDeviceAsync(device, file.FileName, null, progress, CancellationToken.None));
+                importer.ImportFromDeviceAsync(device, file.FileName, progress, CancellationToken.None));
 
             string message;
             if (result.SessionPersisted)
@@ -597,8 +597,8 @@ public partial class DeviceLogsViewModel : ObservableObject
                 AddImportedSession(result.Session);
                 message = $"Successfully imported {file.FileName}";
 
-                // A persisted session can still owe the user a word — an overwrite whose old
-                // session could not be removed leaves a duplicate they have to clear by hand.
+                // A persisted session can still owe the user a word — readings that were NaN
+                // and had to be left out of an otherwise good import (#412).
                 if (result.OutcomeGuidance.Length > 0)
                 {
                     message += $"\n\n{result.OutcomeGuidance}";
@@ -687,7 +687,7 @@ public partial class DeviceLogsViewModel : ObservableObject
                     });
 
                     var result = await Task.Run(() =>
-                        importer.ImportFromDeviceAsync(device, file.FileName, null, progress, CancellationToken.None));
+                        importer.ImportFromDeviceAsync(device, file.FileName, progress, CancellationToken.None));
 
                     if (!result.SessionPersisted)
                     {
@@ -704,8 +704,8 @@ public partial class DeviceLogsViewModel : ObservableObject
 
                     AddImportedSession(result.Session);
 
-                    // Imported, and still with something to say — an overwrite whose old session
-                    // could not be removed. Not a skip (the file did import), so it gets its own
+                    // Imported, and still with something to say — readings that were NaN and had
+                    // to be left out (#412). Not a skip (the file did import), so it gets its own
                     // line in the summary rather than being counted as one.
                     if (result.OutcomeGuidance.Length > 0)
                     {
@@ -953,8 +953,8 @@ internal sealed class ImportAllOutcome
 
     /// <summary>
     /// Things that need saying about files that DID import, in first-seen order and deduped.
-    /// Downstream addition: an overwrite whose superseded session could not be removed leaves a
-    /// duplicate the user has to clear, which is neither a skip nor a silence.
+    /// Downstream addition: a log some of whose readings were NaN imports fine and still owes the
+    /// user a word (#412), which is neither a skip nor a silence.
     /// </summary>
     public IReadOnlyList<string> Notices => _notices;
 

@@ -173,7 +173,7 @@ public sealed class SdCardImportTimestampFrequencyTests : IDisposable
         };
 
         var result = await Importer().ImportSessionAsync(
-            session, options: null, progress: null, ct: CancellationToken.None);
+            session, progress: null, ct: CancellationToken.None);
 
         // Guards the helper, not the subject: a failed import would make every "did not warn"
         // assertion above pass for the wrong reason.

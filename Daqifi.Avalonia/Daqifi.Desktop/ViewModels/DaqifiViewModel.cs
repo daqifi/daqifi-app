@@ -1501,7 +1501,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             });
 
             var result = await Task.Run(() =>
-                importer.ImportFromFileAsync(selectedPath, null, progress, CancellationToken.None));
+                importer.ImportFromFileAsync(selectedPath, progress, CancellationToken.None));
 
             string message;
             if (result.SessionPersisted)
@@ -1513,8 +1513,8 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
                 message = $"Successfully imported {System.IO.Path.GetFileName(selectedPath)}";
 
-                // A persisted session can still owe the user a word — an overwrite whose old
-                // session could not be removed leaves a duplicate they have to clear by hand.
+                // A persisted session can still owe the user a word — readings that were NaN
+                // and had to be left out of an otherwise good import (#412).
                 if (result.OutcomeGuidance.Length > 0)
                 {
                     message += $"\n\n{result.OutcomeGuidance}";
