@@ -15,6 +15,9 @@ using ChannelType = Daqifi.Core.Channel.ChannelType;
 // Disambiguates our logger's level enum from the Sentry.BreadcrumbLevel that the
 // Sentry package brings into scope globally.
 using BreadcrumbLevel = Daqifi.Desktop.Common.Loggers.BreadcrumbLevel;
+// Aliased rather than importing Daqifi.Core.Device wholesale: that namespace also declares a
+// DaqifiStreamingDevice, which would be ambiguous with the ported one this file connects with.
+using CoreDeviceFactory = Daqifi.Core.Device.DaqifiDeviceFactory;
 
 namespace Daqifi.Avalonia.Views;
 
@@ -61,12 +64,12 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
 
     // Manual entry: many consumer APs isolate wireless clients and drop the
     // UDP broadcast discovery uses — the desktop app has the same escape
-    // hatch. Default TCP data port is 9760.
+    // hatch. The port Core connects on by default, not a local literal (#429).
     [ObservableProperty]
     private string _manualIp = "";
 
     [ObservableProperty]
-    private string _manualPort = "9760";
+    private string _manualPort = CoreDeviceFactory.DefaultTcpDataPort.ToString();
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ScanCommand))]

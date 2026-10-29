@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using Daqifi.Core.Device;
 
 namespace Daqifi.Avalonia.Services;
 
@@ -7,22 +8,54 @@ namespace Daqifi.Avalonia.Services;
 public sealed record DiscoveredDevice(IPAddress Ip, int Port, string? Name);
 
 /// <summary>
-/// Self-contained UDP broadcast discovery for the mobile heads.
-///
-/// The ported Core <c>WiFiDeviceFinder</c> works on desktop but finds
-/// nothing on Android: its NIC-enumerated <c>255.255.255.255</c> (limited)
-/// broadcast is dropped by Android/WiFi hardware. This sends the DAQiFi
-/// finder queries to the SUBNET-DIRECTED broadcast (e.g. 192.168.1.255,
-/// computed from the phone's own WiFi address) — which Android delivers —
-/// plus limited broadcast as a fallback, then takes each responder's IP
-/// straight from the reply packet's source address (no protobuf parse
-/// needed; the SN + firmware come back on connect). The caller holds the
-/// WiFi MulticastLock (<see cref="NetworkDiscoveryScope"/>) for the sweep.
+/// Self-contained UDP broadcast discovery for the mobile heads, because Core's
+/// <c>WiFiDeviceFinder</c> enumerates no usable interface on Android.
 /// </summary>
+/// <remarks>
+/// This comment used to say Core's finder sends a limited <c>255.255.255.255</c>
+/// broadcast that Android drops. That was never true of any Core version this repo
+/// has pinned — Core has computed a subnet-directed broadcast per NIC since v0.21.0,
+/// three minor versions before the workaround landed (#429).
+/// <para>
+/// The real reason, measured on a Galaxy A16 5G (Android 15 / API 35, .NET 10) against
+/// a Nyquist 1 on the same /24 on 2026-10-29: Core requires each interface to be
+/// <c>Ethernet</c> or <c>Wireless80211</c>, and Android's <c>wlan0</c> reports
+/// <c>NetworkInterfaceType.Unknown</c> — so it is filtered out and discovery finds
+/// nothing. Everything else about the interface passes, <c>IPv4Mask</c> included
+/// (<c>255.255.255.0</c>, not the missing mask the <c>/24</c> fallback below guards
+/// against). Logged on the phone:
+/// <code>
+/// NIC429 name=wlan0 desc=wlan0 type=Unknown status=Up ipv4=True virtual=False filterPass=False
+/// NIC429   addr=192.168.1.145 mask=255.255.255.0
+/// </code>
+/// Two controls ran on the same phone in the same scan: Core's own
+/// <c>WiFiDeviceFinder.ProbeTcpDataPortAsync</c> unicast the query to the board and
+/// read back port 9760, and Core's sweep replicated WITHOUT the type filter — same
+/// per-NIC bind to <c>(wlan0 address, 30303)</c>, same subnet-directed broadcast —
+/// got <c>hostName=DAQiFi-95AC sn=… fw=3.8.0 pn=Nq1 devicePort=9760</c>. So Core's
+/// wire format, socket strategy and protobuf parse all work on Android; the interface
+/// filter alone is what excludes the phone's WiFi. Filed upstream as daqifi-core#846;
+/// when that lands, this file is replaced by Core's finder, which also returns the
+/// real host name, serial number, firmware revision and ADVERTISED data port rather
+/// than the placeholder name and assumed port below.
+/// </para>
+/// <para>
+/// What this does: send the DAQiFi finder queries to the subnet-directed broadcast
+/// (e.g. 192.168.1.255, computed from the phone's own WiFi address) plus limited
+/// broadcast as a fallback, then take each responder's IP straight from the reply
+/// packet's source address (no protobuf parse; the SN + firmware come back on
+/// connect). The caller holds the WiFi MulticastLock
+/// (<see cref="NetworkDiscoveryScope"/>) for the sweep — that half of the original
+/// workaround is load-bearing and independent of which finder runs: Android's
+/// power-save filter drops inbound broadcast without it.
+/// </para>
+/// </remarks>
 public static class NativeWiFiDiscovery
 {
     private const int DiscoveryPort = 30303;
-    private const int DefaultDataPort = 9760;
+    // The port Core connects on by default, not a local literal — this path cannot read the
+    // device's advertised DevicePort without parsing the reply, so it assumes the default.
+    private const int DefaultDataPort = DaqifiDeviceFactory.DefaultTcpDataPort;
     private static readonly byte[] DaqifiQuery = "DAQiFi?\r\n"u8.ToArray();
     private static readonly byte[] NativeQuery = "Discovery: Who is out there?\r\n"u8.ToArray();
 
@@ -117,6 +150,9 @@ public static class NativeWiFiDiscovery
                 var mask = ua.IPv4Mask;
                 if (mask == null || Equals(mask, IPAddress.Any))
                 {
+                    // Kept for the platforms this has NOT been measured on — Android 15's
+                    // wlan0 does report 255.255.255.0 (#429), and iOS WiFi discovery has
+                    // never been validated on a real device (#104).
                     mask = IPAddress.Parse("255.255.255.0"); // sane /24 default
                 }
                 yield return (ua.Address, mask);
