@@ -21,7 +21,7 @@ namespace Daqifi.Avalonia.Tests.Configuration;
 /// </para>
 ///
 /// <para>
-/// Every test here runs on any OS. The COM path is Windows-only, which is exactly what makes
+/// The validation rows run on any OS. The COM path is Windows-only, which is exactly what makes
 /// these assertions sharp on a non-Windows host: a name the guard accepts reaches
 /// <see cref="Type.GetTypeFromProgID"/> and fails, so "returned false" and "threw" tell the two
 /// branches apart with no mocking at all. <see cref="RuleExists_reaches_COM_and_fails_for_a_VALID_name"/>
@@ -31,6 +31,34 @@ namespace Daqifi.Avalonia.Tests.Configuration;
 /// </summary>
 public class FirewallConfigurationTests
 {
+    /// <summary>Why <see cref="InitializeFirewallRules_returns_quietly_on_an_un_elevated_host"/>
+    /// cannot run elevated — the runner shows this against the skipped row.</summary>
+    private const string FirewallWriteNeedsAnUnelevatedHost =
+        "Un-elevated hosts only: past the elevation gate InitializeFirewallRules adds a real "
+        + "Windows Firewall rule, so on an administrator-token host this row would mutate the "
+        + "developer's actual firewall configuration rather than characterise anything.";
+
+    /// <summary>Why <see cref="IsElevated_is_false_on_every_non_Windows_host"/> cannot run on
+    /// Windows — the runner shows this against the skipped row.</summary>
+    private const string ElevationIsOnlyFalseOffWindows =
+        "Unix-only by construction: the claim is that IsElevated reports false on every "
+        + "non-Windows head. On Windows it may legitimately be true, so the assertion is not "
+        + "merely untestable there — it is the wrong assertion.";
+
+    /// <summary>Why <see cref="RuleExists_reaches_COM_and_fails_for_a_VALID_name"/> cannot run on
+    /// Windows — the runner shows this against the skipped row.</summary>
+    private const string RuleExistsControlIsUnixOnly =
+        "Unix-only: this positive control works by the Windows Firewall COM objects being absent, "
+        + "so a valid name throws instead of answering. On Windows they are present and the call "
+        + "returns a real answer, which proves nothing about the guard.";
+
+    /// <summary>Why <see cref="CreateUdpRule_reaches_COM_for_inputs_that_clear_every_guard"/>
+    /// cannot run on Windows — the runner shows this against the skipped row.</summary>
+    private const string CreateUdpRuleControlIsUnixOnly =
+        "Unix-only: this positive control works by the Windows Firewall COM objects being absent, "
+        + "so inputs that clear every argument guard fail at COM. On Windows they reach a firewall "
+        + "that exists, and on an elevated host that means writing a real rule.";
+
     #region The elevation gate
 
     /// <summary>
@@ -52,20 +80,23 @@ public class FirewallConfigurationTests
     /// the thing this change removed.
     /// </para>
     /// </summary>
-    [Fact]
+    [UnelevatedFact(FirewallWriteNeedsAnUnelevatedHost)]
     public void InitializeFirewallRules_returns_quietly_on_an_un_elevated_host()
     {
         // An elevated host is not just outside what this row characterises — it is a host where
         // CALLING the method at all would be wrong. Past the gate, InitializeFirewallRules goes on
         // to add a real Windows Firewall rule, so on an administrator-token Windows machine this
         // test would mutate the developer's actual firewall configuration. The guard therefore has
-        // to wrap the call, not merely the assertion in front of it.
+        // to wrap the call, not merely the assertion in front of it, and it STAYS even though
+        // [UnelevatedFact] above now stands the row down — the attribute makes the reporting
+        // honest, this guard is what stops the write. Deleting it as redundant would hand an
+        // elevated host a real firewall mutation the moment the attribute stopped taking effect.
         //
-        // xunit 2.9.3 has no dynamic skip (Assert.Skip is v3), so this returns rather than
-        // reporting Skipped, matching the two platform-conditional rows below. The hosts that
-        // matter — CI's ubuntu runner and the dev Macs — are un-elevated, so the body does run.
+        // Fail-safe, not the skip: reaching here means the attribute stopped working, and the row
+        // must say so rather than report Passed without having called anything.
         if (AppDataPaths.IsElevated)
         {
+            Assert.Fail(FirewallWriteNeedsAnUnelevatedHost);
             return;
         }
 
@@ -80,11 +111,15 @@ public class FirewallConfigurationTests
     /// is a Windows-only concern. Pinned because the elevation gate above is only meaningful if
     /// this holds.
     /// </summary>
-    [Fact]
+    [UnixOnlyFact(ElevationIsOnlyFalseOffWindows)]
     public void IsElevated_is_false_on_every_non_Windows_host()
     {
+        // Fail-safe, not the skip: the [UnixOnlyFact] above is what stands this row down on
+        // Windows. Reaching here means it stopped doing so, and the row must say so rather than
+        // report Passed.
         if (OperatingSystem.IsWindows())
         {
+            Assert.Fail(ElevationIsOnlyFalseOffWindows);
             return;
         }
 
@@ -133,11 +168,15 @@ public class FirewallConfigurationTests
     /// rather than returning false. Without this row every rejection test above would still pass
     /// against a <c>RuleExists</c> that had stopped doing anything at all.
     /// </summary>
-    [Fact]
+    [UnixOnlyFact(RuleExistsControlIsUnixOnly)]
     public void RuleExists_reaches_COM_and_fails_for_a_VALID_name()
     {
+        // Fail-safe, not the skip: the [UnixOnlyFact] above is what stands this row down on
+        // Windows. Reaching here means it stopped doing so, and the row must say so rather than
+        // report Passed.
         if (OperatingSystem.IsWindows())
         {
+            Assert.Fail(RuleExistsControlIsUnixOnly);
             return;
         }
 
@@ -209,11 +248,17 @@ public class FirewallConfigurationTests
     /// COM path and fail there, not in validation. An <see cref="InvalidOperationException"/> —
     /// never an <see cref="ArgumentException"/> — is how you know validation passed.
     /// </summary>
-    [Fact]
+    [UnixOnlyFact(CreateUdpRuleControlIsUnixOnly)]
     public void CreateUdpRule_reaches_COM_for_inputs_that_clear_every_guard()
     {
+        // Fail-safe, not the skip — and here the guard also prevents a side effect: on Windows the
+        // inputs below clear every argument guard, so the call reaches a firewall that exists, and
+        // on an elevated host that means writing a real rule. The [UnixOnlyFact] above is what
+        // stands the row down; reaching here means it stopped doing so, and the row must say so
+        // rather than report Passed.
         if (OperatingSystem.IsWindows())
         {
+            Assert.Fail(CreateUdpRuleControlIsUnixOnly);
             return;
         }
 
