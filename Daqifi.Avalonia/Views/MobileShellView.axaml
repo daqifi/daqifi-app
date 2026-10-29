@@ -35,6 +35,27 @@
 	    decorative. No subtree here needed checking switched back off — all 29
 	    bindings resolve, so the file needs no escape hatch.
 	-->
+	<UserControl.Styles>
+		<!-- The two toggle buttons below put a Panel in their Content and swap which of
+		     two TextBlocks is visible, so their automation peer has no string to fall back
+		     on and announces "Avalonia.Controls.Panel" instead of the label (#356). The
+		     name has to follow the label rather than be pinned once, which is what the
+		     class pair does — the same shape LiveGraphPane.axaml uses to keep the UIA name
+		     of its LOGGING ON/OFF readout in step with the text a style writes. -->
+		<Style Selector="Button.scanToggle">
+			<Setter Property="(AutomationProperties.Name)" Value="Scan for devices"/>
+		</Style>
+		<Style Selector="Button.scanToggle.scanning">
+			<Setter Property="(AutomationProperties.Name)" Value="Stop scanning"/>
+		</Style>
+		<Style Selector="Button.streamToggle">
+			<Setter Property="(AutomationProperties.Name)" Value="Start streaming"/>
+		</Style>
+		<Style Selector="Button.streamToggle.streaming">
+			<Setter Property="(AutomationProperties.Name)" Value="Stop streaming"/>
+		</Style>
+	</UserControl.Styles>
+
 	<Border Background="{DynamicResource Surface}" Padding="20,48,20,24">
 		<!-- Scroll so the bottom-docked connect actions (IP row + USB-OTG button) stay
 		     reachable when the viewport is short — e.g. phone landscape, where an
@@ -55,6 +76,8 @@
 			</StackPanel>
 
 			<Button DockPanel.Dock="Top"
+			        Classes="scanToggle"
+			        Classes.scanning="{Binding IsScanning}"
 			        Command="{Binding ScanCommand}"
 			        IsVisible="{Binding !IsStreaming}"
 			        HorizontalAlignment="Stretch"
@@ -71,6 +94,8 @@
 
 			<!-- Stream toggle appears once a device is connected -->
 			<Button DockPanel.Dock="Top"
+			        Classes="streamToggle"
+			        Classes.streaming="{Binding IsStreaming}"
 			        Command="{Binding StreamToggleCommand}"
 			        IsVisible="{Binding IsConnected}"
 			        HorizontalAlignment="Stretch"
@@ -194,6 +219,7 @@
 					<ItemsControl.ItemTemplate>
 						<DataTemplate x:DataType="views:MobileDeviceItem">
 							<Button Command="{Binding ConnectCommand}"
+							        AutomationProperties.Name="{Binding Name}"
 							        HorizontalAlignment="Stretch"
 							        HorizontalContentAlignment="Stretch"
 							        Margin="0,6" Padding="16,12"

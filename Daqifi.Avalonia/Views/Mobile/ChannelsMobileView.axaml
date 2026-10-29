@@ -87,6 +87,7 @@
                   HorizontalAlignment="Stretch"
                   HorizontalContentAlignment="Left"
                   AutomationProperties.AutomationId="ChannelTile"
+                  AutomationProperties.Name="{Binding Name}"
                   Command="{Binding $parent[ItemsControl].((vm:ChannelsPaneViewModel)DataContext).ToggleChannelCommand}"
                   CommandParameter="{Binding}">
             <StackPanel Spacing="3">

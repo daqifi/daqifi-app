@@ -64,6 +64,7 @@
                        as a row (no chrome) while giving a full-width, touch-friendly hit target;
                        Export/Delete live in their own column so they don't trigger the viewer. -->
                   <Button Grid.Column="0"
+                          AutomationProperties.Name="{Binding Name}"
                           Command="{Binding $parent[ItemsControl].DataContext.ViewSessionCommand}"
                           CommandParameter="{Binding}"
                           Background="Transparent" BorderThickness="0" Padding="0"
@@ -107,6 +108,7 @@
                             Command="{Binding $parent[ItemsControl].DataContext.ExportSessionCommand}"
                             CommandParameter="{Binding}" MinHeight="36" />
                     <Button Theme="{StaticResource DangerPillButton}"
+                            AutomationProperties.Name="Delete session"
                             Command="{Binding $parent[ItemsControl].DataContext.DeleteSessionCommand}"
                             CommandParameter="{Binding}" MinHeight="36" MinWidth="44"
                             ToolTip.Tip="Delete session">

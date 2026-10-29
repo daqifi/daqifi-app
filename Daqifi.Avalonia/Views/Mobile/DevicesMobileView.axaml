@@ -93,6 +93,7 @@
           <ItemsControl.ItemTemplate>
             <DataTemplate>
               <Button HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                      AutomationProperties.Name="{Binding Name}"
                       Padding="0" Margin="0,0,0,10" CornerRadius="12"
                       Background="{DynamicResource SurfaceRaised}"
                       BorderBrush="{DynamicResource BorderDim}" BorderThickness="1"
