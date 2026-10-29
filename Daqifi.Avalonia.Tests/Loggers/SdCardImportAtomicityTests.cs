@@ -58,7 +58,6 @@ public sealed class SdCardImportAtomicityTests : IDisposable
 
         await Assert.ThrowsAsync<InvalidDataException>(() => importer.ImportSessionAsync(
             Log("log_truncated.bin", ThrowAfter(SdCardSessionImporter.BatchSize)),
-            options: null,
             progress: null,
             ct: CancellationToken.None));
 
@@ -82,7 +81,6 @@ public sealed class SdCardImportAtomicityTests : IDisposable
 
         await Assert.ThrowsAsync<InvalidDataException>(() => importer.ImportSessionAsync(
             Log("log_garbage.bin", ThrowAfter(0)),
-            options: null,
             progress: null,
             ct: CancellationToken.None));
 
@@ -105,7 +103,6 @@ public sealed class SdCardImportAtomicityTests : IDisposable
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => importer.ImportSessionAsync(
             Log("log_cancelled.bin", CancelAfter(SdCardSessionImporter.BatchSize, cts)),
-            options: null,
             progress: null,
             ct: cts.Token));
 
@@ -125,7 +122,6 @@ public sealed class SdCardImportAtomicityTests : IDisposable
 
         var result = await importer.ImportSessionAsync(
             Log("log_good.bin", Entries(12)),
-            options: null,
             progress: null,
             ct: CancellationToken.None);
 
@@ -157,7 +153,6 @@ public sealed class SdCardImportAtomicityTests : IDisposable
 
         var result = await importer.ImportSessionAsync(
             Log("log_empty.bin", Entries(0)),
-            options: null,
             progress: null,
             ct: CancellationToken.None);
 
@@ -168,85 +163,18 @@ public sealed class SdCardImportAtomicityTests : IDisposable
 
     #endregion
 
-    #region Overwriting an existing session
+    #region Other sessions
 
     /// <summary>
-    /// The overwrite used to delete the session it replaces up front, before anything had been
-    /// parsed. Combined with removing the row an empty or immediately-failed import leaves, that
-    /// destroyed the user's existing session and put nothing in its place.
+    /// The import touches exactly one <c>Sessions</c> row: its own. Two imports of one file share
+    /// a session name, so anything that selected rows by name — which is what the removed
+    /// overwrite option did — could reach a concurrent import's row and destroy the batches it had
+    /// already committed. Nothing selects by name any more, and this says so from the outside.
     /// </summary>
     [Fact]
-    public async Task An_overwrite_that_imports_nothing_leaves_the_existing_session_alone()
+    public async Task An_import_leaves_a_session_another_import_is_writing_alone()
     {
         var importer = new SdCardSessionImporter(Factory());
-        var options = new ImportOptions { OverwriteExistingSession = true };
-
-        var original = await importer.ImportSessionAsync(
-            Log("log_good.bin", Entries(4)), options, progress: null, ct: CancellationToken.None);
-
-        var replaced = await importer.ImportSessionAsync(
-            Log("log_good.bin", Entries(0)), options, progress: null, ct: CancellationToken.None);
-
-        Assert.False(replaced.SessionPersisted);
-
-        var survivor = Assert.Single(AllSessions());
-        Assert.Equal(original.Session.ID, survivor.ID);
-        Assert.Equal(SessionStatus.Complete, survivor.Status);
-        Assert.Equal(4, SampleCountFor(survivor.ID));
-    }
-
-    [Fact]
-    public async Task An_overwrite_that_fails_before_writing_anything_leaves_the_existing_session_alone()
-    {
-        var importer = new SdCardSessionImporter(Factory());
-        var options = new ImportOptions { OverwriteExistingSession = true };
-
-        var original = await importer.ImportSessionAsync(
-            Log("log_good.bin", Entries(4)), options, progress: null, ct: CancellationToken.None);
-
-        await Assert.ThrowsAsync<InvalidDataException>(() => importer.ImportSessionAsync(
-            Log("log_good.bin", ThrowAfter(0)), options, progress: null, ct: CancellationToken.None));
-
-        var survivor = Assert.Single(AllSessions());
-        Assert.Equal(original.Session.ID, survivor.ID);
-        Assert.Equal(4, SampleCountFor(survivor.ID));
-    }
-
-    /// <summary>And when the replacement IS complete, it replaces — which is the whole option.</summary>
-    [Fact]
-    public async Task An_overwrite_that_completes_replaces_the_session_it_supersedes()
-    {
-        var importer = new SdCardSessionImporter(Factory());
-        var options = new ImportOptions { OverwriteExistingSession = true };
-
-        var original = await importer.ImportSessionAsync(
-            Log("log_good.bin", Entries(4)), options, progress: null, ct: CancellationToken.None);
-
-        var replacement = await importer.ImportSessionAsync(
-            Log("log_good.bin", Entries(7)), options, progress: null, ct: CancellationToken.None);
-
-        var survivor = Assert.Single(AllSessions());
-        Assert.Equal(replacement.Session.ID, survivor.ID);
-        Assert.Equal(7, survivor.SampleCount);
-
-        // Not just the Sessions row: the superseded session's samples go with it, or they become
-        // orphans that make a later session ID collide.
-        Assert.Equal(0, SampleCountFor(original.Session.ID));
-        Assert.Equal(7, TotalSampleRows());
-        Assert.Equal(string.Empty, replacement.OutcomeGuidance);
-    }
-
-    /// <summary>
-    /// Two imports of one file share a session name, so an overwrite that chose its targets after
-    /// finishing would find, and delete, a concurrent import's row — destroying the batches it had
-    /// already committed. The targets are chosen when the import starts instead, and rows an
-    /// import owns are excluded even then.
-    /// </summary>
-    [Fact]
-    public async Task An_overwrite_never_replaces_a_session_another_import_is_writing()
-    {
-        var importer = new SdCardSessionImporter(Factory());
-        var options = new ImportOptions { OverwriteExistingSession = true };
 
         // A concurrent import of the same file: its row exists, marked Importing, with samples
         // already committed against it.
@@ -254,15 +182,63 @@ public sealed class SdCardImportAtomicityTests : IDisposable
             name: "SD Import - log_good");
         InsertSampleRow(loggingSessionId: 900);
 
-        var replacement = await importer.ImportSessionAsync(
-            Log("log_good.bin", Entries(3)), options, progress: null, ct: CancellationToken.None);
+        var result = await importer.ImportSessionAsync(
+            Log("log_good.bin", Entries(3)), progress: null, ct: CancellationToken.None);
 
-        Assert.NotEqual(inFlight, replacement.Session.ID);
+        Assert.NotEqual(inFlight, result.Session.ID);
 
         var survivors = AllSessions().Select(s => s.ID).ToList();
         Assert.Contains(inFlight, survivors);
-        Assert.Contains(replacement.Session.ID, survivors);
+        Assert.Contains(result.Session.ID, survivors);
         Assert.Equal(1, SampleCountFor(inFlight));
+    }
+
+    /// <summary>
+    /// And the same for an import that ends badly: the row it removes, or flags, is its own. An
+    /// earlier session of the same name keeps its samples either way.
+    /// </summary>
+    [Fact]
+    public async Task An_import_that_fails_leaves_an_earlier_session_of_the_same_name_alone()
+    {
+        var importer = new SdCardSessionImporter(Factory());
+
+        var original = await importer.ImportSessionAsync(
+            Log("log_good.bin", Entries(4)), progress: null, ct: CancellationToken.None);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => importer.ImportSessionAsync(
+            Log("log_good.bin", ThrowAfter(0)), progress: null, ct: CancellationToken.None));
+
+        var survivor = Assert.Single(AllSessions());
+        Assert.Equal(original.Session.ID, survivor.ID);
+        Assert.Equal(SessionStatus.Complete, survivor.Status);
+        Assert.Equal(4, SampleCountFor(survivor.ID));
+    }
+
+    /// <summary>
+    /// Re-importing a file adds a second session rather than replacing the first. That is what the
+    /// app has always done — the UI offers no overwrite, and the option that could have asked for
+    /// one was never set by any caller — and it is stated here so a future change to
+    /// <c>CreateSession</c> cannot make it silently destructive.
+    /// </summary>
+    [Fact]
+    public async Task Importing_the_same_file_twice_keeps_both_sessions()
+    {
+        var importer = new SdCardSessionImporter(Factory());
+
+        var first = await importer.ImportSessionAsync(
+            Log("log_good.bin", Entries(4)), progress: null, ct: CancellationToken.None);
+
+        var second = await importer.ImportSessionAsync(
+            Log("log_good.bin", Entries(7)), progress: null, ct: CancellationToken.None);
+
+        Assert.NotEqual(first.Session.ID, second.Session.ID);
+        Assert.Equal(first.Session.Name, second.Session.Name);
+        Assert.Equal(string.Empty, second.OutcomeGuidance);
+
+        Assert.Equal([first.Session.ID, second.Session.ID], AllSessions().Select(s => s.ID));
+        Assert.Equal(4, SampleCountFor(first.Session.ID));
+        Assert.Equal(7, SampleCountFor(second.Session.ID));
+        Assert.Equal(11, TotalSampleRows());
     }
 
     #endregion
@@ -282,7 +258,6 @@ public sealed class SdCardImportAtomicityTests : IDisposable
 
         await Assert.ThrowsAsync<InvalidDataException>(() => importer.ImportSessionAsync(
             Log("log_truncated.bin", ThrowAfter(SdCardSessionImporter.BatchSize)),
-            options: null,
             progress: null,
             ct: CancellationToken.None));
 
@@ -363,7 +338,6 @@ public sealed class SdCardImportAtomicityTests : IDisposable
         var importer = new SdCardSessionImporter(Factory());
         var result = await importer.ImportSessionAsync(
             Log("log_good.bin", Entries(3)),
-            options: null,
             progress: null,
             ct: CancellationToken.None);
 

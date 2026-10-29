@@ -48,7 +48,7 @@ public sealed class SdCardImportNaNTests : IDisposable
     public async Task A_NaN_in_the_first_batch_costs_only_that_reading()
     {
         var result = await Importer().ImportSessionAsync(
-            Log(Entries(12, nanAt: [3])), options: null, progress: null, ct: CancellationToken.None);
+            Log(Entries(12, nanAt: [3])), progress: null, ct: CancellationToken.None);
 
         Assert.True(result.SessionPersisted);
         Assert.Equal(11, result.SamplesImported);
@@ -73,7 +73,7 @@ public sealed class SdCardImportNaNTests : IDisposable
         var nanAt = SdCardSessionImporter.BatchSize + 200;
 
         var result = await Importer().ImportSessionAsync(
-            Log(Entries(total, nanAt: [nanAt])), options: null, progress: null, ct: CancellationToken.None);
+            Log(Entries(total, nanAt: [nanAt])), progress: null, ct: CancellationToken.None);
 
         Assert.True(result.SessionPersisted);
         Assert.Equal(total - 1, result.SamplesImported);
@@ -92,7 +92,7 @@ public sealed class SdCardImportNaNTests : IDisposable
     public async Task The_user_is_told_readings_were_left_out()
     {
         var result = await Importer().ImportSessionAsync(
-            Log(Entries(12, nanAt: [3, 7])), options: null, progress: null, ct: CancellationToken.None);
+            Log(Entries(12, nanAt: [3, 7])), progress: null, ct: CancellationToken.None);
 
         // OutcomeGuidance is what every import surface appends to its dialog: the single-file
         // import from disk, the single-file import from a device, and Import All's notices.
@@ -105,7 +105,7 @@ public sealed class SdCardImportNaNTests : IDisposable
     public async Task A_clean_log_says_nothing_about_left_out_readings()
     {
         var result = await Importer().ImportSessionAsync(
-            Log(Entries(12)), options: null, progress: null, ct: CancellationToken.None);
+            Log(Entries(12)), progress: null, ct: CancellationToken.None);
 
         Assert.Equal(string.Empty, result.OutcomeGuidance);
         Assert.DoesNotContain(_log.Warnings, w => w.Contains("NaN"));
@@ -115,7 +115,7 @@ public sealed class SdCardImportNaNTests : IDisposable
     public async Task A_left_out_reading_is_a_warning_not_an_error()
     {
         await Importer().ImportSessionAsync(
-            Log(Entries(12, nanAt: [3, 7])), options: null, progress: null, ct: CancellationToken.None);
+            Log(Entries(12, nanAt: [3, 7])), progress: null, ct: CancellationToken.None);
 
         // An Error line is a Sentry event, and the unguarded import raised one for what is a
         // property of the user's file, not a fault in the app.
@@ -131,7 +131,7 @@ public sealed class SdCardImportNaNTests : IDisposable
     public async Task A_log_whose_every_reading_is_NaN_is_reported_as_that_not_as_an_empty_file()
     {
         var result = await Importer().ImportSessionAsync(
-            Log(Entries(5, nanAt: [0, 1, 2, 3, 4])), options: null, progress: null, ct: CancellationToken.None);
+            Log(Entries(5, nanAt: [0, 1, 2, 3, 4])), progress: null, ct: CancellationToken.None);
 
         Assert.False(result.SessionPersisted);
         Assert.Equal(0, result.SamplesImported);

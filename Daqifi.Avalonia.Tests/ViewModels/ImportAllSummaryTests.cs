@@ -27,25 +27,24 @@ public class ImportAllSummaryTests
     }
 
     /// <summary>
-    /// A file can import successfully and still owe the user a word — an overwrite whose
-    /// superseded session could not be removed leaves a duplicate to clear by hand. That is not a
-    /// skip: the file imported and is counted, so it gets its own line rather than inflating the
-    /// skip list. Deduped like the skip advice, since the same sentence applies to every file it
-    /// happened to.
+    /// A file can import successfully and still owe the user a word — readings that were NaN and
+    /// had to be left out (#412). That is not a skip: the file imported and is counted, so it gets
+    /// its own line rather than inflating the skip list. Deduped like the skip advice, since the
+    /// same sentence applies to every file it happened to.
     /// </summary>
     [Fact]
     public void A_file_that_imported_but_left_something_to_do_says_so_once()
     {
         var outcome = new ImportAllOutcome { TotalCount = 2, ImportedCount = 2 };
-        outcome.RecordNotice("the old one is still there");
-        outcome.RecordNotice("the old one is still there");
+        outcome.RecordNotice("some readings were left out");
+        outcome.RecordNotice("some readings were left out");
 
         var summary = DeviceLogsViewModel.BuildImportAllSummary(outcome);
 
         Assert.Contains("Imported 2 of 2 files.", summary, StringComparison.Ordinal);
         Assert.DoesNotContain("Skipped", summary, StringComparison.Ordinal);
         Assert.Equal(
-            "Imported 2 of 2 files.\n\nthe old one is still there",
+            "Imported 2 of 2 files.\n\nsome readings were left out",
             summary);
     }
 
