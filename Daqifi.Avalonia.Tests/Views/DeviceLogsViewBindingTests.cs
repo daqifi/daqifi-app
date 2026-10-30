@@ -155,13 +155,27 @@ public class DeviceLogsViewBindingTests
     ///
     /// <para>
     /// Which is also why not to reach for <c>x:DataType</c> by reflex. An explicit declaration is an
-    /// override, so a plausible-but-wrong one is <b>worse than none</b>: measured here, this view's
-    /// NAME cell binding swapped from <c>{Binding FileName}</c> to the view model's
-    /// <c>{Binding BusyMessage}</c> is <c>AVLN2000 … on type 'Daqifi.Desktop.Models.SdCardFile'</c>
-    /// while undeclared, and builds with <c>0 Error(s)</c> the moment
-    /// <c>x:DataType="vm:DeviceLogsViewModel"</c> is added to that template — green markup rendering
-    /// the view model's busy text in every row. Declare a scope where the build asks for one, or
-    /// where a template needs to narrow a wider item type, and not otherwise. See
+    /// override, so a plausible-but-wrong one is <b>worse than none</b> — and what it actually costs
+    /// is a <b>dead</b> binding, not a wrong value, which is the part worth being precise about.
+    /// <c>x:DataType</c> sets the type the <i>compiler</i> resolves against; it does <b>not</b>
+    /// change the cell's runtime <c>DataContext</c>, which the <c>DataGrid</c> still sets to the
+    /// item. Measured on this view's NAME cell template, headless, with the real template:
+    /// <c>{Binding BusyMessage}</c> while undeclared is
+    /// <c>AVLN2000 … on type 'Daqifi.Desktop.Models.SdCardFile'</c>; add
+    /// <c>x:DataType="vm:DeviceLogsViewModel"</c> and the build is <c>0 Error(s)</c> — and the cell
+    /// then renders <b>blank</b>. <c>TextBlock.Text</c> is <c>null</c> while the view model's
+    /// <c>BusyMessage</c> is set, the cell's <c>DataContext</c> is still <c>SdCardFile</c>, and the
+    /// only trace is one binding-log warning: <c>Unable to cast object of type
+    /// 'Daqifi.Desktop.Models.SdCardFile' to type 'Daqifi.Desktop.ViewModels.DeviceLogsViewModel'</c>.
+    /// </para>
+    ///
+    /// <para>
+    /// Which is the sharpest reason not to write one. No build gate reads the binding log, and a
+    /// blank cell is exactly what a "does the pane still look right?" pass forgives — so a wrong
+    /// declaration does not merely fail to protect, it re-creates the silent member-name failure
+    /// that putting <c>x:CompileBindings</c> on this view (#327) was there to remove, while reading
+    /// like the thing that removed it. Declare a scope where the build asks for one, or where a
+    /// template needs to narrow a wider item type, and not otherwise. See
     /// <see cref="BindingFacts.AssertTemplateScopedTo"/> for the full shape-by-shape rule.
     /// </para>
     /// </summary>
