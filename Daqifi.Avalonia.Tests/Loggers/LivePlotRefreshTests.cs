@@ -19,11 +19,11 @@ public class LivePlotCadenceTests
 {
     [Theory]
     [InlineData(0, 0, false)]
-    [InlineData(49, 0, false)]
-    [InlineData(50, 0, true)]
+    [InlineData(32, 0, false)]   // the second 16 ms timer tick
+    [InlineData(48, 0, true)]    // the third tick: about 20 fps
     [InlineData(100, 0, true)]   // false under the old 1 s throttle
-    [InlineData(1050, 1000, true)]
-    public void Redraw_is_due_every_50_ms(long now, long last, bool expected) =>
+    [InlineData(1048, 1000, true)]
+    public void Redraw_is_due_on_every_third_timer_tick(long now, long last, bool expected) =>
         Assert.Equal(expected, PlotLogger.IsRedrawDue(now, last));
 
     [Fact]

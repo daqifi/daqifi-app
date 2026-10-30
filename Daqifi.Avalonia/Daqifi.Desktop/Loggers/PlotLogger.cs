@@ -56,12 +56,14 @@ public partial class PlotLogger : ObservableObject, ILogger
 
     #region Render cadence
     /// <summary>
-    /// Minimum time between live-plot redraws while something has changed, in milliseconds. 50 ms is
-    /// about 20 frames a second, the rate the mobile plot already draws at. Upstream WPF redrew once a
-    /// second, which made the trace step visibly. Each redraw is bounded by the per-pixel decimation
-    /// <see cref="AddChannelSeries"/> turns on, not by how many points are buffered.
+    /// Minimum time between live-plot redraws while something has changed, in milliseconds. The render
+    /// timer ticks every 16 ms, so a 40 ms minimum lands on every third tick: about 48 ms apart, or 20
+    /// frames a second, the rate the mobile plot already draws at. (A 50 ms minimum would land on every
+    /// fourth tick, about 15 fps.) Upstream WPF redrew once a second, which made the trace step visibly.
+    /// Each redraw is bounded by the per-pixel decimation <see cref="AddChannelSeries"/> turns on, not by
+    /// how many points are buffered.
     /// </summary>
-    internal const long REDRAW_INTERVAL_MS = 50;
+    internal const long REDRAW_INTERVAL_MS = 40;
 
     /// <summary>
     /// How often <see cref="PlotStatsSummary"/> and the once-a-minute QA breadcrumb are recomputed, in
@@ -270,11 +272,10 @@ public partial class PlotLogger : ObservableObject, ILogger
 
         // WPF CompositionTarget.Rendering (per-frame callback) → a DispatcherTimer at
         // ~60fps; the handler throttles redraws to REDRAW_INTERVAL_MS and skips them when
-        // nothing has changed. Normal priority,
-        // NOT DispatcherPriority.Render: Avalonia renders on demand, and a
-        // below-Normal-priority timer risks never pumping on an idle (static) UI —
-        // which is exactly the state a stalled plot produces (nothing invalidates,
-        // so nothing renders, so render-priority jobs stay parked).
+        // nothing has changed. Normal priority, NOT DispatcherPriority.Render: Avalonia
+        // renders on demand, and a below-Normal-priority timer risks never pumping on an
+        // idle (static) UI — which is exactly the state a stalled plot produces (nothing
+        // invalidates, so nothing renders, so render-priority jobs stay parked).
         _renderTimer = new DispatcherTimer(DispatcherPriority.Normal)
         {
             Interval = TimeSpan.FromMilliseconds(16)
@@ -511,8 +512,8 @@ public partial class PlotLogger : ObservableObject, ILogger
 
     /// <summary>
     /// Recomputes <see cref="PlotStatsSummary"/> from the currently buffered points. Called from the
-    /// render tick every <see cref="STATS_INTERVAL_MS"/> while holding <c>PlotModel.SyncRoot</c>. Every mutation of the
-    /// per-channel collections — <see cref="Log(DataSample)"/>'s point-append and
+    /// render tick every <see cref="STATS_INTERVAL_MS"/> while holding <c>PlotModel.SyncRoot</c>.
+    /// Every mutation of the per-channel collections — <see cref="Log(DataSample)"/>'s point-append and
     /// <see cref="AddChannelSeries"/>'s series creation — takes that same lock, so enumerating the
     /// point lists here is consistent (no torn reads, no structural-modification race).
     /// Gap markers are inserted as <c>DataPoint.Undefined</c> (NaN X); a real sample always has a
