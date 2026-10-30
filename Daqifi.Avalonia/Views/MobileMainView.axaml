@@ -23,7 +23,19 @@
        silent reflection lookup. The notification list's item template is inferred from
        NotificationList's element type, so it declares nothing. -->
   <UserControl.Styles>
-    <!-- Portrait bottom-nav button -->
+    <!-- Portrait bottom-nav button.
+
+         Padding (#361): the theme's default button padding is 11px a side. In a
+         UniformGrid of four that is 22 of the 90px a cell gets on a 360dp screen —
+         the narrowest Android treats as a normal phone — and it is spent on nothing,
+         because the button is transparent, stretched and centres its content. At that
+         width "Logged Data" needs ~73px and was given 68, so it rendered "Logged Dat":
+         a hard clip with no ellipsis, indistinguishable from a typo. Taking the
+         horizontal padding back puts all four labels on one line again; the 2px that
+         stay are so a glyph never sits flush against the cell edge. The vertical
+         halves keep the theme's own 5/6, which is what holds the labels at the height
+         they have always drawn at — the recentring the macOS baseline records is
+         horizontal, and comes from the wider content box alone. -->
     <Style Selector="Button.nav">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
@@ -32,10 +44,28 @@
       <Setter Property="MinHeight" Value="54" />
       <Setter Property="FontSize" Value="{DynamicResource FontSizeCaption}" />
       <Setter Property="CornerRadius" Value="0" />
+      <Setter Property="Padding" Value="2,5,2,6" />
     </Style>
     <Style Selector="Button.nav.active">
       <Setter Property="Foreground" Value="{DynamicResource Accent}" />
       <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <!-- The label carried as its own TextBlock rather than as string Content, so that
+         wrapping and trimming can be declared on it. Padding alone fixes the screen
+         #361 was filed from, but it only buys headroom — a 320dp screen, or Android's
+         largest font scale, would spend it again. Wrapping is the floor: the bar is
+         54px tall and a caption line is ~18, so a second line costs nothing visible
+         and no label can be cut mid-word. Trimming is below that again, for a width
+         where even one word will not fit, because an ellipsis at least reads as
+         truncation. On the 360dp screen none of the four wraps.
+
+         A TextBlock in Content means the automation peer has no string to fall back on
+         and would announce the type name (#356), so each button names itself — the same
+         pattern the landscape rail buttons use, and MobileAutomationNameTests guards. -->
+    <Style Selector="Button.nav TextBlock.navLabel">
+      <Setter Property="TextAlignment" Value="Center" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="TextTrimming" Value="CharacterEllipsis" />
     </Style>
 
     <!-- Landscape left-rail item — matches the desktop NavTabItem (3px accent
@@ -176,10 +206,18 @@
             Background="{DynamicResource SurfaceRaised}"
             BorderBrush="{DynamicResource BorderDim}" BorderThickness="0,1,0,0">
       <UniformGrid Columns="4">
-        <Button x:Name="NavStream"   Classes="nav" Content="Live Graph"  Click="OnStream" />
-        <Button x:Name="NavStorage"  Classes="nav" Content="Logged Data" Click="OnStorage" />
-        <Button x:Name="NavChannels" Classes="nav" Content="Channels" Click="OnChannels" />
-        <Button x:Name="NavProfiles" Classes="nav" Content="Profiles" Click="OnProfiles" />
+        <Button x:Name="NavStream" Classes="nav" Click="OnStream" AutomationProperties.Name="Live Graph">
+          <TextBlock Classes="navLabel" Text="Live Graph" />
+        </Button>
+        <Button x:Name="NavStorage" Classes="nav" Click="OnStorage" AutomationProperties.Name="Logged Data">
+          <TextBlock Classes="navLabel" Text="Logged Data" />
+        </Button>
+        <Button x:Name="NavChannels" Classes="nav" Click="OnChannels" AutomationProperties.Name="Channels">
+          <TextBlock Classes="navLabel" Text="Channels" />
+        </Button>
+        <Button x:Name="NavProfiles" Classes="nav" Click="OnProfiles" AutomationProperties.Name="Profiles">
+          <TextBlock Classes="navLabel" Text="Profiles" />
+        </Button>
       </UniformGrid>
     </Border>
 
