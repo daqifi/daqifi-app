@@ -82,27 +82,45 @@ Every listing below is for an application that does nothing without a ~$500 piec
 the same network. A reviewer opens it, sees an empty device list, and has to decide what that
 means.
 
-On Apple's side this has a guideline number. 2.1 "Information Needed" is the most common
-first-pass rejection, and hardware-dependent features are a named trigger; the advice that
-recurs across practitioner write-ups is review notes that explain the hardware plus a screen
-recording made on a real device, and that a built-in demo mode substituting for a demo account
-needs Apple's **prior** approval and must expose full functionality
-([Apple's 2.1 in practice](https://rejectproof.com/blog/guideline-2-1-information-needed-demo-account),
-[hardware-feature guidance](https://www.tychelabs.net/guides/app-store-rejections)).
+**Apple states the requirement outright, and it is stricter than a screen recording.** Apple's
+complete-review guidance is explicit, in one bullet under "Provide information about the app":
 
-The cheapest mitigation we have is already in the product and already proven: the Nyquist's own
-test-pattern generator. `store/listing-copy.md` documents it —
+> **Required hardware:** Apps with required hardware must provide a video (not a screen
+> recording) that shows your app running on a physical Apple device as it pairs and interacts
+> with the hardware.
+
+— [Complete your app's review information](https://developer.apple.com/help/app-review/before-submitting-for-review/complete-review/)
+
+So for the iOS head (and for the Mac App Store, if it is ever pursued) the deliverable is a
+**camera-recorded video of a physical Apple device beside a Nyquist**, showing connection and
+interaction. A capture of the app's own screen — however real the data behind it — is the
+artifact Apple's text names and excludes. Preparing one would invite exactly the 2.1
+"Information Needed" rejection this section exists to prevent. Budget a camera, a tripod and
+bench time, not a screen-recording utility.
+
+Separately, 2.1 is the most common first-pass rejection, and a built-in demo mode substituting
+for a demo account needs Apple's **prior** approval and must expose full functionality
+([2.1 in practice](https://rejectproof.com/blog/guideline-2-1-information-needed-demo-account)).
+
+**For the non-Apple stores, a screen recording plus written notes is the proportionate answer**,
+and there the Nyquist's own test-pattern generator does the work. `store/listing-copy.md`
+documents it —
 
 ```
 SYSTem:STReam:TEST:PATtern 6     # 256-sample sine, per-channel phase offset
 ```
 
-— and all four Play screenshots were shot with it. The same pattern makes a review video that
-shows real packets over a real link. **Budget a screen recording and a written hardware
-explanation as a required deliverable of every store submission**, not as a reaction to a
-rejection. `store/listing-copy.md`'s "REQUIRES DAQiFi HARDWARE" paragraph, placed deliberately
-near the top of the Play description, is the same defence aimed at users instead of reviewers;
-keep it in every listing.
+— and all four Play screenshots were shot with it. Neither Play nor the Microsoft Store imposes
+Apple's physical-device rule, so there the pattern makes a perfectly good demonstration of real
+packets over a real link. Note that the generator is still worth using *in* the Apple video: it
+gives the traces something legible to show. It just does not substitute for pointing a camera at
+the device.
+
+**Budget a hardware demonstration and written review notes as a required deliverable of every
+store submission**, not as a reaction to a rejection — a camera video for Apple, a screen
+recording elsewhere. `store/listing-copy.md`'s "REQUIRES DAQiFi HARDWARE" paragraph, placed
+deliberately near the top of the Play description, is the same defence aimed at users instead of
+reviewers; keep it in every listing.
 
 One recorded data point, from the Avalonia app that shipped to the Mac App Store in August 2026
 (the thread in §5.2): App Review raised nothing about sandboxing or entitlements. The one
@@ -153,7 +171,7 @@ This is the one architectural consequence of this document, and it is cheap only
 | **macOS** | Direct download (Velopack `.pkg`), signed + notarized | **Ship first** | #109, #350 |
 | | Own Homebrew tap | **Ship second** — trivial once notarized | A notarized release |
 | | `homebrew/cask` proper | **Blocked, not by us** | Notability: needs 225 stars / 90 forks / 90 watchers |
-| | Mac App Store | **Blocked on NativeAOT** | #102's EF Core wall |
+| | Mac App Store | **Open question, not now** | Test single-file CoreCLR before assuming #102 |
 | **Linux** | AppImage | **Ship first** | #351 |
 | | Flathub | **Worth it, later** | An offline NuGet build |
 | | Snap Store | **Skip** | `serial-port` is a restricted interface |
@@ -265,8 +283,9 @@ automatically ([Acceptable Casks](https://docs.brew.sh/Acceptable-Casks)). Revis
 if the repo ever crosses the threshold; until then this is the same user experience at a fraction
 of the cost.
 
-**Mac App Store is blocked on NativeAOT, and that makes it #102's problem.** This is the finding
-with the most leverage in this document, so here is the evidence rather than a conclusion.
+**Mac App Store: a sandboxed CoreCLR build does not start, and there are two candidate
+workarounds — only one of which has been ruled in or out.** Here is the evidence rather than a
+conclusion, because the conclusion is genuinely open.
 
 A .NET app with **App Sandbox** enabled aborts at startup on current macOS:
 
@@ -290,21 +309,48 @@ opens its window under App Sandbox with only `app-sandbox`, `application-identif
 2026-08-19**, signed with `3rd Party Mac Developer Application` + `Mac Installer Distribution`,
 packaged as a `.pkg`.
 
-So the Mac App Store is reachable, and the route is NativeAOT. Which lands it squarely on the wall
-`Daqifi.Avalonia.iOS.csproj` already documents at length for iOS: three AOT-only failures in the
-data layer, the third being that **every** query needs EF Core's experimental
-`precompile-queries`, which fails on this codebase because its queries capture instance fields
-("Encountered unknown identifier name `_session`"). That is #102, and the serial problem from
-§2.1 is a second, independent blocker — a sandboxed MAS build would need
-`com.apple.security.device.serial` (a real entitlement, but with no Xcode checkbox and added by
-hand ([Apple's key reference](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)))
-and would still have no route to the firmware flash tool.
+**But NativeAOT is one workaround, not the only route — and the cheaper one was never compared
+against.** The list above is thorough about what it ruled out, and **single-file publishing is
+not on it**. That matters, because single-file is the route Avalonia's own documentation
+prescribes for this exact symptom:
 
-**Recommendation: do not pursue the Mac App Store as a channel.** Record it as *reachable if
-#102's EF Core work ever lands for iOS*, at which point it costs a packaging variant rather than a
-research project. Note the three practical traps the thread records (Homebrew dylibs breaking
-hardened runtime over Team IDs, native libs needing to be inside the bundle and signed by us,
-and a provisioning-profile mismatch presenting as `Launchd job spawn failed`) so nobody
+> If your app crashes when running inside the sandbox, try publishing with the single file option
+> enabled.
+
+— [Avalonia macOS deployment guide](https://docs.avaloniaui.net/docs/deployment/macos), whose
+example command is `--self-contained true -p:PublishSingleFile=true`.
+
+The same thread carries it too. An Avalonia maintainer's position is that for a store app
+"single file is not a solution, it's a requirement", and the other developer in the thread —
+whose sandboxed app "works fine in direct distribution and in app store mode (if the entitlement
+is included)" — measured single-file startup at within 200 ms of the alternative and concluded
+they would "build a single-file application for apple app store". That is a CoreCLR route to MAS,
+and nobody in the thread reports it failing.
+
+**So the dependency on #102 is not established.** NativeAOT would land MAS on the wall
+`Daqifi.Avalonia.iOS.csproj` documents at length — three AOT-only failures in the data layer, the
+third being that **every** query needs EF Core's experimental `precompile-queries`, which fails
+on this codebase because its queries capture instance fields ("Encountered unknown identifier
+name `_session`"). That is a real wall, and it is why *the NativeAOT route* is expensive. It is
+not a reason to call the channel closed, because the documented single-file route may not need
+AOT at all.
+
+**The serial problem from §2.1 is a second, independent question** and does not resolve with
+either route: a sandboxed MAS build would need `com.apple.security.device.serial` (a real
+entitlement, but with no Xcode checkbox and added by hand
+([Apple's key reference](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html)))
+and would still have no route to `Process.Start` of the firmware flash tool.
+
+**Recommendation: do not pursue the Mac App Store now, but record it as an open feasibility
+question rather than as gated on #102.** If it is ever taken up, the order is: **test the
+documented single-file CoreCLR packaging first** — it is a publish flag and an afternoon — and
+only fall back to NativeAOT, and therefore to #102, if that fails. Writing it down as
+"NativeAOT-gated" would retire a channel on the strength of one report that never tested the
+cheaper option.
+
+Note the three practical traps the thread records for the NativeAOT path (Homebrew dylibs
+breaking hardened runtime over Team IDs, native libs needing to be inside the bundle and signed
+by us, and a provisioning-profile mismatch presenting as `Launchd job spawn failed`) so nobody
 rediscovers them.
 
 ### 5.3 Linux
@@ -407,6 +453,12 @@ all already filed:
   `SdkOnly`-trimmed either way**. The first device build is where trimming problems surface, and
   nothing before #109 can run one.
 
+**The required-hardware video is an iOS deliverable with a physical dependency.** §2.2 has the
+rule and Apple's wording; the consequence for scheduling is that it needs a provisioned iPhone, a
+Nyquist, and a second camera in the same room at the same time. It cannot be produced from the
+simulator, and it cannot be produced before #109. Plan it alongside the first device build rather
+than at submission.
+
 **Use TestFlight as the real beta channel for every platform's benefit.** It is the one store
 channel with a usable pre-release track, and the 2.1 review-notes discipline from §2.2 can be
 rehearsed there at no cost.
@@ -477,7 +529,9 @@ Ordered by what unblocks the most, not by platform.
 
 **Gated on other work, not scheduled here**
 15. iOS App Store — after #109 and #104.
-16. Mac App Store — only if #102's NativeAOT/EF Core work lands for iOS.
+16. Mac App Store — not scheduled. If it is ever taken up, the first step is a single-file
+    CoreCLR publish under App Sandbox (a publish flag, an afternoon), **not** #102. Only if that
+    fails does the channel depend on the NativeAOT/EF Core work.
 
 **Measure 16 KB page-size compliance on the current `aab` before 2027-02-01.** It is a ten-minute
 check and a potential multi-week surprise.
@@ -497,9 +551,11 @@ re-reasoned from.
 - **#342 frames the certificate as "deliberately not a blocker".** True for SmartScreen, false for
   the Microsoft Store: the MSI/EXE route requires a Trusted-Root-chaining certificate and refuses
   self-signed. If the Store is a channel we want, #342 is a hard gate on it.
-- **#341's platform matrix calls macOS code signing "#109" and treats the Mac App Store as absent
-  rather than closed.** It is reachable, via NativeAOT, and therefore gated on #102 — worth
-  recording so the question is not reopened from scratch.
+- **#341's platform matrix treats the Mac App Store as absent rather than as an open question.**
+  A sandboxed CoreCLR build does not start, but there are two candidate workarounds and only the
+  expensive one (NativeAOT, which implies #102) has been tested. The documented single-file route
+  has not. Worth recording as "open — test single-file first" so the channel is neither assumed
+  shut nor assumed to cost an EF Core refactor.
 - **The Trusted Signing three-year-history requirement in #342 is not on Microsoft's current
   page.** It may still be true, but it is secondary-source only; the documented limits are
   geographic, plus no free/trial Azure subscription.
@@ -523,12 +579,18 @@ Each of these changes a decision above and none could be settled from a primary 
 4. **Does `com.apple.security.device.serial` actually cover `System.IO.Ports`' POSIX `open()` of
    `/dev/cu.*`?** The entitlement is documented for serial devices and reports of it working are
    second-hand. Only matters if the Mac App Store is ever revisited.
-5. **Is .NET 10's Android runtime 16 KB page-size compliant, including SkiaSharp and HarfBuzz?**
+5. **Does a single-file CoreCLR publish start under App Sandbox?** Avalonia's own deployment guide
+   prescribes `--self-contained true -p:PublishSingleFile=true` for exactly the sandbox startup
+   crash in §5.2, and the NativeAOT report that found the crash never compared against it. This is
+   the question that decides whether the Mac App Store is NativeAOT-gated (and therefore #102's
+   problem) or a publish flag away. **It is also the cheapest question on this list** — one
+   publish, one launch — and it should be answered before anyone writes the channel off.
+6. **Is .NET 10's Android runtime 16 KB page-size compliant, including SkiaSharp and HarfBuzz?**
    Framework support is documented for MAUI 9+; our native NuGet payloads are the risk. Checkable
    against the existing `aab` today.
-6. **Does a hosted DAQiFi privacy policy URL already exist** for the Play listing? If so it should
+7. **Does a hosted DAQiFi privacy policy URL already exist** for the Play listing? If so it should
    be in this repo; if not, it is a prerequisite for three more stores.
-7. **Flathub and `--device=all`:** accepted with justification, or pushed back on? Precedent says
+8. **Flathub and `--device=all`:** accepted with justification, or pushed back on? Precedent says
    accepted for hardware apps, but it is a review conversation and worth asking in the submission
    PR rather than discovering late.
 
@@ -560,9 +622,10 @@ External:
 [Acceptable Casks](https://docs.brew.sh/Acceptable-Casks) ·
 [Cask Cookbook](https://docs.brew.sh/Cask-Cookbook) ·
 [Apple App Sandbox entitlement reference](https://developer.apple.com/library/archive/documentation/Miscellaneous/Reference/EntitlementKeyReference/Chapters/EnablingAppSandbox.html) ·
-[AvaloniaUI/Avalonia#6529 — Mac App Store sandbox crash and the NativeAOT fix](https://github.com/AvaloniaUI/Avalonia/issues/6529) ·
+[AvaloniaUI/Avalonia#6529 — Mac App Store sandbox crash, the NativeAOT report and the single-file route](https://github.com/AvaloniaUI/Avalonia/issues/6529) ·
+[Avalonia macOS deployment — sandbox startup crashes and PublishSingleFile](https://docs.avaloniaui.net/docs/deployment/macos) ·
+[Apple — complete your app's review information (the required-hardware video rule)](https://developer.apple.com/help/app-review/before-submitting-for-review/complete-review/) ·
 [Apple 2.1 review notes in practice](https://rejectproof.com/blog/guideline-2-1-information-needed-demo-account) ·
-[App Store hardware-feature guidance](https://www.tychelabs.net/guides/app-store-rejections) ·
 [Flathub requirements](https://docs.flathub.org/docs/for-app-authors/requirements) ·
 [flatpak#3959 — serial device access](https://github.com/flatpak/flatpak/issues/3959) ·
 [flatpak#3016 — narrower device exemptions](https://github.com/flatpak/flatpak/issues/3016) ·
