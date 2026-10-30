@@ -28,6 +28,14 @@ public partial class PlotLogger : ObservableObject, ILogger
     private readonly Stopwatch _stopwatch = new();
     private readonly DispatcherTimer _renderTimer;
     private long _lastUpdateMilliSeconds;
+    private long _lastStatsMilliSeconds;
+
+    /// <summary>
+    /// Set by <see cref="Log(DataSample)"/> when a point lands and cleared by the render tick when it
+    /// redraws, both under <c>PlotModel.SyncRoot</c>. Lets a plot with nothing new skip the redraw, so
+    /// the faster cadence costs nothing while the device is idle.
+    /// </summary>
+    private bool _hasNewData;
     private int _precision = 4;
     private Dictionary<(string deviceSerial, string channelName), List<DataPoint>> _loggedPoints = [];
     private Dictionary<(string deviceSerial, string channelName), LineSeries> _loggedChannels = [];
@@ -44,6 +52,30 @@ public partial class PlotLogger : ObservableObject, ILogger
     private readonly Dictionary<(string deviceSerial, string channelName), string?> _rawSeriesColors = [];
     private readonly TimestampGapDetector _gapDetector = new();
     private string _plotStatsSummary = EMPTY_PLOT_STATS_SUMMARY;
+    #endregion
+
+    #region Render cadence
+    /// <summary>
+    /// Minimum time between live-plot redraws while something has changed, in milliseconds. 50 ms is
+    /// about 20 frames a second, the rate the mobile plot already draws at. Upstream WPF redrew once a
+    /// second, which made the trace step visibly. Each redraw is bounded by the per-pixel decimation
+    /// <see cref="AddChannelSeries"/> turns on, not by how many points are buffered.
+    /// </summary>
+    internal const long REDRAW_INTERVAL_MS = 50;
+
+    /// <summary>
+    /// How often <see cref="PlotStatsSummary"/> and the once-a-minute QA breadcrumb are recomputed, in
+    /// milliseconds. Kept at upstream's one second, separate from <see cref="REDRAW_INTERVAL_MS"/>: the
+    /// summary walks every buffered point, the UI harness reads it as a once-a-second value, and nobody
+    /// gains from recomputing it twenty times as often.
+    /// </summary>
+    internal const long STATS_INTERVAL_MS = 1000;
+
+    /// <summary>Whether enough time has passed since the last redraw for another one.</summary>
+    internal static bool IsRedrawDue(long nowMs, long lastRedrawMs) => nowMs - lastRedrawMs >= REDRAW_INTERVAL_MS;
+
+    /// <summary>Whether the plot-stats summary is due a recompute. Strictly greater, as upstream's tick was.</summary>
+    internal static bool IsStatsDue(long nowMs, long lastStatsMs) => nowMs - lastStatsMs > STATS_INTERVAL_MS;
     #endregion
 
     #region Plot-stats UIA hook
@@ -237,7 +269,8 @@ public partial class PlotLogger : ObservableObject, ILogger
         PlotModel.IsLegendVisible = false;
 
         // WPF CompositionTarget.Rendering (per-frame callback) → a DispatcherTimer at
-        // ~60fps; the handler keeps its own 1 s stopwatch throttle. Normal priority,
+        // ~60fps; the handler throttles redraws to REDRAW_INTERVAL_MS and skips them when
+        // nothing has changed. Normal priority,
         // NOT DispatcherPriority.Render: Avalonia renders on demand, and a
         // below-Normal-priority timer risks never pumping on an idle (static) UI —
         // which is exactly the state a stalled plot produces (nothing invalidates,
@@ -320,6 +353,8 @@ public partial class PlotLogger : ObservableObject, ILogger
             {
                 points.RemoveAt(0);
             }
+
+            _hasNewData = true;
         }
 
         // Change notifications are raised outside the lock so a binding handler can never re-enter the
@@ -366,6 +401,11 @@ public partial class PlotLogger : ObservableObject, ILogger
             Title = channelName,
             ItemsSource = newDataPoints,
             Color = ChannelSeriesColor.ParseOrFallback(newColor),
+            // Collapse the points that land on one pixel column to that column's first, min, max and
+            // last before drawing, so a redraw costs about four points per pixel of width however
+            // many samples are buffered, and a spike narrower than a pixel still shows. The tracker
+            // reads the undecimated points, so hover values are unchanged.
+            Decimator = OxyPlot.Decimator.Decimate,
             TrackerFormatString = $"{channelName} ({serialSuffix})\n{{1}}: {{2:0.###}}\n{{3}}: {{4:0.######}}"
         };
 
@@ -417,28 +457,43 @@ public partial class PlotLogger : ObservableObject, ILogger
             Common.Loggers.AppLogger.Instance.Information("Plot render tick active (first tick fired).");
         }
 
-        if (_stopwatch.ElapsedMilliseconds > _lastUpdateMilliSeconds + 1000) // Or your existing update interval
+        var now = _stopwatch.ElapsedMilliseconds;
+        if (!IsRedrawDue(now, _lastUpdateMilliSeconds))
         {
-            lock (PlotModel.SyncRoot)
+            return;
+        }
+
+        lock (PlotModel.SyncRoot)
+        {
+            // Mirror each subscribed channel's visibility onto its series. A change here needs a redraw
+            // even when no new sample has arrived, e.g. a channel hidden while the device is idle.
+            var visibilityChanged = false;
+            if (LoggingManager.Instance != null) // Ensure LoggingManager instance is available
             {
-                // Iterate through subscribed channels to update series visibility
-                if (LoggingManager.Instance != null) // Ensure LoggingManager instance is available
+                foreach (var channel in LoggingManager.Instance.SubscribedChannels)
                 {
-                    foreach (var channel in LoggingManager.Instance.SubscribedChannels)
+                    var key = (channel.DeviceSerialNo, channel.Name);
+                    if (LoggedChannels.TryGetValue(key, out LineSeries series))
                     {
-                        var key = (channel.DeviceSerialNo, channel.Name);
-                        if (LoggedChannels.TryGetValue(key, out LineSeries series))
+                        if (series.IsVisible != channel.IsVisible)
                         {
-                            if (series.IsVisible != channel.IsVisible)
-                            {
-                                series.IsVisible = channel.IsVisible;
-                            }
+                            series.IsVisible = channel.IsVisible;
+                            visibilityChanged = true;
                         }
                     }
                 }
-                PlotModel.InvalidatePlot(true); // This will redraw the plot with updated series visibility
+            }
+
+            if (_hasNewData || visibilityChanged)
+            {
+                _hasNewData = false;
+                PlotModel.InvalidatePlot(true);
+            }
+
+            if (IsStatsDue(now, _lastStatsMilliSeconds))
+            {
                 UpdatePlotStatsSummary();
-                if (_lastUpdateMilliSeconds % 60000 < 1000 && LoggedPoints.Count > 0)
+                if (_lastStatsMilliSeconds % 60000 < 1000 && LoggedPoints.Count > 0)
                 {
                     // QA breadcrumb: once a minute while channels exist, record what the
                     // plot layer believes it holds — points reaching here but not the
@@ -447,14 +502,16 @@ public partial class PlotLogger : ObservableObject, ILogger
                         $"Plot tick: {PlotModel.Series.Count} series, " +
                         $"{LoggedPoints.Values.Sum(pl => pl.Count)} buffered points; stats: {PlotStatsSummary}");
                 }
-                _lastUpdateMilliSeconds = _stopwatch.ElapsedMilliseconds;
+                _lastStatsMilliSeconds = now;
             }
+
+            _lastUpdateMilliSeconds = now;
         }
     }
 
     /// <summary>
-    /// Recomputes <see cref="PlotStatsSummary"/> from the currently buffered points. Called on the
-    /// once-a-second render tick while holding <c>PlotModel.SyncRoot</c>. Every mutation of the
+    /// Recomputes <see cref="PlotStatsSummary"/> from the currently buffered points. Called from the
+    /// render tick every <see cref="STATS_INTERVAL_MS"/> while holding <c>PlotModel.SyncRoot</c>. Every mutation of the
     /// per-channel collections — <see cref="Log(DataSample)"/>'s point-append and
     /// <see cref="AddChannelSeries"/>'s series creation — takes that same lock, so enumerating the
     /// point lists here is consistent (no torn reads, no structural-modification race).
