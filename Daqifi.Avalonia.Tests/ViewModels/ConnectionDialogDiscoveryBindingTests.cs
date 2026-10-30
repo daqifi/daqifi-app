@@ -64,7 +64,11 @@ public class ConnectionDialogDiscoveryBindingTests
     /// <summary>
     /// Each <c>DataTemplate</c>'s own item scope, pinned to <b>the list it belongs to</b>. Inside a
     /// template the <c>DataContext</c> is the item, not the view model, so a template that loses its
-    /// <c>x:DataType</c> resolves against an inherited scope — the escape hatch #323 exists to remove.
+    /// <c>x:DataType</c> does <b>not</b> fall back to an inherited scope (issue #336): it resolves
+    /// against a scope inferred from the <c>ItemsSource</c> beside it, and — where the shape infers
+    /// nothing — against <c>XamlPseudoType</c>, on which no member resolves, so every binding in it
+    /// is a build error. Under the reflection that this view's <c>x:CompileBindings</c> replaced
+    /// (#323) losing the declaration was silent; it is not any more.
     ///
     /// <para>
     /// The list is named rather than the type merely being looked for somewhere in the file: the three
