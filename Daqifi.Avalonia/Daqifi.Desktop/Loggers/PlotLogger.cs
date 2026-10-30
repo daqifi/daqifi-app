@@ -60,8 +60,8 @@ public partial class PlotLogger : ObservableObject, ILogger
     /// timer ticks every 16 ms, so a 40 ms minimum lands on every third tick: about 48 ms apart, or 20
     /// frames a second, the rate the mobile plot already draws at. (A 50 ms minimum would land on every
     /// fourth tick, about 15 fps.) Upstream WPF redrew once a second, which made the trace step visibly.
-    /// Each redraw is bounded by the per-pixel decimation <see cref="AddChannelSeries"/> turns on, not by
-    /// how many points are buffered.
+    /// The per-pixel decimation <see cref="AddChannelSeries"/> turns on caps the geometry each redraw
+    /// draws; transforming the buffered points to screen space still scales with how many there are.
     /// </summary>
     internal const long REDRAW_INTERVAL_MS = 40;
 
@@ -403,9 +403,10 @@ public partial class PlotLogger : ObservableObject, ILogger
             ItemsSource = newDataPoints,
             Color = ChannelSeriesColor.ParseOrFallback(newColor),
             // Collapse the points that land on one pixel column to that column's first, min, max and
-            // last before drawing, so a redraw costs about four points per pixel of width however
-            // many samples are buffered, and a spike narrower than a pixel still shows. The tracker
-            // reads the undecimated points, so hover values are unchanged.
+            // last before drawing, so the geometry drawn is at most about four points per pixel of
+            // width and a spike narrower than a pixel still shows. Every buffered point is still
+            // transformed and grouped, so that part scales with the buffer. The tracker reads the
+            // undecimated points, so hover values are unchanged.
             Decimator = OxyPlot.Decimator.Decimate,
             TrackerFormatString = $"{channelName} ({serialSuffix})\n{{1}}: {{2:0.###}}\n{{3}}: {{4:0.######}}"
         };
