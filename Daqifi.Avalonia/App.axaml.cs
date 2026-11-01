@@ -27,6 +27,10 @@ public partial class App : Application
             // way (checked both) — so this sits with the other identity wiring.
             Services.MacApplicationMenu.Install(this);
 
+            // Windows: every title bar gets the small traces glyph instead of the launcher
+            // icon's muddy 16px frame; the taskbar keeps the full icon (#492).
+            Services.WindowsTitleBarIcon.Install();
+
             // Absorption seam: the ported Daqifi.Desktop.App startup host owns DI, database
             // migration, exception hooks, and MainWindow creation (upstream WPF OnStartup);
             // this bootstrap only hands it the desktop lifetime.
