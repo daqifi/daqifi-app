@@ -48,7 +48,7 @@ public partial class SplashWindow : Window
 
         void OnAnimationFrame(TimeSpan _)
         {
-            if (--framesLeft > 0)
+            if (--framesLeft > 0 && frame.Continue)
             {
                 RequestAnimationFrame(OnAnimationFrame);
                 return;
@@ -56,10 +56,20 @@ public partial class SplashWindow : Window
             frame.Continue = false;
         }
 
-        RequestAnimationFrame(OnAnimationFrame);
-        using var timeout = DispatcherTimer.RunOnce(
-            () => frame.Continue = false, TimeSpan.FromMilliseconds(PAINT_TIMEOUT_MS));
-        Dispatcher.UIThread.PushFrame(frame);
+        void OnClosed(object? sender, EventArgs e) => frame.Continue = false;
+
+        Closed += OnClosed;
+        try
+        {
+            RequestAnimationFrame(OnAnimationFrame);
+            using var timeout = DispatcherTimer.RunOnce(
+                () => frame.Continue = false, TimeSpan.FromMilliseconds(PAINT_TIMEOUT_MS));
+            Dispatcher.UIThread.PushFrame(frame);
+        }
+        finally
+        {
+            Closed -= OnClosed;
+        }
     }
 
     /// <summary>Fades the window out, then closes it.</summary>

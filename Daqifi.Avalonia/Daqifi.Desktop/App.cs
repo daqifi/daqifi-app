@@ -405,6 +405,11 @@ public static class App
     // @port: Daqifi.Desktop.App.ShowSplashScreen
     private static void ShowSplashScreen(IClassicDesktopStyleApplicationLifetime desktop)
     {
+        // The splash is the only window here, and closing the last window ends the app: by failure
+        // below, or by a close message while it waits to paint. That would shut the dispatcher down
+        // with startup still to run, leaving a process with no window and no main loop.
+        var shutdownMode = desktop.ShutdownMode;
+        desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
         try
         {
             SplashScreen = new SplashWindow();
@@ -414,11 +419,11 @@ public static class App
         {
             // As upstream: a failed splash never stops startup.
             AppLogger.Instance.Warning(ex, "Could not show the splash screen");
-
-            // It may be the only window open, and closing the last window ends the app.
-            desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
             CloseSplashScreenNow();
-            desktop.ShutdownMode = ShutdownMode.OnLastWindowClose;
+        }
+        finally
+        {
+            desktop.ShutdownMode = shutdownMode;
         }
     }
 
