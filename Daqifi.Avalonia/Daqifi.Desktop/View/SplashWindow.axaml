@@ -12,9 +12,15 @@
         Background="Transparent"
         TransparencyLevelHint="Transparent">
     <!-- The upstream WPF SplashScreen("Images/DAQiFi.png"): the logo alone, at the image's own
-         size, transparent around it. -->
+         size, transparent around it. Its lettering is near-black, so a soft shadow just lighter
+         than a dark window gives it an edge there; the margin keeps the shadow from clipping. -->
     <Image Source="avares://Daqifi.Avalonia/Daqifi.Desktop/Images/DAQiFi.png"
            Width="776"
            Height="450"
-           RenderOptions.BitmapInterpolationMode="HighQuality" />
+           Margin="24"
+           RenderOptions.BitmapInterpolationMode="HighQuality">
+        <Image.Effect>
+            <DropShadowEffect OffsetX="0" OffsetY="0" BlurRadius="12" Color="#5A6068" Opacity="1" />
+        </Image.Effect>
+    </Image>
 </Window>
