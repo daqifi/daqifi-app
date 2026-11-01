@@ -1,0 +1,20 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Daqifi.Desktop.View.SplashWindow"
+        Title="DAQiFi"
+        WindowStartupLocation="CenterScreen"
+        WindowDecorations="None"
+        CanResize="False"
+        SizeToContent="WidthAndHeight"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Topmost="True"
+        Background="Transparent"
+        TransparencyLevelHint="Transparent">
+    <!-- The upstream WPF SplashScreen("Images/DAQiFi.png"): the logo alone, at the image's own
+         size, transparent around it. -->
+    <Image Source="avares://Daqifi.Avalonia/Daqifi.Desktop/Images/DAQiFi.png"
+           Width="776"
+           Height="450"
+           RenderOptions.BitmapInterpolationMode="HighQuality" />
+</Window>
