@@ -34,11 +34,8 @@ namespace Daqifi.Desktop;
 // @port: Daqifi.Desktop.App
 public static class App
 {
-    // WPF SplashScreen("Images/DAQiFi.png") has no Avalonia analog and the image asset
-    // is not yet in the port; ShowSplashScreen below is a recorded no-op (upstream already
-    // swallowed splash failures silently).
     // @port: Daqifi.Desktop.App.SplashScreen
-    private static Window? SplashScreen { get; set; }
+    private static SplashWindow? SplashScreen { get; set; }
 
     // @port: Daqifi.Desktop.App.ServiceProvider
     public static IServiceProvider ServiceProvider { get; private set; }
@@ -129,8 +126,32 @@ public static class App
 
         AppDataPaths.ThrowIfDataDirectoryUnusable();
 
-        ShowSplashScreen();
+        if (ShouldShowSplash(OperatingSystem.IsWindows(), IsTestMode))
+        {
+            ShowSplashScreen(desktop);
+        }
 
+        try
+        {
+            InitializeServicesAndShowMainWindow(desktop);
+        }
+        catch
+        {
+            // Whatever reports this failure must not sit behind a topmost logo.
+            CloseSplashScreenNow();
+            throw;
+        }
+
+        // Upstream's auto-close: wait until the dispatcher has caught up with the main window.
+        if (SplashScreen is { } splash)
+        {
+            SplashScreen = null;
+            Dispatcher.UIThread.Post(splash.FadeOutAndClose, DispatcherPriority.Background);
+        }
+    }
+
+    private static void InitializeServicesAndShowMainWindow(IClassicDesktopStyleApplicationLifetime desktop)
+    {
         Directory.CreateDirectory(DaqifiDataDirectory);
         AppDomain.CurrentDomain.SetData("DataDirectory", DaqifiDataDirectory);
 
@@ -218,6 +239,9 @@ public static class App
         if (DatabaseMigrator.PrepareMigration(contextFactory, DatabasePath))
         {
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+            // The status window carries the same logo and says why startup is taking a while.
+            CloseSplashScreenNow();
 
             var statusWindow = new MigrationStatusWindow();
             statusWindow.Show();
@@ -372,12 +396,48 @@ public static class App
         AppLogger.Instance.Shutdown();
     }
 
+    /// <summary>
+    /// Whether to show the splash. Windows only, as upstream's WPF splash was; test mode shows none,
+    /// so unattended runs and captures are not covered by a topmost window.
+    /// </summary>
+    internal static bool ShouldShowSplash(bool isWindows, bool isTestMode) => isWindows && !isTestMode;
+
     // @port: Daqifi.Desktop.App.ShowSplashScreen
-    private static void ShowSplashScreen()
+    private static void ShowSplashScreen(IClassicDesktopStyleApplicationLifetime desktop)
     {
-        // Intentional no-op for now: the WPF SplashScreen bitmap flash has no Avalonia
-        // analog and the DAQiFi.png asset hasn't been brought over; upstream tolerated a
-        // failed splash silently, so startup behavior is unchanged. Tracked as view-layer
-        // polish work.
+        // The splash is the only window here, and closing the last window ends the app: by failure
+        // below, or by a close message while it waits to paint. That would shut the dispatcher down
+        // with startup still to run, leaving a process with no window and no main loop.
+        var shutdownMode = desktop.ShutdownMode;
+        desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        try
+        {
+            SplashScreen = new SplashWindow();
+            SplashScreen.ShowAndWaitForPaint();
+        }
+        catch (Exception ex)
+        {
+            // As upstream: a failed splash never stops startup.
+            AppLogger.Instance.Warning(ex, "Could not show the splash screen");
+            CloseSplashScreenNow();
+        }
+        finally
+        {
+            desktop.ShutdownMode = shutdownMode;
+        }
+    }
+
+    private static void CloseSplashScreenNow()
+    {
+        var splash = SplashScreen;
+        SplashScreen = null;
+        try
+        {
+            splash?.Close();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Instance.Warning(ex, "Could not close the splash screen");
+        }
     }
 }
