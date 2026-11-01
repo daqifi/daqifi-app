@@ -128,7 +128,7 @@ public static class App
 
         if (ShouldShowSplash(OperatingSystem.IsWindows(), IsTestMode))
         {
-            ShowSplashScreen();
+            ShowSplashScreen(desktop);
         }
 
         try
@@ -403,7 +403,7 @@ public static class App
     internal static bool ShouldShowSplash(bool isWindows, bool isTestMode) => isWindows && !isTestMode;
 
     // @port: Daqifi.Desktop.App.ShowSplashScreen
-    private static void ShowSplashScreen()
+    private static void ShowSplashScreen(IClassicDesktopStyleApplicationLifetime desktop)
     {
         try
         {
@@ -414,7 +414,11 @@ public static class App
         {
             // As upstream: a failed splash never stops startup.
             AppLogger.Instance.Warning(ex, "Could not show the splash screen");
+
+            // It may be the only window open, and closing the last window ends the app.
+            desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
             CloseSplashScreenNow();
+            desktop.ShutdownMode = ShutdownMode.OnLastWindowClose;
         }
     }
 
