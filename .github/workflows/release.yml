@@ -193,15 +193,24 @@ jobs:
       # so a person writes the notes and publishes it; the updater cannot see a draft. An
       # existing release (notes already written) just gets the files, replacing any from an
       # earlier run of the same tag.
+      #
+      # An existing release must carry the prerelease flag the tag implies. The updater's
+      # GithubSource filters on GitHub's flag, not the version suffix, so a beta's feed on a
+      # release marked stable would be offered to every stable install. A release a person made
+      # is theirs to fix, so a mismatch fails the job rather than editing it.
       - name: Attach to the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if ! gh release view "${TAG}" >/dev/null 2>&1; then
+          existing=$(gh release view "${TAG}" --json isPrerelease -q .isPrerelease 2>/dev/null | tr -d '\r' || true)
+          if [ -z "${existing}" ]; then
             pre=()
             if [ "${PRERELEASE}" = "true" ]; then pre=(--prerelease); fi
             gh release create "${TAG}" --draft --verify-tag "${pre[@]}" \
               --title "${TAG}" --notes "Built by the release workflow from ${TAG}. Notes to follow."
+          elif [ "${existing}" != "${PRERELEASE}" ]; then
+            echo "::error::Release ${TAG} has prerelease=${existing}, but the tag says prerelease=${PRERELEASE}. Fix the release's 'Set as a pre-release' box and re-run; nothing was uploaded."
+            exit 1
           fi
           gh release upload "${TAG}" "${RUNNER_TEMP}"/upload/* --clobber
