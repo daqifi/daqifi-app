@@ -55,10 +55,19 @@ jobs:
       tag: ${{ steps.check.outputs.tag }}
       version: ${{ steps.check.outputs.version }}
       prerelease: ${{ steps.check.outputs.prerelease }}
+      sha: ${{ steps.sha.outputs.sha }}
     steps:
+      # Fully qualified: given a bare name, actions/checkout prefers a BRANCH of that name over
+      # the tag, so a branch called v3.4.0 would be checked out instead of the tag v3.4.0.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
+
+      # The commit that was validated. The build job checks out this SHA rather than a name, so
+      # it builds exactly the tree the guard below passed.
+      - name: Record the validated commit
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # The tag, DaqifiAppVersion and app.manifest must all name the same release. A tag
       # v3.4.0 on a tree that still says 3.3.0 would ship packages the updater compares wrongly
@@ -86,7 +95,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.version.outputs.tag }}
+          ref: ${{ needs.version.outputs.sha }}
 
       # From global.json, never a floating 10.0.x: the SDK patch decides package versions the
       # lock files record (see build.yml and #107).

@@ -67,9 +67,15 @@ expect("two-part tag fails", run("v3.4", good).returncode == 1)
 expect("junk after the version fails", run("v3.4.0x", good).returncode == 1)
 expect("stale app.manifest fails", run("v3.4.0", tree("3.4.0", "3.3.0.0")).returncode == 1)
 
-# The real tree must agree with itself, or the next release tag would fail on arrival.
-r = run("v0.0.0", REPO)
-expect("the real tree's manifest matches its DaqifiAppVersion",
-       "app.manifest" not in r.stdout and "DaqifiAppVersion" in r.stdout)
+# The real tree must agree with itself, or the next release tag would fail on arrival. Tagged
+# with the tree's own version so the run gets past the tag comparison and reaches the manifest
+# check; a tag that failed earlier would pass this row whatever app.manifest said.
+sys.dont_write_bytecode = True  # no __pycache__ left in the checkout
+sys.path.insert(0, HERE)
+import check_release_version  # noqa: E402
+
+real = check_release_version.app_version(REPO)
+r = run(f"v{real}", REPO)
+expect(f"the real tree passes for its own version v{real}", r.returncode == 0)
 
 sys.exit(1 if failures else 0)
