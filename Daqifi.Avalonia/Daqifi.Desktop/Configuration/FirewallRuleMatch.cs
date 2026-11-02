@@ -14,7 +14,8 @@ public sealed record FirewallRuleInfo(
     int Action,
     bool Enabled,
     int Protocol,
-    string? LocalPorts);
+    string? LocalPorts,
+    string? RemoteAddresses = "*");
 
 /// <summary>
 /// Decides whether an existing firewall rule already covers this app's discovery port, so the
@@ -45,8 +46,18 @@ public static class FirewallRuleMatch
         if (rule.Protocol != Udp && rule.Protocol != AnyProtocol)
             return false;
 
-        return IsSameProgram(rule.ApplicationName, applicationPath) && PortsInclude(rule.LocalPorts, port);
+        return IsSameProgram(rule.ApplicationName, applicationPath)
+               && PortsInclude(rule.LocalPorts, port)
+               && IsAnyAddress(rule.RemoteAddresses);
     }
+
+    /// <summary>
+    /// Devices can be at any address on the network, so only a rule open to every sender counts.
+    /// A rule limited to some addresses (say, one a user made for a single device) is left alone,
+    /// and the app adds its own; at worst that is one rule more than needed.
+    /// </summary>
+    internal static bool IsAnyAddress(string? remoteAddresses) =>
+        string.IsNullOrWhiteSpace(remoteAddresses) || remoteAddresses.Trim() == "*";
 
     /// <summary>
     /// Firewall program paths are case-insensitive and may hold environment variables

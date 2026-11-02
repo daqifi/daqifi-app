@@ -10,13 +10,13 @@ namespace Daqifi.Avalonia.Tests.Configuration;
 /// </summary>
 public class FirewallRuleMatchTests
 {
-    private const string App = @"C:\Program Files\Daqifi.App\current\DAQiFi.exe";
+    private const string App = @"C:\Program Files\Daqifi.App\current\Daqifi.Avalonia.Desktop.exe";
     private const int Port = FirewallConfiguration.DiscoveryPort;
 
     private static FirewallRuleInfo Rule(
         string? program = App, int direction = 1, int action = 1, bool enabled = true,
-        int protocol = 17, string? ports = "30303") =>
-        new(program, direction, action, enabled, protocol, ports);
+        int protocol = 17, string? ports = "30303", string? remote = "*") =>
+        new(program, direction, action, enabled, protocol, ports, remote);
 
     [Fact]
     public void Our_own_rule_matches() =>
@@ -63,6 +63,24 @@ public class FirewallRuleMatchTests
     public void A_rule_for_no_particular_program_does_not_match(string? program) =>
         Assert.False(FirewallRuleMatch.AllowsInboundUdp(Rule(program: program), App, Port));
 
+    /// <summary>
+    /// A rule open only to some senders still drops discovery replies from devices elsewhere on
+    /// the network, so it must not stop the app adding its own.
+    /// </summary>
+    [Theory]
+    [InlineData("192.168.1.10")]
+    [InlineData("LocalSubnet")]
+    [InlineData("10.0.0.0/255.0.0.0")]
+    public void A_rule_limited_to_some_senders_does_not_match(string remote) =>
+        Assert.False(FirewallRuleMatch.AllowsInboundUdp(Rule(remote: remote), App, Port));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("*")]
+    public void A_rule_open_to_every_sender_matches(string? remote) =>
+        Assert.True(FirewallRuleMatch.AllowsInboundUdp(Rule(remote: remote), App, Port));
+
     [Theory]
     [InlineData(null, true)]
     [InlineData("", true)]
@@ -86,7 +104,7 @@ public class FirewallRuleMatchTests
         Environment.SetEnvironmentVariable(name, @"C:\Program Files");
         try
         {
-            Assert.True(FirewallRuleMatch.IsSameProgram($@"%{name}%\Daqifi.App\current\DAQiFi.exe", App));
+            Assert.True(FirewallRuleMatch.IsSameProgram($@"%{name}%\Daqifi.App\current\Daqifi.Avalonia.Desktop.exe", App));
         }
         finally
         {

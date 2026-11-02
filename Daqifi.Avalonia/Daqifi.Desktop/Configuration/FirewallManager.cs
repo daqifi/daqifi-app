@@ -188,7 +188,8 @@ public class WindowsFirewallWrapper
             Action: Convert.ToInt32(Get("Action"), CultureInfo.InvariantCulture),
             Enabled: Convert.ToBoolean(Get("Enabled"), CultureInfo.InvariantCulture),
             Protocol: Convert.ToInt32(Get("Protocol"), CultureInfo.InvariantCulture),
-            LocalPorts: Get("LocalPorts") as string);
+            LocalPorts: Get("LocalPorts") as string,
+            RemoteAddresses: Get("RemoteAddresses") as string);
     }
 
     // @port: Daqifi.Desktop.Configuration.WindowsFirewallWrapper.CreateUdpRule
