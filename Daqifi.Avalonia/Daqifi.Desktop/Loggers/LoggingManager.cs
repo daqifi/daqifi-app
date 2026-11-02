@@ -24,9 +24,9 @@ public partial class LoggingManager : ObservableObject
     #region Private Variables
     // @port: Daqifi.Desktop.Logger.LoggingManager.Instance
     private readonly AppLogger AppLogger = AppLogger.Instance;
-    // Use the shared, elevation-aware data directory (AppDataPaths) so the profiles XML is
-    // written to a location the process can actually write (per-user when un-elevated),
-    // instead of failing on the admin-owned %ProgramData% file.
+    // Use the shared per-user data directory (AppDataPaths) so the profiles XML sits with the
+    // database and logs, in a location the process can always write, instead of upstream's
+    // admin-owned %ProgramData% file.
     private static string ProfileAppDirectory = Daqifi.Desktop.Common.AppDataPaths.DataDirectory;
     // Path.Combine, not upstream's `ProfileAppDirectory + "\\..."` — see the same fix in
     // DaqifiSettings. On macOS/Linux the backslash is a legal filename character, so the

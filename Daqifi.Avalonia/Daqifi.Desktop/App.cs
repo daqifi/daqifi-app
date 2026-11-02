@@ -80,9 +80,9 @@ public static class App
 
     /// <summary>
     /// <c>true</c> when the process is running elevated (administrator). Firewall
-    /// configuration (which requires admin) only runs when elevated; un-elevated runs use a
-    /// per-user data directory and skip it, so a non-admin Debug launch never crashes on an
-    /// admin-owned database or shows a "configure firewall manually" prompt.
+    /// configuration (which requires admin) only runs when elevated; un-elevated runs skip it
+    /// rather than show a "configure firewall manually" prompt. Elevation no longer moves the
+    /// data directory — see <see cref="AppDataPaths"/>.
     /// </summary>
     // @port: Daqifi.Desktop.App.IsElevated
     public static bool IsElevated => AppDataPaths.IsElevated;
