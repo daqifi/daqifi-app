@@ -42,8 +42,7 @@ public static class App
 
     /// <summary>
     /// Root directory for DAQiFi application data (logs, database). Resolved by
-    /// <see cref="AppDataPaths"/>: machine-wide for elevated (production) runs, per-user for
-    /// any un-elevated run (the UI-test harness or a normal non-admin Debug launch).
+    /// <see cref="AppDataPaths"/>: always per-user, elevated or not.
     /// </summary>
     // @port: Daqifi.Desktop.App.DaqifiDataDirectory
     public static string DaqifiDataDirectory => AppDataPaths.DataDirectory;

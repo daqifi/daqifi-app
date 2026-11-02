@@ -61,9 +61,8 @@ public class DaqifiSettings
     private const string DefaultCsvDelimiter = ",";
 
     private string _csvDelimiter = DefaultCsvDelimiter;
-    // Use the shared, elevation-aware data directory (AppDataPaths): machine-wide for
-    // elevated production runs, per-user for un-elevated runs. Keeps settings writable
-    // (and consistent with the database/logs) instead of failing on an admin-owned file.
+    // Use the shared per-user data directory (AppDataPaths). Keeps settings writable and
+    // with the database and logs, instead of upstream's admin-owned machine-wide file.
     private static readonly string AppDirectory = Daqifi.Desktop.Common.AppDataPaths.DataDirectory;
     // Path.Combine, not upstream's `AppDirectory + "\\..."`. A backslash is a legal filename
     // character on macOS/Linux, so the concatenation does not fail there — it silently creates
