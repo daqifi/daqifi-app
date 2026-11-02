@@ -20,7 +20,16 @@ internal static class Program
         // unexplained administrator prompt before the window opens, on every launch, for a user
         // who may not be able to approve it. Updates install only when the user clicks Install.
         VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
-        AppUpdates.Current = new VelopackAppUpdateService();
+        try
+        {
+            AppUpdates.Current = new VelopackAppUpdateService();
+        }
+        catch (Exception ex)
+        {
+            // Too early for AppLogger. Updates are never worth failing startup over: the app runs
+            // on with the default unsupported service, and offers none.
+            System.Diagnostics.Trace.WriteLine($"Update service unavailable: {ex}");
+        }
 
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
