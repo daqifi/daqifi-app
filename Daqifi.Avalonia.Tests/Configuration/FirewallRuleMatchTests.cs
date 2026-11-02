@@ -81,6 +81,32 @@ public class FirewallRuleMatchTests
     public void A_rule_open_to_every_sender_matches(string? remote) =>
         Assert.True(FirewallRuleMatch.AllowsInboundUdp(Rule(remote: remote), App, Port));
 
+    /// <summary>
+    /// Every other way a rule can narrow the traffic it admits: the PC's own address, the
+    /// sender's port, the kind of adapter, a specific adapter, or a Windows service. Each one
+    /// can leave discovery blocked on some network, so each one means "not covered".
+    /// </summary>
+    public static TheoryData<string, FirewallRuleInfo> NarrowedRules => new()
+    {
+        { "local address", Rule() with { LocalAddresses = "192.168.50.10" } },
+        { "remote port", Rule() with { RemotePorts = "5000" } },
+        { "interface type", Rule() with { InterfaceTypes = "Lan" } },
+        { "service", Rule() with { ServiceName = "SomeService" } },
+        { "pinned adapter", Rule() with { BoundToInterfaces = true } },
+    };
+
+    [Theory]
+    [MemberData(nameof(NarrowedRules))]
+    public void A_rule_narrowed_any_other_way_does_not_match(string how, FirewallRuleInfo rule) =>
+        Assert.False(FirewallRuleMatch.AllowsInboundUdp(rule, App, Port), how);
+
+    [Theory]
+    [InlineData("All")]
+    [InlineData("all")]
+    [InlineData(null)]
+    public void Every_interface_type_matches(string? interfaceTypes) =>
+        Assert.True(FirewallRuleMatch.AllowsInboundUdp(Rule() with { InterfaceTypes = interfaceTypes }, App, Port));
+
     [Theory]
     [InlineData(null, true)]
     [InlineData("", true)]

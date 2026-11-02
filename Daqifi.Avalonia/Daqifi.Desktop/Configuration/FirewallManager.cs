@@ -189,7 +189,13 @@ public class WindowsFirewallWrapper
             Enabled: Convert.ToBoolean(Get("Enabled"), CultureInfo.InvariantCulture),
             Protocol: Convert.ToInt32(Get("Protocol"), CultureInfo.InvariantCulture),
             LocalPorts: Get("LocalPorts") as string,
-            RemoteAddresses: Get("RemoteAddresses") as string);
+            RemoteAddresses: Get("RemoteAddresses") as string,
+            LocalAddresses: Get("LocalAddresses") as string,
+            RemotePorts: Get("RemotePorts") as string,
+            InterfaceTypes: Get("InterfaceTypes") as string,
+            ServiceName: Get("ServiceName") as string,
+            // A VARIANT array of adapter names when the rule is pinned to some; null otherwise.
+            BoundToInterfaces: Get("Interfaces") is Array { Length: > 0 });
     }
 
     // @port: Daqifi.Desktop.Configuration.WindowsFirewallWrapper.CreateUdpRule

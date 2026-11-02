@@ -7,6 +7,8 @@ namespace Daqifi.Desktop.Configuration;
 /// The fields of one Windows Firewall rule that decide whether it already lets discovery
 /// traffic reach this app. Values are the raw <c>INetFwRule</c> ones: <see cref="Direction"/>
 /// 1 = inbound, <see cref="Action"/> 1 = allow, <see cref="Protocol"/> 17 = UDP, 256 = any.
+/// The rest narrow which traffic the rule admits; the defaults are the unrestricted values a
+/// rule from the Windows prompt carries.
 /// </summary>
 public sealed record FirewallRuleInfo(
     string? ApplicationName,
@@ -15,7 +17,12 @@ public sealed record FirewallRuleInfo(
     bool Enabled,
     int Protocol,
     string? LocalPorts,
-    string? RemoteAddresses = "*");
+    string? RemoteAddresses = "*",
+    string? LocalAddresses = "*",
+    string? RemotePorts = "*",
+    string? InterfaceTypes = "All",
+    string? ServiceName = null,
+    bool BoundToInterfaces = false);
 
 /// <summary>
 /// Decides whether an existing firewall rule already covers this app's discovery port, so the
@@ -48,16 +55,26 @@ public static class FirewallRuleMatch
 
         return IsSameProgram(rule.ApplicationName, applicationPath)
                && PortsInclude(rule.LocalPorts, port)
-               && IsAnyAddress(rule.RemoteAddresses);
+               && IsUnrestricted(rule);
     }
 
     /// <summary>
-    /// Devices can be at any address on the network, so only a rule open to every sender counts.
-    /// A rule limited to some addresses (say, one a user made for a single device) is left alone,
-    /// and the app adds its own; at worst that is one rule more than needed.
+    /// Devices can be at any address on any network this PC joins, so only a rule that narrows
+    /// nothing else counts: every remote and local address, every remote port, every interface,
+    /// and not tied to a service. A narrower rule (say, one a user made for a single device or
+    /// network adapter) is left alone and the app adds its own; at worst that is one rule more
+    /// than needed, where the opposite mistake leaves discovery silently blocked.
     /// </summary>
-    internal static bool IsAnyAddress(string? remoteAddresses) =>
-        string.IsNullOrWhiteSpace(remoteAddresses) || remoteAddresses.Trim() == "*";
+    internal static bool IsUnrestricted(FirewallRuleInfo rule) =>
+        IsAll(rule.RemoteAddresses)
+        && IsAll(rule.LocalAddresses)
+        && IsAll(rule.RemotePorts)
+        && (string.IsNullOrWhiteSpace(rule.InterfaceTypes)
+            || string.Equals(rule.InterfaceTypes.Trim(), "All", StringComparison.OrdinalIgnoreCase))
+        && string.IsNullOrWhiteSpace(rule.ServiceName)
+        && !rule.BoundToInterfaces;
+
+    private static bool IsAll(string? value) => string.IsNullOrWhiteSpace(value) || value.Trim() == "*";
 
     /// <summary>
     /// Firewall program paths are case-insensitive and may hold environment variables
