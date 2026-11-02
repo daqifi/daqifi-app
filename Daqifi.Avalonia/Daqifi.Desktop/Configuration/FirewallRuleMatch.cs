@@ -1,85 +1,42 @@
-using System.Globalization;
 using System.IO;
 
 namespace Daqifi.Desktop.Configuration;
 
-/// <summary>
-/// The fields of one Windows Firewall rule that decide whether it already lets discovery
-/// traffic reach this app. Values are the raw <c>INetFwRule</c> ones: <see cref="Direction"/>
-/// 1 = inbound, <see cref="Action"/> 1 = allow, <see cref="Protocol"/> 17 = UDP, 256 = any.
-/// The rest narrow which traffic the rule admits; the defaults are the unrestricted values a
-/// rule from the Windows prompt carries.
-/// </summary>
-public sealed record FirewallRuleInfo(
-    string? ApplicationName,
-    int Direction,
-    int Action,
-    bool Enabled,
-    int Protocol,
-    string? LocalPorts,
-    string? RemoteAddresses = "*",
-    string? LocalAddresses = "*",
-    string? RemotePorts = "*",
-    string? InterfaceTypes = "All",
-    string? ServiceName = null,
-    bool BoundToInterfaces = false);
+/// <summary>The two fields of a Windows Firewall rule that identify it as this app's own.</summary>
+public sealed record FirewallRuleInfo(string? Name, string? ApplicationName);
 
 /// <summary>
-/// Decides whether an existing firewall rule already covers this app's discovery port, so the
-/// app adds its own only when nothing does (#353). Kept apart from the COM reading so the rules
-/// can be tested on any OS.
+/// Decides whether this app has already added its firewall rule for this copy of itself (#353).
+/// Kept apart from the COM reading so it can be tested on any OS.
 /// </summary>
+/// <remarks>
+/// <para>
+/// Upstream matched on the rule name alone. A rule is bound to one executable, so on a PC that
+/// already had a rule of that name for another program (the WPF app's, or another copy of this
+/// one) this copy never got a rule. The match is now name <b>and</b> program.
+/// </para>
+/// <para>
+/// Only the app's own rule counts, never someone else's rule for the same program. Deciding
+/// whether another rule really admits discovery means reading every way Windows lets a rule
+/// narrow traffic (addresses, ports, adapters, services, IPsec authentication, authorised users
+/// and more), and missing one leaves discovery silently blocked. The app's own rule is known:
+/// it created it. When another rule exists the app adds its own as well, which costs one extra
+/// rule and nothing else. And once its own rule exists the app leaves it alone, even if someone
+/// has since disabled or narrowed it: that is their decision, not one to undo at every launch.
+/// </para>
+/// </remarks>
 public static class FirewallRuleMatch
 {
-    private const int Inbound = 1;
-    private const int Allow = 1;
-    private const int Udp = 17;
-    private const int AnyProtocol = 256;
-
-    /// <summary>
-    /// <c>true</c> when <paramref name="rule"/> is an enabled inbound allow rule for
-    /// <paramref name="applicationPath"/> that admits UDP on <paramref name="port"/>.
-    /// </summary>
-    /// <remarks>
-    /// Profiles are not checked: a rule Windows created from its own prompt covers only the
-    /// network types the user ticked, and this app does not second-guess that choice. A block
-    /// rule for the same program still wins over any allow rule; that is Windows' decision too.
-    /// </remarks>
-    public static bool AllowsInboundUdp(FirewallRuleInfo rule, string applicationPath, int port)
-    {
-        if (!rule.Enabled || rule.Direction != Inbound || rule.Action != Allow)
-            return false;
-
-        if (rule.Protocol != Udp && rule.Protocol != AnyProtocol)
-            return false;
-
-        return IsSameProgram(rule.ApplicationName, applicationPath)
-               && PortsInclude(rule.LocalPorts, port)
-               && IsUnrestricted(rule);
-    }
-
-    /// <summary>
-    /// Devices can be at any address on any network this PC joins, so only a rule that narrows
-    /// nothing else counts: every remote and local address, every remote port, every interface,
-    /// and not tied to a service. A narrower rule (say, one a user made for a single device or
-    /// network adapter) is left alone and the app adds its own; at worst that is one rule more
-    /// than needed, where the opposite mistake leaves discovery silently blocked.
-    /// </summary>
-    internal static bool IsUnrestricted(FirewallRuleInfo rule) =>
-        IsAll(rule.RemoteAddresses)
-        && IsAll(rule.LocalAddresses)
-        && IsAll(rule.RemotePorts)
-        && (string.IsNullOrWhiteSpace(rule.InterfaceTypes)
-            || string.Equals(rule.InterfaceTypes.Trim(), "All", StringComparison.OrdinalIgnoreCase))
-        && string.IsNullOrWhiteSpace(rule.ServiceName)
-        && !rule.BoundToInterfaces;
-
-    private static bool IsAll(string? value) => string.IsNullOrWhiteSpace(value) || value.Trim() == "*";
+    /// <summary><c>true</c> when <paramref name="rule"/> is named <paramref name="ruleName"/> and
+    /// bound to <paramref name="applicationPath"/>.</summary>
+    public static bool IsOwnRule(FirewallRuleInfo rule, string ruleName, string applicationPath) =>
+        string.Equals(rule.Name, ruleName, StringComparison.Ordinal)
+        && IsSameProgram(rule.ApplicationName, applicationPath);
 
     /// <summary>
     /// Firewall program paths are case-insensitive and may hold environment variables
-    /// (<c>%ProgramFiles%\...</c>). A rule with no program applies to every program, but that
-    /// is a broader rule than this app should count as its own, so it does not match.
+    /// (<c>%ProgramFiles%\...</c>). A rule with no program applies to every program and is never
+    /// this app's own.
     /// </summary>
     internal static bool IsSameProgram(string? ruleProgram, string applicationPath)
     {
@@ -102,34 +59,4 @@ public static class FirewallRuleMatch
             return expanded;
         }
     }
-
-    /// <summary>
-    /// A rule's local ports are <c>*</c> (or empty) for all ports, otherwise a comma-separated
-    /// list of numbers and <c>low-high</c> ranges. Keywords such as <c>RPC</c> never match.
-    /// </summary>
-    internal static bool PortsInclude(string? localPorts, int port)
-    {
-        if (string.IsNullOrWhiteSpace(localPorts) || localPorts.Trim() == "*")
-            return true;
-
-        foreach (var raw in localPorts.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            var dash = raw.IndexOf('-');
-            if (dash < 0)
-            {
-                if (TryPort(raw, out var single) && single == port)
-                    return true;
-                continue;
-            }
-
-            if (TryPort(raw[..dash], out var low) && TryPort(raw[(dash + 1)..], out var high)
-                && port >= low && port <= high)
-                return true;
-        }
-
-        return false;
-    }
-
-    private static bool TryPort(string text, out int port) =>
-        int.TryParse(text.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out port);
 }

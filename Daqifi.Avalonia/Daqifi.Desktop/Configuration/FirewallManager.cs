@@ -58,12 +58,9 @@ public static class FirewallConfiguration
                 throw new InvalidOperationException("Invalid or missing application path for firewall rule creation.");
             }
 
-            // Matched on the executable, not the rule name (#353). Upstream asked only "is there a
-            // rule called DAQiFi Desktop?", but a rule is bound to one exe path: on a PC that has
-            // the WPF app's rule, or a rule for another copy of this app, the answer was yes and
-            // this copy never got one. Rules Windows created from its own "allow access" prompt
-            // count too, whatever they are named.
-            if (FirewallHelper.HasInboundUdpAllowRule(appPath, DiscoveryPort))
+            // Name AND executable (#353): see FirewallRuleMatch for why the name alone missed
+            // this copy, and why no other rule counts.
+            if (FirewallHelper.RuleExists(RuleName, appPath))
             {
                 return;
             }
@@ -114,17 +111,16 @@ public class WindowsFirewallWrapper
     }
 
     /// <summary>
-    /// Whether an enabled inbound rule already allows UDP traffic on <paramref name="port"/> to
-    /// <paramref name="applicationPath"/>. A blank path answers <c>false</c> without touching
-    /// the firewall.
+    /// Whether a rule named <paramref name="ruleName"/> exists for <paramref name="applicationPath"/>.
+    /// A dangerous or blank name, or a blank path, answers <c>false</c> without touching the firewall.
     /// </summary>
     /// <exception cref="InvalidOperationException">The firewall could not be read.</exception>
     // @port: Daqifi.Desktop.Configuration.WindowsFirewallWrapper.RuleExists
-    // Downstream change (#353): replaces upstream's by-name RuleExists — see
-    // FirewallConfiguration.InitializeFirewallRules for why.
-    public bool HasInboundUdpAllowRule(string applicationPath, int port)
+    // Downstream change (#353): upstream looked the rule up by name alone, and Rules.Item(name)
+    // returns only the first rule of that name, so every rule is read instead.
+    public bool RuleExists(string ruleName, string applicationPath)
     {
-        if (string.IsNullOrWhiteSpace(applicationPath))
+        if (!IsValidRuleName(ruleName) || string.IsNullOrWhiteSpace(applicationPath))
             return false;
 
         object? policy = null;
@@ -145,7 +141,7 @@ public class WindowsFirewallWrapper
 
                 try
                 {
-                    if (FirewallRuleMatch.AllowsInboundUdp(ReadRule(rule), applicationPath, port))
+                    if (FirewallRuleMatch.IsOwnRule(ReadRule(rule), ruleName, applicationPath))
                         return true;
                 }
                 catch (Exception ex)
@@ -165,8 +161,8 @@ public class WindowsFirewallWrapper
         }
         catch (Exception ex)
         {
-            Logger.Error(ex, $"Failed to read firewall rules for application: {applicationPath}");
-            throw new InvalidOperationException($"Failed to read firewall rules: {ex.Message}", ex);
+            Logger.Error(ex, $"Failed to check firewall rule existence for rule: {ruleName}");
+            throw new InvalidOperationException($"Failed to check firewall rule existence: {ex.Message}", ex);
         }
         finally
         {
@@ -182,20 +178,7 @@ public class WindowsFirewallWrapper
         object? Get(string name) => rule.GetType().InvokeMember(name,
             System.Reflection.BindingFlags.GetProperty, null, rule, null);
 
-        return new FirewallRuleInfo(
-            ApplicationName: Get("ApplicationName") as string,
-            Direction: Convert.ToInt32(Get("Direction"), CultureInfo.InvariantCulture),
-            Action: Convert.ToInt32(Get("Action"), CultureInfo.InvariantCulture),
-            Enabled: Convert.ToBoolean(Get("Enabled"), CultureInfo.InvariantCulture),
-            Protocol: Convert.ToInt32(Get("Protocol"), CultureInfo.InvariantCulture),
-            LocalPorts: Get("LocalPorts") as string,
-            RemoteAddresses: Get("RemoteAddresses") as string,
-            LocalAddresses: Get("LocalAddresses") as string,
-            RemotePorts: Get("RemotePorts") as string,
-            InterfaceTypes: Get("InterfaceTypes") as string,
-            ServiceName: Get("ServiceName") as string,
-            // A VARIANT array of adapter names when the rule is pinned to some; null otherwise.
-            BoundToInterfaces: Get("Interfaces") is Array { Length: > 0 });
+        return new FirewallRuleInfo(Get("Name") as string, Get("ApplicationName") as string);
     }
 
     // @port: Daqifi.Desktop.Configuration.WindowsFirewallWrapper.CreateUdpRule

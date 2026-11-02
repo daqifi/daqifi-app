@@ -10,8 +10,8 @@ namespace Daqifi.Avalonia.Tests.Configuration;
 /// Characterisation tests for the firewall-rule bootstrap: the un-elevated early return in
 /// <see cref="FirewallConfiguration.InitializeFirewallRules"/>, and the input validation in
 /// <see cref="WindowsFirewallWrapper"/> that has to reject bad input *before* the Windows
-/// Firewall COM objects are ever reached. Which existing rules count as covering this app is
-/// in <see cref="FirewallRuleMatchTests"/>.
+/// Firewall COM objects are ever reached. Which existing rule counts as this app's own is in
+/// <see cref="FirewallRuleMatchTests"/>.
 ///
 /// <para>
 /// Nothing pinned any of this. That matters most for the validation half: every guard in
@@ -45,12 +45,12 @@ public class FirewallConfigurationTests
         + "non-Windows head. On Windows it may legitimately be true, so the assertion is not "
         + "merely untestable there — it is the wrong assertion.";
 
-    /// <summary>Why <see cref="HasInboundUdpAllowRule_reaches_COM_and_fails_for_a_real_path"/>
-    /// cannot run on Windows — the runner shows this against the skipped row.</summary>
-    private const string RuleLookupControlIsUnixOnly =
+    /// <summary>Why <see cref="RuleExists_reaches_COM_and_fails_for_a_VALID_name_and_path"/> cannot
+    /// run on Windows — the runner shows this against the skipped row.</summary>
+    private const string RuleExistsControlIsUnixOnly =
         "Unix-only: this positive control works by the Windows Firewall COM objects being absent, "
-        + "so a real path throws instead of answering. On Windows they are present and the call "
-        + "returns a real answer, which proves nothing about the guard.";
+        + "so a valid name and path throw instead of answering. On Windows they are present and the "
+        + "call returns a real answer, which proves nothing about the guard.";
 
     /// <summary>Why <see cref="CreateUdpRule_reaches_COM_for_inputs_that_clear_every_guard"/>
     /// cannot run on Windows — the runner shows this against the skipped row.</summary>
@@ -128,41 +128,69 @@ public class FirewallConfigurationTests
 
     #endregion
 
-    #region HasInboundUdpAllowRule — a blank path never reaches COM
+    #region RuleExists — the name and path guards run before COM
 
     /// <summary>
-    /// A blank application path cannot be this app's, so it answers <c>false</c> with no COM
-    /// object created. On this non-Windows host that is observable — reaching COM throws (see
-    /// the positive control below), so a plain <c>false</c> proves the guard short-circuited.
+    /// A rule name carrying any of the characters that could be used to inject into the COM
+    /// call, or one that is empty or over the 255-character limit, is rejected outright:
+    /// <c>false</c>, with no COM object ever created. On this non-Windows host that is
+    /// observable — reaching COM throws (see the positive control below), so a plain
+    /// <c>false</c> proves the guard short-circuited.
     /// </summary>
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    public void HasInboundUdpAllowRule_answers_false_for_a_blank_path_without_reaching_COM(string path)
+    [InlineData("rule<name")]
+    [InlineData("rule>name")]
+    [InlineData("rule|name")]
+    [InlineData("rule&name")]
+    [InlineData("rule;name")]
+    [InlineData("rule$name")]
+    [InlineData("rule`name")]
+    [InlineData("rule\0name")]
+    [InlineData("rule\rname")]
+    [InlineData("rule\nname")]
+    public void RuleExists_rejects_a_dangerous_or_empty_name_without_reaching_COM(string ruleName)
     {
-        Assert.False(new WindowsFirewallWrapper().HasInboundUdpAllowRule(path, FirewallConfiguration.DiscoveryPort));
+        Assert.False(new WindowsFirewallWrapper().RuleExists(ruleName, WriteTempFile(".exe")));
+    }
+
+    /// <summary>256 characters is one over the limit; 255 is inside it.</summary>
+    [Fact]
+    public void RuleExists_rejects_a_name_longer_than_255_characters()
+    {
+        Assert.False(new WindowsFirewallWrapper().RuleExists(new string('a', 256), WriteTempFile(".exe")));
+    }
+
+    /// <summary>A blank application path cannot be this app's, so it never reaches COM either.</summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void RuleExists_answers_false_for_a_blank_path_without_reaching_COM(string path)
+    {
+        Assert.False(new WindowsFirewallWrapper().RuleExists("DAQiFi", path));
     }
 
     /// <summary>
-    /// POSITIVE CONTROL. A real path goes on to the Windows Firewall COM objects, which do not
-    /// exist on this host, so the call throws <see cref="InvalidOperationException"/> rather than
-    /// returning false. Without this row the blank-path test above would still pass against a
-    /// method that had stopped doing anything at all.
+    /// POSITIVE CONTROL. A valid name and path go on to the Windows Firewall COM objects, which do
+    /// not exist on this host, so the call throws <see cref="InvalidOperationException"/> rather
+    /// than returning false. Without this row every rejection test above would still pass
+    /// against a <c>RuleExists</c> that had stopped doing anything at all.
     /// </summary>
-    [UnixOnlyFact(RuleLookupControlIsUnixOnly)]
-    public void HasInboundUdpAllowRule_reaches_COM_and_fails_for_a_real_path()
+    [UnixOnlyFact(RuleExistsControlIsUnixOnly)]
+    public void RuleExists_reaches_COM_and_fails_for_a_VALID_name_and_path()
     {
         // Fail-safe, not the skip: the [UnixOnlyFact] above is what stands this row down on
         // Windows. Reaching here means it stopped doing so, and the row must say so rather than
         // report Passed.
         if (OperatingSystem.IsWindows())
         {
-            Assert.Fail(RuleLookupControlIsUnixOnly);
+            Assert.Fail(RuleExistsControlIsUnixOnly);
             return;
         }
 
         Assert.Throws<InvalidOperationException>(
-            () => new WindowsFirewallWrapper().HasInboundUdpAllowRule(WriteTempFile(".exe"), FirewallConfiguration.DiscoveryPort));
+            () => new WindowsFirewallWrapper().RuleExists("DAQiFi", WriteTempFile(".exe")));
     }
 
     #endregion
