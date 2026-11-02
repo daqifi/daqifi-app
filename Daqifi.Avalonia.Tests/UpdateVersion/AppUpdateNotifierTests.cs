@@ -40,7 +40,7 @@ public class AppUpdateNotifierTests
     private sealed class Harness
     {
         public FakeUpdateService Service { get; } = new();
-        public bool Acquiring { get; set; }
+        public UpdateBlocker Blocker { get; set; }
         public bool ConfirmAnswer { get; set; } = true;
         public List<string> Confirms { get; } = [];
         public List<string> Messages { get; } = [];
@@ -48,7 +48,7 @@ public class AppUpdateNotifierTests
 
         public AppUpdateNotifier Notifier => new(
             Service,
-            () => Acquiring,
+            () => Blocker,
             (message, _) => { Confirms.Add(message); return Task.FromResult(ConfirmAnswer); },
             (message, _) => { Messages.Add(message); return Task.CompletedTask; },
             Logger);
@@ -117,7 +117,7 @@ public class AppUpdateNotifierTests
     [Fact]
     public async Task WhileLogging_InstallRefusesAndSaysWhy()
     {
-        var h = new Harness { Acquiring = true };
+        var h = new Harness { Blocker = UpdateBlocker.Logging };
 
         await h.Notifier.InstallAsync(h.Service.Offer!);
 
@@ -126,11 +126,37 @@ public class AppUpdateNotifierTests
         Assert.Contains("Stop logging", Assert.Single(h.Messages));
     }
 
+    /// <summary>Restarting mid-flash can leave the device unusable, so a flash blocks the install too.</summary>
+    [Fact]
+    public async Task WhileFirmwareUpdating_InstallRefusesAndSaysWhy()
+    {
+        var h = new Harness { Blocker = UpdateBlocker.FirmwareUpdate };
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(0, h.Service.Downloads);
+        Assert.Equal(0, h.Service.Applies);
+        Assert.Contains("firmware update", Assert.Single(h.Messages));
+    }
+
+    [Fact]
+    public async Task FirmwareUpdateStartedDuringDownload_DoesNotRestart()
+    {
+        var h = new Harness();
+        h.Service.OnDownload = () => h.Blocker = UpdateBlocker.FirmwareUpdate;
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(1, h.Service.Downloads);
+        Assert.Equal(0, h.Service.Applies);
+        Assert.Contains("firmware update", Assert.Single(h.Messages));
+    }
+
     [Fact]
     public async Task LoggingStartedDuringDownload_DoesNotRestart()
     {
         var h = new Harness();
-        h.Service.OnDownload = () => h.Acquiring = true;
+        h.Service.OnDownload = () => h.Blocker = UpdateBlocker.Logging;
 
         await h.Notifier.InstallAsync(h.Service.Offer!);
 

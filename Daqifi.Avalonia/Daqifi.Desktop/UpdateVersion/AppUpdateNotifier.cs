@@ -4,6 +4,19 @@ using Daqifi.Desktop.Models;
 
 namespace Daqifi.Desktop.UpdateVersion;
 
+/// <summary>Work that installing an update would cut off, since installing restarts the app.</summary>
+public enum UpdateBlocker
+{
+    /// <summary>Nothing running; installing is safe.</summary>
+    None,
+
+    /// <summary>A logging session is recording (#348).</summary>
+    Logging,
+
+    /// <summary>A device's firmware is being written. Cutting that off can leave the device unusable.</summary>
+    FirmwareUpdate,
+}
+
 /// <summary>
 /// Turns an available update into a notification, and installs it when the user asks. Replaces the
 /// startup check that asked the WPF app's repository for a version it could never parse (#345).
@@ -14,25 +27,25 @@ namespace Daqifi.Desktop.UpdateVersion;
 public sealed class AppUpdateNotifier
 {
     private readonly IAppUpdateService _service;
-    private readonly Func<bool> _isAcquiring;
+    private readonly Func<UpdateBlocker> _blocker;
     private readonly Func<string, string, Task<bool>> _confirm;
     private readonly Func<string, string, Task> _inform;
     private readonly IAppLogger _logger;
 
     /// <param name="service">The update service for this head.</param>
-    /// <param name="isAcquiring">True while a logging session is running. Installing restarts the app, so it waits (#348).</param>
+    /// <param name="blocker">What, if anything, installing would interrupt right now. Installing restarts the app, so it waits.</param>
     /// <param name="confirm">Asks a yes/no question (message, title); true means go ahead.</param>
     /// <param name="inform">Shows a message (message, title).</param>
     /// <param name="logger">Where failures are recorded.</param>
     public AppUpdateNotifier(
         IAppUpdateService service,
-        Func<bool> isAcquiring,
+        Func<UpdateBlocker> blocker,
         Func<string, string, Task<bool>> confirm,
         Func<string, string, Task> inform,
         IAppLogger logger)
     {
         _service = service;
-        _isAcquiring = isAcquiring;
+        _blocker = blocker;
         _confirm = confirm;
         _inform = inform;
         _logger = logger;
@@ -71,7 +84,7 @@ public sealed class AppUpdateNotifier
     /// <summary>Downloads and installs <paramref name="offer"/>, then restarts into it.</summary>
     public async Task InstallAsync(AppUpdateOffer offer)
     {
-        if (await RefuseWhileAcquiringAsync()) { return; }
+        if (await RefuseWhileBusyAsync()) { return; }
 
         if (_service.ApplyNeedsElevation && !await _confirm(
                 $"DAQiFi is installed for all users, so installing version {offer.Version} needs " +
@@ -93,8 +106,8 @@ public sealed class AppUpdateNotifier
             return;
         }
 
-        // The download can take a while; a session may have started in the meantime.
-        if (await RefuseWhileAcquiringAsync()) { return; }
+        // The download can take a while; a session or a flash may have started in the meantime.
+        if (await RefuseWhileBusyAsync()) { return; }
 
         try
         {
@@ -107,13 +120,19 @@ public sealed class AppUpdateNotifier
         }
     }
 
-    private async Task<bool> RefuseWhileAcquiringAsync()
+    private async Task<bool> RefuseWhileBusyAsync()
     {
-        if (!_isAcquiring()) { return false; }
+        var message = _blocker() switch
+        {
+            UpdateBlocker.Logging => "Stop logging before installing the update. DAQiFi restarts to install it.",
+            UpdateBlocker.FirmwareUpdate =>
+                "Wait for the firmware update to finish before installing the update. DAQiFi restarts to " +
+                "install it, which would interrupt the device mid-update.",
+            _ => null,
+        };
+        if (message is null) { return false; }
 
-        await _inform(
-            "Stop logging before installing the update. DAQiFi restarts to install it.",
-            "Install update");
+        await _inform(message, "Install update");
         return true;
     }
 }

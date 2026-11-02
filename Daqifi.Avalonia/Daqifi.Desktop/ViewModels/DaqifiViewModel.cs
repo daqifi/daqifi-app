@@ -2133,7 +2133,12 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     {
         var notifier = new AppUpdateNotifier(
             AppUpdates.Current,
-            () => IsLogging,
+            // Both firmware flags: the connection manager's covers the coordinator's whole update,
+            // including the reboot and reconnect around the write; the view model's covers a manual
+            // upload from the Devices pane.
+            () => IsLogging ? UpdateBlocker.Logging
+                : ConnectionManager.Instance.IsFirmwareUpdateInProgress || IsFirmwareUploading ? UpdateBlocker.FirmwareUpdate
+                : UpdateBlocker.None,
             // A modal box, not ShowConfirm: that overlay is only drawn inside the Profiles pane, so
             // from the notifications flyout it would wait on a question nobody can see.
             async (message, title) =>
