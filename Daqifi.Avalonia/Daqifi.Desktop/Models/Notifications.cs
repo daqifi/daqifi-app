@@ -3,6 +3,8 @@
 // DO NOT manually delete the `// @port:` markers — they link symbols back to
 // the correspondence map.
 
+using System.Windows.Input;
+
 namespace Daqifi.Desktop.Models;
 
 // @port: Daqifi.Desktop.Models.Notifications
@@ -27,4 +29,13 @@ public class Notifications
 
     // @port: Daqifi.Desktop.Models.Notifications.Link
     public string Link { get; set; }
+
+    /// <summary>
+    /// An action the notification offers, shown as a button labelled <see cref="ActionText"/>.
+    /// The app-update notification uses it to install (#343).
+    /// </summary>
+    public ICommand? Action { get; init; }
+
+    /// <summary>The label for the <see cref="Action"/> button.</summary>
+    public string? ActionText { get; init; }
 }

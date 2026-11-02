@@ -10,7 +10,6 @@ using Daqifi.Desktop.Common.Loggers;
 using System.IO;
 using System.Xml.Linq;
 using System.Collections.ObjectModel;
-using Daqifi.Desktop.UpdateVersion;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -744,13 +743,6 @@ public partial class LoggingManager : ObservableObject
     public void AddLogger(ILogger logger)
     {
         Loggers.Add(logger);
-    }
-
-    // @port: Daqifi.Desktop.Logger.LoggingManager.CheckApplicationVersion
-    public async Task CheckApplicationVersion(VersionNotification versionNotification)
-    {
-        await versionNotification.CheckForUpdatesAsync();
-        OnPropertyChanged("NotificationCount");
     }
 
     // @port: Daqifi.Desktop.Logger.LoggingManager.LoadPersistedLoggingSessions

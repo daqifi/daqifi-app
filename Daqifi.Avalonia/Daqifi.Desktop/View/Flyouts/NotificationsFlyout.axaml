@@ -73,6 +73,12 @@
                                     Background="Transparent" BorderThickness="0" Padding="0"
                                     Foreground="{DynamicResource Accent}"
                                     Cursor="Hand"/>
+                            <Button Content="{Binding ActionText}"
+                                    IsVisible="{Binding Action, Converter={x:Static ObjectConverters.IsNotNull}}"
+                                    Command="{Binding Action}"
+                                    Background="Transparent" BorderThickness="0" Padding="0"
+                                    Foreground="{DynamicResource Accent}"
+                                    Cursor="Hand"/>
                         </StackPanel>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>

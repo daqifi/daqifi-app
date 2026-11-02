@@ -164,7 +164,6 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     [NotifyPropertyChangedFor(nameof(SelectedStreamingFrequency))]
     private IStreamingDevice? _selectedDevice;
 
-    private VersionNotification? _versionNotification;
     [ObservableProperty]
     private LoggingSession _selectedLoggingSession;
     private bool _isLogging;
@@ -265,10 +264,8 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// empty-state swap, the same way <see cref="HasLoggingSessions"/> drives the Logged Data pane's.
     /// <para>
     /// Derived from <see cref="NotificationList"/> and refreshed from its CollectionChanged, NOT from
-    /// <see cref="NotificationCount"/>: that property is also assigned the *version*-notification count
-    /// straight off <c>VersionNotification</c> in <c>UpdateUi</c>, so it can differ from the list's own
-    /// Count, and three sites add to the list without touching it at all. Only CollectionChanged fires on
-    /// every mutation by construction.
+    /// <see cref="NotificationCount"/>: several sites add to the list without touching that property,
+    /// so it can lag the list's own Count. Only CollectionChanged fires on every mutation by construction.
     /// </para>
     /// </summary>
     public bool HasNotifications => NotificationList.Count > 0;
@@ -909,8 +906,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     _ = new ObservableCollection<Profile>(LoggingManager.Instance.LoadProfilesFromXml());
 
                     // Notifications
-                    _versionNotification = new VersionNotification();
-                    _ = LoggingManager.Instance.CheckApplicationVersion(_versionNotification);
+                    _ = CheckForAppUpdateAsync();
 
                     // Issue #90: when USB hotplug-removal detection isn't running on a platform that
                     // has USB serial, say so. Previously the failure only reached the log, so the
@@ -2083,24 +2079,6 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                 _loggingSessionList.AttachCollection(LoggingManager.Instance.LoggingSessions);
                 NotifyLoggingSessionsChanged();
                 break;
-            case "NotificationCount":
-                var data = _versionNotification;
-                NotificationCount = data.NotificationCount;
-                if (NotificationCount > 0)
-                {
-                    var notify = new Notifications
-                    {
-                        IsFirmwareUpdate = false,
-                        DeviceSerialNo = null,
-                        Message = $"Please update latest application version:  {data.VersionNumber}",
-                        Link = "https://github.com/daqifi/daqifi-desktop/releases"
-                    };
-                    if (!NotificationList.Any(n => n.Message == notify.Message || n.Link == notify.Link))
-                    {
-                        NotificationList.Add(notify);
-                    }
-                }
-                break;
             case "NotifyConnection":
                 var deviceConnection = ConnectionManager.Instance.NotifyConnection;
                 if (deviceConnection)
@@ -2146,6 +2124,37 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         string affirmativeLabel = "OK",
         bool isDestructive = false)
         => ConfirmOverlay.ShowAsync(title, message, affirmativeLabel, isDestructive);
+
+    /// <summary>
+    /// Asks the update service whether a newer version exists and, if so, adds a notification
+    /// whose button installs it (#343). Replaces the old check against the WPF app's releases (#345).
+    /// </summary>
+    private async Task CheckForAppUpdateAsync()
+    {
+        var notifier = new AppUpdateNotifier(
+            AppUpdates.Current,
+            () => IsLogging,
+            // A modal box, not ShowConfirm: that overlay is only drawn inside the Profiles pane, so
+            // from the notifications flyout it would wait on a question nobody can see.
+            async (message, title) =>
+            {
+                IsNotificationsOpen = false;
+                return await _messageBoxService.ShowAsync(message, title, MessageBoxButton.OKCancel, MessageBoxImage.Question)
+                       == MessageBoxResult.OK;
+            },
+            async (message, title) =>
+                await _messageBoxService.ShowAsync(message, title, MessageBoxButton.OK, MessageBoxImage.Information),
+            _appLogger);
+
+        var notification = await notifier.CheckAsync();
+        if (notification is null) { return; }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            NotificationList.Add(notification);
+            NotificationCount = NotificationList.Count;
+        });
+    }
 
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.CloseFlyouts
     public void CloseFlyouts()

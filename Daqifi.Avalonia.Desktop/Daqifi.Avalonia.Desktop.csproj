@@ -27,12 +27,23 @@
 		     platform-neutral and must NOT carry this desktop-only package (it
 		     would otherwise flow transitively into the Android head). -->
 		<PackageReference Include="Avalonia.Desktop" Version="12.1.4" />
+		<!-- Installer and self-update (#341, #343). Desktop head only, for the same reason as
+		     Avalonia.Desktop: in the shared library it would flow into both mobile heads. -->
+		<PackageReference Include="Velopack" Version="1.2.161" />
 	</ItemGroup>
 
 	<ItemGroup>
 		<!-- The whole ported app (App.axaml, Views, ViewModels, Services, the
 		     ported Daqifi.Desktop logic) rides in as the shared library. -->
 		<ProjectReference Include="..\Daqifi.Avalonia\Daqifi.Avalonia.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- Set -p:DaqifiUpdatesOwnedExternally=true for builds whose channel owns updates, such as
+		     a store build (#480). VelopackAppUpdateService then reports updates as owned elsewhere
+		     and the app never offers one. -->
+		<AssemblyMetadata Include="DaqifiUpdatesOwnedExternally" Value="$(DaqifiUpdatesOwnedExternally)"
+		                  Condition="'$(DaqifiUpdatesOwnedExternally)' != ''" />
 	</ItemGroup>
 
 	<!-- macOS packaging: turns an `osx-*` publish into a DAQiFi.app bundle (#108). Inert
