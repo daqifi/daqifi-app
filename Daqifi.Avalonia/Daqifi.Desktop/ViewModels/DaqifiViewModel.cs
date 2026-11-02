@@ -2129,16 +2129,43 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// Asks the update service whether a newer version exists and, if so, adds a notification
     /// whose button installs it (#343). Replaces the old check against the WPF app's releases (#345).
     /// </summary>
+    /// <summary>
+    /// What installing an update would cut off right now, since installing restarts the app.
+    /// </summary>
+    private UpdateBlocker CurrentUpdateBlocker()
+    {
+        if (IsLogging)
+        {
+            return UpdateBlocker.Logging;
+        }
+
+        // Three firmware signals, because no one of them sees every flash: the connection manager's
+        // covers the coordinator's whole update, including the reboot and reconnect around the
+        // write; this view model's covers an upload from the Devices pane; the bootloader watcher's
+        // is the only one a manual flash from the connection dialog raises.
+        if (ConnectionManager.Instance.IsFirmwareUpdateInProgress
+            || IsFirmwareUploading
+            || App.ServiceProvider?.GetService<IBootloaderWatcher>()?.IsFlashInProgress == true)
+        {
+            return UpdateBlocker.FirmwareUpdate;
+        }
+
+        // Anything else long-running (an export, a firmware or connection dialog) runs in a window
+        // of its own. Listing each operation would always miss the next one, so any open window
+        // besides the main one blocks the install.
+        if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime { Windows.Count: > 1 })
+        {
+            return UpdateBlocker.OtherWindowOpen;
+        }
+
+        return UpdateBlocker.None;
+    }
+
     private async Task CheckForAppUpdateAsync()
     {
         var notifier = new AppUpdateNotifier(
             AppUpdates.Current,
-            // Both firmware flags: the connection manager's covers the coordinator's whole update,
-            // including the reboot and reconnect around the write; the view model's covers a manual
-            // upload from the Devices pane.
-            () => IsLogging ? UpdateBlocker.Logging
-                : ConnectionManager.Instance.IsFirmwareUpdateInProgress || IsFirmwareUploading ? UpdateBlocker.FirmwareUpdate
-                : UpdateBlocker.None,
+            CurrentUpdateBlocker,
             // A modal box, not ShowConfirm: that overlay is only drawn inside the Profiles pane, so
             // from the notifications flyout it would wait on a question nobody can see.
             async (message, title) =>

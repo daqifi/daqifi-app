@@ -15,6 +15,9 @@ public enum UpdateBlocker
 
     /// <summary>A device's firmware is being written. Cutting that off can leave the device unusable.</summary>
     FirmwareUpdate,
+
+    /// <summary>Another DAQiFi window (an export, a firmware or connection dialog) is open.</summary>
+    OtherWindowOpen,
 }
 
 /// <summary>
@@ -128,6 +131,9 @@ public sealed class AppUpdateNotifier
             UpdateBlocker.FirmwareUpdate =>
                 "Wait for the firmware update to finish before installing the update. DAQiFi restarts to " +
                 "install it, which would interrupt the device mid-update.",
+            UpdateBlocker.OtherWindowOpen =>
+                "Finish and close DAQiFi's other windows before installing the update. DAQiFi restarts to " +
+                "install it, which would close them.",
             _ => null,
         };
         if (message is null) { return false; }

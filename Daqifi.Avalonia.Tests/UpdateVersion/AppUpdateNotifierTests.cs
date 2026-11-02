@@ -139,6 +139,20 @@ public class AppUpdateNotifierTests
         Assert.Contains("firmware update", Assert.Single(h.Messages));
     }
 
+    /// <summary>An export or a dialog opened while the update downloads must not be closed by the restart.</summary>
+    [Fact]
+    public async Task WindowOpenedDuringDownload_DoesNotRestart()
+    {
+        var h = new Harness();
+        h.Service.OnDownload = () => h.Blocker = UpdateBlocker.OtherWindowOpen;
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(1, h.Service.Downloads);
+        Assert.Equal(0, h.Service.Applies);
+        Assert.Contains("other windows", Assert.Single(h.Messages));
+    }
+
     [Fact]
     public async Task FirmwareUpdateStartedDuringDownload_DoesNotRestart()
     {
