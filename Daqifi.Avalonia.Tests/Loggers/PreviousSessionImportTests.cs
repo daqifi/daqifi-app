@@ -309,6 +309,49 @@ public sealed class PreviousSessionImportTests : IDisposable
     }
 
     [Fact]
+    public async Task A_lock_held_elsewhere_fails_the_import_instead_of_hanging_it()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1);
+        using var holder = new SqliteConnection(TestDatabase.ConnectionString(_previous));
+        holder.Open();
+        using (var begin = holder.CreateCommand())
+        {
+            begin.CommandText = "BEGIN EXCLUSIVE;";
+            begin.ExecuteNonQuery();
+        }
+
+        var import = new PreviousSessionImport(_previous, _current, _markers) { RecordingWindow = TimeSpan.Zero, LockTimeoutSeconds = 1 };
+        var run = Task.Run(() => import.ImportAsync(new ImportOutcome()));
+
+        var finished = await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(30)));
+        Assert.Same(run, finished);
+        await Assert.ThrowsAsync<SqliteException>(() => run);
+    }
+
+    [Fact]
+    public async Task Waits_out_a_short_write_lock_on_this_users_database()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1, 2);
+        using var writer = new SqliteConnection(TestDatabase.ConnectionString(_current));
+        writer.Open();
+        var transaction = writer.BeginTransaction(deferred: false);
+        var release = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(1.5));
+            transaction.Commit();
+        });
+
+        var import = new PreviousSessionImport(_previous, _current, _markers) { RecordingWindow = TimeSpan.Zero, LockTimeoutSeconds = 20 };
+        var outcome = new ImportOutcome();
+        await Task.Run(() => import.ImportAsync(outcome));
+        await release;
+
+        Assert.Single(outcome.Imported);
+    }
+
+    [Fact]
     public void Never_creates_the_current_database()
     {
         CreatePreviousDatabase();

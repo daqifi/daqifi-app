@@ -184,7 +184,7 @@ public sealed class PreviousSessionImport
         // from the current maximum, and deleting the highest rows below would lower it. Raised after
         // every allocation for the same reason (a dropped copy is deleted again).
         long idFloor;
-        using (var transaction = connection.BeginTransaction())
+        using (var transaction = connection.BeginTransaction(deferred: false))
         {
             idFloor = SessionIdAllocator.NextSessionId(connection, transaction);
             transaction.Commit();
@@ -236,8 +236,11 @@ public sealed class PreviousSessionImport
             // the highest "next ID" anyone may have read: the logger and the SD card importer read
             // the maximum and insert a moment later, outside any shared transaction, so that ID may
             // already be promised to one of them.
+            // BEGIN IMMEDIATE (deferred: false, which is also the library's default; spelled out
+            // here and on every transaction in this class): the write lock is taken up front, where
+            // the busy timeout applies, never upgraded from a read lock part-way through.
             long newId;
-            using (var transaction = connection.BeginTransaction())
+            using (var transaction = connection.BeginTransaction(deferred: false))
             {
                 newId = Math.Max(idFloor, SessionIdAllocator.NextSessionId(connection, transaction)) + 1;
                 idFloor = newId + 1;
@@ -261,7 +264,7 @@ public sealed class PreviousSessionImport
                     cancellationToken.ThrowIfCancellationRequested();
                     var to = Math.Min(last, from + BatchSpan - 1);
 
-                    using (var transaction = connection.BeginTransaction())
+                    using (var transaction = connection.BeginTransaction(deferred: false))
                     {
                         using var copy = Command(connection,
                             "INSERT INTO main.Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
@@ -300,7 +303,7 @@ public sealed class PreviousSessionImport
                     }
                 }
 
-                using (var transaction = connection.BeginTransaction())
+                using (var transaction = connection.BeginTransaction(deferred: false))
                 {
                     if (hasMetadata)
                     {
@@ -426,13 +429,17 @@ public sealed class PreviousSessionImport
             DataSource = FileUri(_currentDatabase),
             Mode = SqliteOpenMode.ReadWrite,
             Pooling = false,
-            DefaultTimeout = 30,
+            // Every command inherits this. In Microsoft.Data.Sqlite it bounds only how long a
+            // command keeps retrying a locked database, never how long a query may run, so the
+            // longest copies are unaffected while a lock held elsewhere fails the import (to be
+            // retried) instead of leaving it stuck.
+            DefaultTimeout = LockTimeoutSeconds,
         }.ToString());
 
         try
         {
             connection.Open();
-            using (var pragma = Command(connection, "PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 30000;"))
+            using (var pragma = Command(connection, $"PRAGMA foreign_keys = ON; PRAGMA busy_timeout = {LockTimeoutSeconds * 1000};"))
             {
                 pragma.ExecuteNonQuery();
             }
@@ -491,7 +498,7 @@ public sealed class PreviousSessionImport
         int deleted;
         do
         {
-            using var transaction = connection.BeginTransaction();
+            using var transaction = connection.BeginTransaction(deferred: false);
             using var batch = Command(connection,
                 $"DELETE FROM main.Samples WHERE ID IN (SELECT ID FROM main.Samples WHERE LoggingSessionID IN ({idList}) LIMIT {BatchSpan})",
                 transaction);
@@ -500,7 +507,7 @@ public sealed class PreviousSessionImport
         }
         while (deleted > 0);
 
-        using (var transaction = connection.BeginTransaction())
+        using (var transaction = connection.BeginTransaction(deferred: false))
         {
             using var metadata = Command(connection, $"DELETE FROM main.SessionDeviceMetadata WHERE LoggingSessionID IN ({idList})", transaction);
             metadata.ExecuteNonQuery();
@@ -509,6 +516,9 @@ public sealed class PreviousSessionImport
             transaction.Commit();
         }
     }
+
+    /// <summary>How long to wait for a database another connection has locked. Shorter in tests.</summary>
+    internal int LockTimeoutSeconds { get; init; } = 30;
 
     /// <summary>How recently the old file must have been written to suspect a recording in progress.</summary>
     internal TimeSpan RecordingWindow { get; init; } = TimeSpan.FromMinutes(2);
@@ -561,7 +571,6 @@ public sealed class PreviousSessionImport
         var command = connection.CreateCommand();
         command.CommandText = sql;
         command.Transaction = transaction;
-        command.CommandTimeout = 0;
         return command;
     }
 
