@@ -1750,6 +1750,19 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         NotificationCount = NotificationList.Count;
     }
 
+    private void ApplyImportedSessions(ImportOutcome outcome)
+    {
+        try
+        {
+            LoggingManager.Instance.ApplyPersistedSessionChanges(outcome.Removed, outcome.Imported);
+        }
+        catch (Exception ex)
+        {
+            // The sessions are in the database and show at the next launch.
+            _appLogger.Error(ex, "Failed to show imported sessions");
+        }
+    }
+
     private async Task ImportPreviousSessionsAsync(PreviousSessionImport import)
     {
         if (_isImportingPreviousSessions)
@@ -1769,26 +1782,38 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             ShowPreviousSessionNotice(new Notifications { Message = $"Importing sessions… {percent}%" });
         }
 
+        var outcome = new ImportOutcome();
         try
         {
             ShowProgress(0);
             // Created here, on the UI thread, so its callbacks come back to it.
             var progress = new Progress<double>(ShowProgress);
-            IReadOnlyList<int> imported;
             try
             {
-                imported = await Task.Run(() => import.ImportAsync(progress));
+                await Task.Run(() => import.ImportAsync(outcome, progress));
             }
             finally
             {
                 finished = true;
+                // Even after a failure: sessions finished before it, and partial copies it deleted,
+                // must show as they now are.
+                ApplyImportedSessions(outcome);
             }
 
-            import.MarkDone();
-            LoggingManager.Instance.AddPersistedLoggingSessions(imported);
+            // Not done while anything is left (a session still recording): offered again next launch.
+            if (!await Task.Run(import.HasSessionsToImport))
+            {
+                import.MarkDone();
+            }
+
             ShowPreviousSessionNotice(new Notifications
             {
-                Message = imported.Count == 1 ? "Imported 1 session." : $"Imported {imported.Count} sessions."
+                Message = outcome.Imported.Count switch
+                {
+                    0 => "Nothing new to import yet.",
+                    1 => "Imported 1 session.",
+                    var n => $"Imported {n} sessions.",
+                }
             });
         }
         catch (NotEnoughDiskSpaceException ex)

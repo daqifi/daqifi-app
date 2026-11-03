@@ -1,5 +1,6 @@
 // Downstream addition — no upstream counterpart, so no `// @port:` marker.
 
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 namespace Daqifi.Desktop.Logger;
@@ -36,17 +37,33 @@ internal static class SessionIdAllocator
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        const string nextSessionIdSql = @"
-            SELECT MAX(id) AS Value FROM (
-                SELECT MAX(ID) AS id FROM Sessions
-                UNION ALL SELECT MAX(LoggingSessionID) AS id FROM SessionDeviceMetadata
-                UNION ALL SELECT MAX(LoggingSessionID) AS id FROM Samples
-            )";
-
-        var maxKnownId = context.Database.SqlQueryRaw<int?>(nextSessionIdSql)
+        var maxKnownId = context.Database.SqlQueryRaw<int?>(NextSessionIdSql)
             .AsEnumerable()
             .FirstOrDefault() ?? -1;
 
         return maxKnownId + 1;
     }
+
+    /// <summary>
+    /// The same allocation on a raw connection, for the import of earlier sessions, which works
+    /// through SQLite directly. Call it inside the transaction that inserts the row, so no other
+    /// writer can take the ID in between.
+    /// </summary>
+    internal static int NextSessionId(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = NextSessionIdSql;
+        var maxKnownId = command.ExecuteScalar() is long value ? (int)value : -1;
+        return maxKnownId + 1;
+    }
+
+    // Unqualified table names: with another database attached, SQLite still resolves them to the
+    // main database first.
+    private const string NextSessionIdSql = @"
+            SELECT MAX(id) AS Value FROM (
+                SELECT MAX(ID) AS id FROM Sessions
+                UNION ALL SELECT MAX(LoggingSessionID) AS id FROM SessionDeviceMetadata
+                UNION ALL SELECT MAX(LoggingSessionID) AS id FROM Samples
+            )";
 }

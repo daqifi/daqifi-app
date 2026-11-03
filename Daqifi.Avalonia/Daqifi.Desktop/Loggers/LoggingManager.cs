@@ -1048,28 +1048,41 @@ public partial class LoggingManager : ObservableObject
     }
 
     /// <summary>
-    /// Adds sessions written to the database by something other than this manager (the import of
-    /// earlier sessions, #353) to <see cref="LoggingSessions"/>, without reloading the rest. A full
-    /// reload would replace the live session object while logging. Downstream addition.
+    /// Brings <see cref="LoggingSessions"/> up to date with sessions another writer changed in the
+    /// database (the import of earlier sessions, #353): drops the ones it deleted, then adds or
+    /// replaces the ones it wrote. Only those IDs are touched. A full reload would replace the live
+    /// session object while logging, and could list the live session before it has finished.
+    /// Downstream addition.
     /// </summary>
-    public void AddPersistedLoggingSessions(IReadOnlyCollection<int> sessionIds)
+    public void ApplyPersistedSessionChanges(IReadOnlyCollection<int> removedIds, IReadOnlyCollection<int> writtenIds)
     {
-        if (sessionIds.Count == 0)
+        foreach (var stale in LoggingSessions.Where(s => removedIds.Contains(s.ID) || writtenIds.Contains(s.ID)).ToList())
+        {
+            LoggingSessions.Remove(stale);
+        }
+
+        if (writtenIds.Count == 0)
         {
             return;
         }
 
         using var context = _loggingContext.CreateDbContext();
-        var sessions = context.Sessions
+        var written = context.Sessions
             .AsNoTracking()
             .Include(session => session.DeviceMetadata)
-            .Where(session => sessionIds.Contains(session.ID))
+            .Where(session => writtenIds.Contains(session.ID))
             .OrderBy(session => session.ID)
             .ToList();
 
-        foreach (var session in sessions.Where(session => LoggingSessions.All(existing => existing.ID != session.ID)))
+        foreach (var session in written)
         {
-            LoggingSessions.Add(session);
+            var index = 0;
+            while (index < LoggingSessions.Count && LoggingSessions[index].ID < session.ID)
+            {
+                index++;
+            }
+
+            LoggingSessions.Insert(index, session);
         }
     }
 
