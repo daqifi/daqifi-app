@@ -30,7 +30,6 @@ public sealed class PreviousSessionImportTests : IDisposable
 
     public void Dispose()
     {
-        SqliteConnection.ClearAllPools();
         try { Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
     }
 
@@ -89,7 +88,6 @@ public sealed class PreviousSessionImportTests : IDisposable
 
     private string Hash(string path)
     {
-        SqliteConnection.ClearAllPools();
         return Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
     }
 
