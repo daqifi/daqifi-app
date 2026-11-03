@@ -153,6 +153,9 @@ public sealed class AppUpdateNotifier
             }
         }
 
+        // Known gap, accepted for now (#509): on an install for all users, the updater's administrator
+        // prompt comes after this last check. A copy another user starts while that prompt is open
+        // is not seen here, and the updater closes it once the prompt is approved.
         try
         {
             _service.ApplyAndRestart(offer);
