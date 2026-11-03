@@ -427,6 +427,27 @@ public sealed class PreviousSessionImportTests : IDisposable
     }
 
     [Fact]
+    public async Task Never_takes_a_promised_ID_even_after_deleting_the_highest_session()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1);
+        // The highest session is a failed copy the import will delete, lowering the maximum.
+        Execute(_current,
+            "INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES (0, '2026-01-01 00:00:00.0000000', 'Native', 0);" +
+            "INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES (1, '2026-03-29 18:51:41.7774381', 'Session_1', 2);");
+        int promised;
+        using (var context = TestDatabase.Contexts(_current).CreateDbContext())
+        {
+            promised = SessionIdAllocator.NextSessionId(context);
+        }
+
+        var imported = (await RunImport()).Imported;
+        Execute(_current, $"INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES ({promised}, '2026-11-03 00:00:00.0000000', 'Live', 0);");
+
+        Assert.NotEqual(promised, imported[0]);
+    }
+
+    [Fact]
     public async Task Deletes_a_partial_copy_larger_than_one_batch_completely()
     {
         CreatePreviousDatabase();

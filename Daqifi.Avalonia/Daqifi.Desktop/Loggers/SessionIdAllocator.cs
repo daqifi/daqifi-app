@@ -48,7 +48,7 @@ internal static class SessionIdAllocator
     /// The same allocation on a raw connection, for the import of earlier sessions, which works
     /// through SQLite directly. Inside the inserting transaction it is safe against other writers
     /// that do the same, but not against the EF overload above, whose callers read and insert in
-    /// separate steps; the import therefore skips one ID (see <c>PreviousSessionImport</c>).
+    /// separate steps; the import therefore stays above any ID they may have read (see <c>PreviousSessionImport</c>).
     /// </summary>
     internal static int NextSessionId(SqliteConnection connection, SqliteTransaction transaction)
     {

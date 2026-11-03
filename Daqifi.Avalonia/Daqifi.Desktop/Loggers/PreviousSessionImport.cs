@@ -166,6 +166,16 @@ public sealed class PreviousSessionImport
         var hasSampleCount = HasColumn(connection, "old", "Sessions", "SampleCount");
         var hasMetadata = HasTable(connection, "old", "SessionDeviceMetadata");
 
+        // Taken before any deletion: the logger or SD importer may already have read the next ID
+        // from the current maximum, and deleting the highest rows below would lower it. Raised after
+        // every allocation for the same reason (a dropped copy is deleted again).
+        long idFloor;
+        using (var transaction = connection.BeginTransaction())
+        {
+            idFloor = SessionIdAllocator.NextSessionId(connection, transaction);
+            transaction.Commit();
+        }
+
         outcome.Removed.AddRange(RemoveFailedImports(connection, complete));
 
         // The sessions to bring over and the sample ID range each spans in the old database.
@@ -207,13 +217,15 @@ public sealed class PreviousSessionImport
 
             // The row goes in only now, so an interruption leaves at most this one session partial.
             // Its ID comes from the allocator the app's other writers use, so it can never pick up
-            // orphan samples or metadata an old delete left behind. One ID is skipped: the logger
-            // and the SD card importer read the maximum and insert a moment later, outside any
-            // shared transaction, so the next ID may already be promised to one of them.
+            // orphan samples or metadata an old delete left behind. It is also kept above idFloor,
+            // the highest "next ID" anyone may have read: the logger and the SD card importer read
+            // the maximum and insert a moment later, outside any shared transaction, so that ID may
+            // already be promised to one of them.
             long newId;
             using (var transaction = connection.BeginTransaction())
             {
-                newId = SessionIdAllocator.NextSessionId(connection, transaction) + 1;
+                newId = Math.Max(idFloor, SessionIdAllocator.NextSessionId(connection, transaction)) + 1;
+                idFloor = newId + 1;
                 using var insert = Command(connection,
                     "INSERT INTO main.Sessions (ID, SessionStart, Name, SampleCount, Status) VALUES ($id, $start, $name, $count, $status)",
                     transaction);
