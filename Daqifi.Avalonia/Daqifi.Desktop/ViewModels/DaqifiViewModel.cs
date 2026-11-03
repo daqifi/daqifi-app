@@ -1816,6 +1816,11 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                 }
             });
         }
+        catch (ImportAlreadyRunningException ex)
+        {
+            _appLogger.Information(ex.Message);
+            ShowPreviousSessionNotice(OfferedImportNotice(import, "Already importing in another DAQiFi window."));
+        }
         catch (NotEnoughDiskSpaceException ex)
         {
             _appLogger.Warning(ex.Message);

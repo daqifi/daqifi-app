@@ -823,25 +823,20 @@ public partial class LoggingManager : ObservableObject
     /// importing right now would otherwise have its row relabelled and then immediately deleted by
     /// that purge. As ordered, its row survives this pass untouched but for the label, which the
     /// live import overwrites when it finishes; a genuinely abandoned empty row is purged on the
-    /// next launch. (The app has no cross-process database ownership guard of any kind — see
-    /// <c>DatabaseMigrator</c>'s quarantine notes — so ordering is the whole defence available.)
+    /// next launch. (Kept as a second defence behind the lease below.)
     /// </para>
     /// <para>One conditional UPDATE, not a read followed by a save of tracked entities: an import
     /// finishing in another instance between the two would otherwise have its <c>Complete</c>
     /// overwritten by a stale <c>ImportFailed</c>. As a single statement the only rows touched are
     /// the ones the database still shows as importing at that instant, and a live import writes
     /// its own status afterwards.</para>
-    /// <para>What this deliberately does NOT do is prove the import is dead before flagging it —
-    /// no ownership token, no lease, no expiry. The app has no cross-process database ownership
-    /// guard of any kind (no named mutex, no lock file, no single-instance gate; see
-    /// <c>DatabaseMigrator</c>'s quarantine notes), so two instances already share this database
-    /// independently of anything here, and adding ownership would be a new app-wide mechanism
-    /// governing every writer rather than part of an import fix. It would also be the wrong trade:
-    /// a lease this had to wait out would leave a session abandoned by a crashed import invisible
-    /// and unflagged until it expired, which is the bug this exists to close, with a timer on it.
-    /// What bounds the exposure is that this runs once, at startup, before this process can import
-    /// anything — so the only import it can race is another instance's, whose own finalization
-    /// then corrects the label.</para>
+    /// <para>Only when no import is running in any copy of the app (#510). Every import holds
+    /// <see cref="ImportLease"/> while it can leave an <c>Importing</c> row, and this flags rows
+    /// only while holding that lease alone. Otherwise a second instance would flag the first's live
+    /// import, and its next import of earlier sessions would delete the session being copied. When
+    /// an import is running, flagging waits for a later launch. There is no timer to wait out: a
+    /// crashed import's handle is closed by the OS, so its rows are flagged at the next launch.
+    /// </para>
     /// <para>Best-effort: a session list that loads is worth more than this bookkeeping, so a
     /// failure here is logged and swallowed rather than taking startup down with it.</para>
     /// </remarks>
@@ -849,6 +844,13 @@ public partial class LoggingManager : ObservableObject
     {
         try
         {
+            using var lease = ImportLease.TryReclaim(context.Database.GetDbConnection().DataSource);
+            if (lease is null)
+            {
+                AppLogger.Information("An import is running; sessions left mid-import are checked at the next launch.");
+                return;
+            }
+
             var flagged = context.Sessions
                 .Where(session => session.Status == SessionStatus.Importing)
                 .ExecuteUpdate(setters => setters.SetProperty(s => s.Status, SessionStatus.ImportFailed));

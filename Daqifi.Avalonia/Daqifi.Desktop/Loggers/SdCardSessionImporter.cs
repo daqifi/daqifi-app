@@ -348,6 +348,16 @@ public class SdCardSessionImporter : ISdCardSessionImporter
             $"TimestampFreq={logSession.TimestampFrequency} Hz " +
             $"(source: {logSession.TimestampFrequencySource})");
 
+        // Held until this method returns: while it is, no copy of the app's startup cleanup flags
+        // the Importing row below as abandoned (#510; see ImportLease).
+        string? databasePath;
+        using (var context = _loggingContext.CreateDbContext())
+        {
+            databasePath = context.Database.GetDbConnection().DataSource;
+        }
+
+        using var lease = ImportLease.HoldLive(databasePath);
+
         // Create the logging session in the database. It is committed before a single sample is
         // parsed, and marked SessionStatus.Importing until this method decides otherwise.
         var session = CreateSession(logSession);

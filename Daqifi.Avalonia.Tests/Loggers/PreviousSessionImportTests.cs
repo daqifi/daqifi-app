@@ -33,6 +33,9 @@ public sealed class PreviousSessionImportTests : IDisposable
         try { Directory.Delete(_root, recursive: true); } catch { /* best effort */ }
     }
 
+    private PreviousSessionImport WithFreeSpace(long bytes) =>
+        new(_previous, _current, _markers) { RecordingWindow = TimeSpan.Zero, FreeSpace = _ => bytes };
+
     // No recording window: the test files are always "just written".
     private PreviousSessionImport Import() => new(_previous, _current, _markers) { RecordingWindow = TimeSpan.Zero };
 
@@ -86,9 +89,17 @@ public sealed class PreviousSessionImportTests : IDisposable
         return (T)Convert.ChangeType(command.ExecuteScalar()!, typeof(T));
     }
 
-    private string Hash(string path)
+    // Every helper closes its unpooled connection, so the file is complete on disk.
+    private static string Hash(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
+
+    // A session with many samples, so its share of the old file is measurable.
+    private void AddBulkPreviousSession(long id, string start, long firstSampleId, long count)
     {
-        return Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
+        Execute(_previous,
+            $"INSERT INTO Sessions (ID, SessionStart, Name, SampleCount) VALUES ({id}, '{start}', 'Bulk {id}', {count});" +
+            "INSERT INTO Samples (ID, LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            $"WITH RECURSIVE c(x) AS (SELECT {firstSampleId} UNION ALL SELECT x + 1 FROM c WHERE x < {firstSampleId + count - 1}) " +
+            $"SELECT x, {id}, x, x, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1 FROM c;");
     }
 
     [Fact]
@@ -475,6 +486,104 @@ public sealed class PreviousSessionImportTests : IDisposable
 
         Assert.Equal([7], outcome.Removed);
         Assert.Single(outcome.Imported);
+    }
+
+    [Fact]
+    public async Task Needs_disk_space_only_for_the_sessions_it_copies()
+    {
+        CreatePreviousDatabase();
+        AddBulkPreviousSession(1, "2026-03-29 18:51:41.7774381", 1, 20_000);
+        await RunImport();
+        AddBulkPreviousSession(2, "2026-06-19 00:00:20.3617132", 20_001, 20_000);
+        var fileLength = new FileInfo(_previous).Length;
+
+        // Half the old file is left to copy, so room for three quarters of it is plenty.
+        var outcome = await RunImport(WithFreeSpace(fileLength * 3 / 4));
+
+        Assert.Single(outcome.Imported);
+        Assert.Equal(2L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions WHERE Status = 0"));
+    }
+
+    [Fact]
+    public async Task Refuses_when_the_sessions_to_copy_do_not_fit()
+    {
+        CreatePreviousDatabase();
+        AddBulkPreviousSession(1, "2026-03-29 18:51:41.7774381", 1, 20_000);
+        await RunImport();
+        AddBulkPreviousSession(2, "2026-06-19 00:00:20.3617132", 20_001, 20_000);
+        var fileLength = new FileInfo(_previous).Length;
+
+        var refused = await Assert.ThrowsAsync<NotEnoughDiskSpaceException>(
+            () => RunImport(WithFreeSpace(fileLength / 4)));
+
+        Assert.InRange(refused.BytesNeeded, fileLength * 3 / 10, fileLength * 7 / 10);
+        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
+    }
+
+    [Fact]
+    public async Task Needs_no_disk_space_when_nothing_is_left_to_copy()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1, 2);
+        await RunImport();
+
+        var outcome = await RunImport(WithFreeSpace(0));
+
+        Assert.Empty(outcome.Imported);
+    }
+
+    [Fact]
+    public async Task Holds_the_import_lease_while_copying_and_releases_it_after()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1, 2);
+        var reclaimableDuringCopy = new List<bool>();
+
+        await RunImport(progress: new SynchronousProgress(_ =>
+        {
+            using var reclaim = ImportLease.TryReclaim(_current);
+            reclaimableDuringCopy.Add(reclaim is not null);
+        }));
+
+        Assert.NotEmpty(reclaimableDuringCopy);
+        Assert.All(reclaimableDuringCopy, Assert.False);
+        using var after = ImportLease.TryReclaim(_current);
+        Assert.NotNull(after);
+    }
+
+    [Fact]
+    public async Task A_second_import_of_earlier_sessions_does_not_run_alongside_the_first()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1, 2);
+
+        using (var first = ImportLease.TryHoldPreviousSessionsImport(_current))
+        {
+            Assert.NotNull(first);
+            await Assert.ThrowsAsync<ImportAlreadyRunningException>(() => RunImport());
+            Assert.Equal(0L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
+        }
+
+        Assert.Single((await RunImport()).Imported);
+    }
+
+    [Fact]
+    public void Startup_leaves_a_live_import_alone_and_flags_it_once_the_import_is_gone()
+    {
+        Execute(_current,
+            "INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES (5, '2026-03-29 18:51:41.7774381', 'Session_1', 1);" +
+            "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            "VALUES (5, 1, 1, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);");
+        var manager = new LoggingManager(TestDatabase.Contexts(_current), Path.Combine(_root, "profiles.xml"));
+
+        using (ImportLease.HoldLive(_current))
+        {
+            manager.LoadPersistedLoggingSessions();
+            Assert.Equal(1L, Scalar<long>(_current, "SELECT Status FROM Sessions WHERE ID = 5"));
+        }
+
+        manager.LoadPersistedLoggingSessions();
+        Assert.Equal(2L, Scalar<long>(_current, "SELECT Status FROM Sessions WHERE ID = 5"));
     }
 
     private sealed class SynchronousProgress(Action<double> report) : IProgress<double>

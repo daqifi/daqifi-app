@@ -31,7 +31,8 @@ namespace Daqifi.Desktop.Logger;
 /// <c>LoggingManager.MarkAbandonedImportsFailed</c>), and the next import deletes that partial copy
 /// and starts the session again. A failure this import sees itself is flagged the same way at once.
 /// Only <see cref="SessionStatus.ImportFailed"/> copies are replaced: an <c>Importing</c> one may be
-/// another instance's import still running.
+/// another instance's import still running. <see cref="ImportLease"/> keeps startup from failing a
+/// live import, and lets only one copy of the app import earlier sessions at a time.
 /// </para>
 /// <para>
 /// <b>Never a cut-short session.</b> The other app may still be recording. A session that gains
@@ -154,7 +155,13 @@ public sealed class PreviousSessionImport
         }
 
         await Task.Yield();
-        CheckDiskSpace();
+
+        // One import of earlier sessions at a time across every copy of the app, or two would copy
+        // the same sessions. And held as a live import throughout, so no other copy's startup
+        // cleanup takes this one's Importing row for an abandoned one (#510).
+        using var exclusive = ImportLease.TryHoldPreviousSessionsImport(_currentDatabase)
+                              ?? throw new ImportAlreadyRunningException();
+        using var live = ImportLease.HoldLive(_currentDatabase);
 
         using var connection = OpenWithPreviousAttached();
         if (!PreviousSchemaIsUsable(connection))
@@ -208,6 +215,7 @@ public sealed class PreviousSessionImport
         }
 
         var total = pending.Sum(s => s.Last - s.First + 1);
+        CheckDiskSpace(connection, total);
         long done = 0;
         progress?.Report(0);
 
@@ -357,18 +365,47 @@ public sealed class PreviousSessionImport
         && !SameFile(_previousDatabase, _currentDatabase);
 
     /// <summary>
-    /// Refuses to start unless the disk has room for the whole old database file: an upper bound on
-    /// what the copy can need, so an import cannot fill the disk the app logs to.
+    /// Refuses to start unless the disk has room for the sessions about to be copied, so an import
+    /// cannot fill the disk the app logs to.
     /// </summary>
-    private void CheckDiskSpace()
+    /// <param name="connection">The connection with the old database attached.</param>
+    /// <param name="idsToCopy">The sample IDs the pending sessions span in the old database.</param>
+    private void CheckDiskSpace(SqliteConnection connection, long idsToCopy)
     {
-        var needed = new FileInfo(_previousDatabase!).Length;
-        var root = Path.GetPathRoot(Path.GetFullPath(_currentDatabase));
-        if (!string.IsNullOrEmpty(root) && new DriveInfo(root).AvailableFreeSpace < needed)
+        var needed = BytesNeeded(connection, idsToCopy);
+        if (needed > 0 && FreeSpace(_currentDatabase) < needed)
         {
             throw new NotEnoughDiskSpaceException(needed);
         }
     }
+
+    /// <summary>
+    /// The old file's size scaled by the share of its sample IDs the import copies. Samples are
+    /// nearly all of the file, so this is the size of what is copied, indexes included. It errs
+    /// high: a session's ID range can include other sessions' samples recorded at the same time.
+    /// Counting rows instead would read every sample of a file that can hold over a billion, while
+    /// the ID bounds are index lookups. A retry needs less, because sessions already copied are no
+    /// longer pending.
+    /// </summary>
+    private long BytesNeeded(SqliteConnection connection, long idsToCopy)
+    {
+        if (idsToCopy <= 0)
+        {
+            return 0;
+        }
+
+        var span = Scalar<long>(connection,
+            "SELECT COALESCE((SELECT MAX(ID) FROM old.Samples) - (SELECT MIN(ID) FROM old.Samples) + 1, 0)");
+        var fileLength = new FileInfo(_previousDatabase!).Length;
+        return span <= 0 ? fileLength : (long)Math.Ceiling(fileLength * Math.Min(1.0, (double)idsToCopy / span));
+    }
+
+    /// <summary>Free bytes on the drive holding a path. Replaceable in tests.</summary>
+    internal Func<string, long> FreeSpace { get; init; } = path =>
+    {
+        var root = Path.GetPathRoot(Path.GetFullPath(path));
+        return string.IsNullOrEmpty(root) ? long.MaxValue : new DriveInfo(root).AvailableFreeSpace;
+    };
 
     /// <summary>
     /// Opens this user's database (never creating it) with the old one attached read-only.
@@ -408,10 +445,9 @@ public sealed class PreviousSessionImport
     /// <summary>
     /// Deletes copies an earlier, interrupted import left behind (flagged
     /// <see cref="SessionStatus.ImportFailed"/>), so they are redone. Rows still marked
-    /// <see cref="SessionStatus.Importing"/> are left alone, which protects an import running in
-    /// another instance in most cases. Not all: that instance's startup sweep flags any
-    /// <c>Importing</c> row as failed, so two instances importing at once can still collide. The app
-    /// has no cross-process database ownership guard (see <c>DatabaseMigrator</c>).
+    /// <see cref="SessionStatus.Importing"/> may belong to an import running in another copy of the
+    /// app and are left alone. Startup turns them into failed ones only when no import holds
+    /// <see cref="ImportLease"/>, so a failed row here is never a live import's.
     /// </summary>
     /// <returns>The IDs deleted.</returns>
     private static List<int> RemoveFailedImports(SqliteConnection connection, string complete)
@@ -550,6 +586,10 @@ public sealed class ImportOutcome
     /// <summary>Sessions not imported because they may still be recording; offered again later.</summary>
     public int LeftForLater { get; set; }
 }
+
+/// <summary>Another copy of the app is already importing the earlier sessions.</summary>
+public sealed class ImportAlreadyRunningException()
+    : IOException("Another copy of the app is already importing the earlier sessions.");
 
 /// <summary>The disk does not have room for an import of earlier sessions.</summary>
 public sealed class NotEnoughDiskSpaceException(long bytesNeeded)
