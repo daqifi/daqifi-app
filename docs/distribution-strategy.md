@@ -164,8 +164,9 @@ This is the one architectural consequence of this document, and it is cheap only
 
 | Platform | Channel | Verdict | Gate |
 |---|---|---|---|
-| **Windows** | Direct download (Velopack `Setup.exe`) | **Ship first** | #343, #344 |
-| | WinGet | **Ship second** — cheapest reach we have | A signed, silently-installable `Setup.exe` |
+| **Windows** | Direct download — Velopack **MSI** (whole-PC default, "just me" option) | **Ship first** | #343, #344 |
+| | Portable `.zip` alongside it | **Proposed**, not agreed | #480 |
+| | WinGet | **Ship second** — cheapest reach we have | A signed MSI |
 | | Microsoft Store (MSI/EXE) | **Worth it** | Authenticode cert (#342) |
 | | Microsoft Store (MSIX) | **Investigate** — free signing, manifest firewall rules | A feasibility spike |
 | **macOS** | Direct download (Velopack `.pkg`), signed + notarized | **Ship first** | #109, #350 |
@@ -187,20 +188,66 @@ This is the one architectural consequence of this document, and it is cheap only
 
 ### 5.1 Windows
 
-**Direct download is the primary channel and stays the primary channel.** Velopack's
-`Setup.exe` installs per-user to `%LocalAppData%\<packId>` with no UAC prompt, which #341 already
-notes matches what `AppDataPaths` does for un-elevated runs. `vpk pack` also emits a portable
-`.zip` and can emit an MSI (`--buildMsi`, Windows-only build host) for the enterprise customers
-who will ask for one ([packaging overview](https://docs.velopack.io/packaging/overview)).
+**Direct download is the primary channel and stays the primary channel, and the artifact is an
+MSI.** This section originally proposed Velopack's `Setup.exe` as the download with an MSI as an
+enterprise extra. That is inverted now, decided on #480 and being built in #503 / #505: **one
+MSI, defaulting to a whole-PC install with "just me" offered in the wizard.** The reasoning is
+that university and other IT departments are a real part of this app's audience, and one
+installer that serves them and home users is cheaper to maintain than two.
+
+```
+vpk pack ... --msi --instLocation Either --shortcuts StartMenuRoot
+```
+
+The flag is `--msi`. (An earlier draft of this document said `--buildMsi`, which is the internal
+`WindowsPackOptions.BuildMsi` property, not the command-line option — the CLI binds it as
+`["--msi"]` in `WindowsPackCommand.cs`.) `vpk` always builds `Setup.exe` as well; we simply do
+not upload it, so publishing it later is a small change rather than new work. **MSI packaging
+requires a Windows build host** — asserted in Velopack's own test suite — so #344 needs a Windows
+job, which `build.yml` does not have today.
+
+What this changes from #341's premises, and the reason it is not a free swap:
+
+- **Updates are no longer UAC-free.** `Program Files` is not normally writable, so a whole-PC
+  install prompts on update. #341's "per-user install with no UAC prompt" holds only for the
+  "just me" scope. The update button stays for everyone; a cancelled prompt or a user without
+  admin credentials needs a clear "ask your administrator" message, with the running version left
+  alone.
+- **Silent installs do not inherit the wizard's default.** `msiexec /qn` goes **per-user** unless
+  `ALLUSERS=1` is passed. That matters for WinGet below and for IT scripting.
+- **Data stays per-user.** `AppDataPaths` uses `ProgramData` when elevated, which is where
+  release WPF keeps its database, so an elevated launch would otherwise migrate it. #504 fixes
+  this.
+- **The installer does not configure the firewall.** Velopack's hooks run unelevated even for
+  whole-PC installs and its MSI template has no firewall step, so `FirewallManager.cs`'s rule is
+  still the app's problem (#353, #504).
+- **The Velopack version is load-bearing, not incidental.** The MSI template at stable 1.2.161
+  keys its uninstall cleanup off the **pack title** and permanently deletes
+  `%LOCALAPPDATA%\<title>` on any product removal — including a major upgrade. With a title of
+  `DAQiFi` that is the app's own data folder, and it was reproduced on real hardware taking a
+  ~170 MB database. #503 / #505 therefore pin the **1.3.39-g8d2844f prerelease**, where the
+  cleanup keys off the pack ID instead. Shipping an MSI built from the 1.2.161 template would
+  wipe data on every later upgrade *from* that MSI, even after the tooling changed — which is why
+  this had to be settled before the first MSI rather than after.
+
+**A portable `.zip` is proposed but not yet agreed** (#480). `vpk pack` produces it in the same
+step, so it costs a dropped `--noPortable` and one upload. The case is labs that block installers
+for non-admins, running from a USB stick, and trying a beta beside an installed copy. The caveats
+to put in release notes if it ships: data still goes to `%LOCALAPPDATA%\DAQiFi` on whichever PC
+runs it rather than onto the stick, updates need a writable folder, and the firewall rule follows
+the exe path (#504). Treat it as a likely second asset, not a settled one.
 
 **WinGet is the highest-leverage second channel and almost free.** A manifest in
 `microsoft/winget-pkgs` pointing at the release asset, nothing hosted by us, no review queue in
-any meaningful sense. One hard requirement: the community repo **requires silent and
-silent-with-progress install**, and packages that cannot install silently are refused
+any meaningful sense. The community repo **requires silent and silent-with-progress install**,
+and packages that cannot install silently are refused
 ([manifest docs](https://learn.microsoft.com/en-us/windows/package-manager/package/manifest)).
-Confirm Velopack `Setup.exe`'s silent switch and declare it in `InstallerSwitches` — flagged in
-[§9](#9-open-questions--verify-before-committing) because I could not confirm the switch from
-Velopack's docs.
+
+Shipping an MSI answers that outright: `msiexec /qn` and `/qb` are the standard switches and
+WinGet handles `InstallerType: msi` natively, so the question an earlier draft raised here — what
+`Setup.exe`'s silent switch is — is moot. **What remains open is scope**, not silence: a quiet
+MSI install defaults to per-user unless `ALLUSERS=1`, so the manifest's `scope` handling needs
+testing rather than assuming.
 
 **Microsoft Store, the EXE/MSI route.** The Store has accepted unpackaged installers since June
 2021 and the submission points at an installer we host. The catch that matters for sequencing:
@@ -509,8 +556,10 @@ Ordered by what unblocks the most, not by platform.
    guard, locked-mode restore, signing hooks inert until credentials exist.
 
 **First real channels**
-7. Windows direct download. Signed if #342 landed; shipping unsigned is already the recorded
-   decision in #341 if it has not.
+7. Windows direct download (the MSI). #341's "ship unsigned initially" decision is weaker now
+   that the default is a whole-PC install: unsigned means "Unknown publisher" in the UAC prompt on
+   install **and on every update**, not just a one-off SmartScreen click. Betas can stay unsigned;
+   #342 is worth treating as a gate on the first **stable** release.
 8. Linux AppImage (#351) — no external dependency at all, which makes it the cheapest second
    platform.
 9. macOS direct download, signed + notarized (#350), the moment #109 clears.
@@ -566,9 +615,11 @@ re-reasoned from.
 
 Each of these changes a decision above and none could be settled from a primary source.
 
-1. **Velopack `Setup.exe` silent-install switch.** WinGet's community repo *requires* silent and
-   silent-with-progress. The switch is not in the docs I could reach. If `Setup.exe` cannot install
-   silently, WinGet needs the MSI (`--buildMsi`) instead — which changes §5.1's "almost free".
+1. ~~**Velopack `Setup.exe` silent-install switch.**~~ **Resolved** by the decision to ship the
+   MSI (#480, #505): `msiexec /qn` is the standard silent switch and WinGet handles
+   `InstallerType: msi` natively. **What replaces it is narrower: does WinGet install the MSI at
+   the right scope?** A quiet MSI install goes per-user unless `ALLUSERS=1` is passed, so the
+   manifest's `scope` handling needs testing on a clean machine rather than assuming.
 2. **Is an Azure Artifact Signing certificate accepted for the Microsoft Store MSI/EXE route?**
    Microsoft's own comparison table marks Azure Artifact Signing "Store eligible: No", which reads
    oddly given its certificates chain to a Trusted Root Program CA. If that "No" is literal, one
