@@ -35,6 +35,12 @@ public class AppUpdateNotifierTests
         }
 
         public void ApplyAndRestart(AppUpdateOffer offer) => Applies++;
+
+        public bool InUseElsewhere { get; set; }
+        public Exception? InUseCheckFailure { get; set; }
+
+        public bool IsInstallInUseElsewhere() =>
+            InUseCheckFailure is null ? InUseElsewhere : throw InUseCheckFailure;
     }
 
     private sealed class Harness
@@ -46,12 +52,27 @@ public class AppUpdateNotifierTests
         public List<string> Messages { get; } = [];
         public RecordingAppLogger Logger { get; } = new();
 
-        public AppUpdateNotifier Notifier => new(
+        /// <summary>Runs at each wait; the test uses it to finish what the update is waiting for.</summary>
+        public Action<int>? OnDelay { get; set; }
+        public int Delays { get; private set; }
+        public List<int> AppliesAtEachDelay { get; } = [];
+
+        private AppUpdateNotifier? _notifier;
+
+        public AppUpdateNotifier Notifier => _notifier ??= new(
             Service,
             () => Blocker,
             (message, _) => { Confirms.Add(message); return Task.FromResult(ConfirmAnswer); },
             (message, _) => { Messages.Add(message); return Task.CompletedTask; },
-            Logger);
+            Logger,
+            _ =>
+            {
+                Delays++;
+                AppliesAtEachDelay.Add(Service.Applies);
+                OnDelay?.Invoke(Delays);
+                if (Delays > 1000) { throw new InvalidOperationException("waited forever"); }
+                return Task.CompletedTask;
+            });
     }
 
     [Theory]
@@ -115,67 +136,150 @@ public class AppUpdateNotifierTests
     }
 
     [Fact]
-    public async Task WhileLogging_InstallRefusesAndSaysWhy()
+    public async Task NothingRunning_InstallsAtOnce_WithoutAMessage()
+    {
+        var h = new Harness();
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(1, h.Service.Applies);
+        Assert.Equal(0, h.Delays);
+        Assert.Empty(h.Messages);
+    }
+
+    /// <summary>
+    /// Installing restarts the app. Instead of refusing, the update downloads, says in one line what
+    /// it waits for, and installs by itself when that is done: the user clicks once.
+    /// </summary>
+    [Theory]
+    [InlineData(UpdateBlocker.Logging, "when logging stops")]
+    [InlineData(UpdateBlocker.FirmwareUpdate, "when the firmware update finishes")]
+    [InlineData(UpdateBlocker.OtherWindowOpen, "when DAQiFi's other windows are closed")]
+    [InlineData(UpdateBlocker.SdCardTransfer, "when the SD card transfer finishes")]
+    [InlineData(UpdateBlocker.LoggedDataBusy, "when the import or delete finishes")]
+    public async Task WhileBusy_DownloadsWaitsAndInstallsWhenDone(UpdateBlocker blocker, string waitingFor)
+    {
+        var h = new Harness { Blocker = blocker };
+        h.OnDelay = n => { if (n == 3) { h.Blocker = UpdateBlocker.None; } };
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(1, h.Service.Downloads);
+        Assert.Contains(waitingFor, Assert.Single(h.Messages));
+        Assert.Equal([0, 0, 0], h.AppliesAtEachDelay);
+        Assert.Equal(1, h.Service.Applies);
+    }
+
+    /// <summary>A session, a flash or a dialog started while the update downloaded must not be cut off.</summary>
+    [Theory]
+    [InlineData(UpdateBlocker.Logging)]
+    [InlineData(UpdateBlocker.FirmwareUpdate)]
+    [InlineData(UpdateBlocker.OtherWindowOpen)]
+    [InlineData(UpdateBlocker.SdCardTransfer)]
+    [InlineData(UpdateBlocker.LoggedDataBusy)]
+    public async Task WorkStartedDuringDownload_IsWaitedFor(UpdateBlocker blocker)
+    {
+        var h = new Harness();
+        h.Service.OnDownload = () => h.Blocker = blocker;
+        h.OnDelay = n => { if (n == 2) { h.Blocker = UpdateBlocker.None; } };
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal([0, 0], h.AppliesAtEachDelay);
+        Assert.Equal(1, h.Service.Applies);
+    }
+
+    /// <summary>Messages stay one short line.</summary>
+    [Fact]
+    public async Task WaitingMessage_IsOneShortLine()
+    {
+        var h = new Harness { Blocker = UpdateBlocker.OtherWindowOpen };
+        h.OnDelay = _ => h.Blocker = UpdateBlocker.None;
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        var message = Assert.Single(h.Messages);
+        Assert.DoesNotContain('\n', message);
+        Assert.True(message.Length <= 90, message);
+    }
+
+    /// <summary>
+    /// Applying ends every process in the install folder, in every session. On a shared PC that is
+    /// another person's recording (#503 review), so the update waits for other copies to close.
+    /// </summary>
+    [Fact]
+    public async Task OtherCopyRunning_WaitsForItToClose()
+    {
+        var h = new Harness();
+        h.Service.InUseElsewhere = true;
+        h.OnDelay = n => { if (n == 2) { h.Service.InUseElsewhere = false; } };
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Contains("other copies of DAQiFi", Assert.Single(h.Messages));
+        Assert.Equal([0, 0], h.AppliesAtEachDelay);
+        Assert.Equal(1, h.Service.Applies);
+    }
+
+    [Fact]
+    public async Task OtherCopyStartedDuringDownload_IsWaitedFor()
+    {
+        var h = new Harness();
+        h.Service.OnDownload = () => h.Service.InUseElsewhere = true;
+        h.OnDelay = _ => h.Service.InUseElsewhere = false;
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal([0], h.AppliesAtEachDelay);
+        Assert.Equal(1, h.Service.Applies);
+    }
+
+    /// <summary>When the check cannot tell, the update keeps waiting; the failure is logged once.</summary>
+    [Fact]
+    public async Task OtherCopyCheckFailing_KeepsWaiting_AndLogsOnce()
+    {
+        var h = new Harness();
+        h.Service.InUseCheckFailure = new InvalidOperationException("no install folder");
+        h.OnDelay = n => { if (n == 5) { h.Service.InUseCheckFailure = null; } };
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal([0, 0, 0, 0, 0], h.AppliesAtEachDelay);
+        Assert.Equal(1, h.Service.Applies);
+        Assert.Single(h.Logger.Warnings);
+    }
+
+    /// <summary>This process's own reason is the one the user can act on here, so it is the one shown.</summary>
+    [Fact]
+    public async Task OwnBlocker_IsReportedBeforeAnotherCopy()
     {
         var h = new Harness { Blocker = UpdateBlocker.Logging };
+        h.Service.InUseElsewhere = true;
+        h.OnDelay = _ => { h.Blocker = UpdateBlocker.None; h.Service.InUseElsewhere = false; };
 
         await h.Notifier.InstallAsync(h.Service.Offer!);
 
-        Assert.Equal(0, h.Service.Downloads);
-        Assert.Equal(0, h.Service.Applies);
-        Assert.Contains("Stop logging", Assert.Single(h.Messages));
+        Assert.Contains("logging stops", Assert.Single(h.Messages));
     }
 
-    /// <summary>Restarting mid-flash can leave the device unusable, so a flash blocks the install too.</summary>
+    /// <summary>A second click while an update waits must not download or install it twice.</summary>
     [Fact]
-    public async Task WhileFirmwareUpdating_InstallRefusesAndSaysWhy()
+    public async Task SecondClickWhileWaiting_DoesNothing()
     {
-        var h = new Harness { Blocker = UpdateBlocker.FirmwareUpdate };
+        var h = new Harness { Blocker = UpdateBlocker.Logging };
+        Task? second = null;
+        h.OnDelay = n =>
+        {
+            if (n == 1) { second = h.Notifier.InstallAsync(h.Service.Offer!); }
+            if (n == 2) { h.Blocker = UpdateBlocker.None; }
+        };
 
         await h.Notifier.InstallAsync(h.Service.Offer!);
-
-        Assert.Equal(0, h.Service.Downloads);
-        Assert.Equal(0, h.Service.Applies);
-        Assert.Contains("firmware update", Assert.Single(h.Messages));
-    }
-
-    /// <summary>An export or a dialog opened while the update downloads must not be closed by the restart.</summary>
-    [Fact]
-    public async Task WindowOpenedDuringDownload_DoesNotRestart()
-    {
-        var h = new Harness();
-        h.Service.OnDownload = () => h.Blocker = UpdateBlocker.OtherWindowOpen;
-
-        await h.Notifier.InstallAsync(h.Service.Offer!);
+        await second!;
 
         Assert.Equal(1, h.Service.Downloads);
-        Assert.Equal(0, h.Service.Applies);
-        Assert.Contains("other windows", Assert.Single(h.Messages));
-    }
-
-    [Fact]
-    public async Task FirmwareUpdateStartedDuringDownload_DoesNotRestart()
-    {
-        var h = new Harness();
-        h.Service.OnDownload = () => h.Blocker = UpdateBlocker.FirmwareUpdate;
-
-        await h.Notifier.InstallAsync(h.Service.Offer!);
-
-        Assert.Equal(1, h.Service.Downloads);
-        Assert.Equal(0, h.Service.Applies);
-        Assert.Contains("firmware update", Assert.Single(h.Messages));
-    }
-
-    [Fact]
-    public async Task LoggingStartedDuringDownload_DoesNotRestart()
-    {
-        var h = new Harness();
-        h.Service.OnDownload = () => h.Blocker = UpdateBlocker.Logging;
-
-        await h.Notifier.InstallAsync(h.Service.Offer!);
-
-        Assert.Equal(1, h.Service.Downloads);
-        Assert.Equal(0, h.Service.Applies);
+        Assert.Equal(1, h.Service.Applies);
+        Assert.Single(h.Messages);
     }
 
     [Fact]
@@ -212,7 +316,8 @@ public class AppUpdateNotifierTests
         await h.Notifier.InstallAsync(h.Service.Offer!);
 
         Assert.Equal(0, h.Service.Applies);
-        Assert.Contains("disk full", Assert.Single(h.Messages));
+        Assert.Contains("couldn't be downloaded", Assert.Single(h.Messages));
+        Assert.Contains("Downloading", Assert.Single(h.Logger.Warnings));
     }
 
     [Theory]

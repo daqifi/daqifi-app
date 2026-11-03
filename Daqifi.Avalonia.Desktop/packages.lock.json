@@ -18,9 +18,9 @@
       },
       "Velopack": {
         "type": "Direct",
-        "requested": "[1.2.161, )",
-        "resolved": "1.2.161",
-        "contentHash": "OpHNacIumnkhaaX3ZlQ/TCR4YPOJvud2/PAOoWb6o+mIrLwIVA275I5wAgt4q/1O2VrJeDwR1qFQyqzG4lUArg=="
+        "requested": "[1.3.39-g8d2844f, )",
+        "resolved": "1.3.39-g8d2844f",
+        "contentHash": "0RljDRJznUT4yaAybkb67Q+6/VEMa6oPFGDLwc8wKb/Vf0f5pVqLJlCIkRByJzqHEtmpLVyNjzhPyRV/jYvuqQ=="
       },
       "Avalonia": {
         "type": "Transitive",

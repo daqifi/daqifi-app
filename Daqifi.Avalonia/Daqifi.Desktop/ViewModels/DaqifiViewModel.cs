@@ -2134,7 +2134,8 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// </summary>
     private UpdateBlocker CurrentUpdateBlocker()
     {
-        if (IsLogging)
+        // A stopped session is still being saved for a moment afterwards, in the background.
+        if (IsLogging || LoggingManager.Instance.IsSavingSession)
         {
             return UpdateBlocker.Logging;
         }
@@ -2148,6 +2149,19 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             || App.ServiceProvider?.GetService<IBootloaderWatcher>()?.IsFlashInProgress == true)
         {
             return UpdateBlocker.FirmwareUpdate;
+        }
+
+        // The SD card pane lives in the main window, so the window count below cannot see it. Its
+        // busy flag covers listing the card's files and importing one or all of them.
+        if (DeviceLogsViewModel?.IsBusy == true)
+        {
+            return UpdateBlocker.SdCardTransfer;
+        }
+
+        // The Logged Data pane: importing a log file from disk, deleting a session, or deleting all.
+        if (IsLoggedDataBusy)
+        {
+            return UpdateBlocker.LoggedDataBusy;
         }
 
         // Anything else long-running (an export, a firmware or connection dialog) runs in a window

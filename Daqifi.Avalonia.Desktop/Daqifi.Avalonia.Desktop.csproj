@@ -29,7 +29,7 @@
 		<PackageReference Include="Avalonia.Desktop" Version="12.1.4" />
 		<!-- Installer and self-update (#341, #343). Desktop head only, for the same reason as
 		     Avalonia.Desktop: in the shared library it would flow into both mobile heads. -->
-		<PackageReference Include="Velopack" Version="1.2.161" />
+		<PackageReference Include="Velopack" Version="1.3.39-g8d2844f" />
 	</ItemGroup>
 
 	<ItemGroup>

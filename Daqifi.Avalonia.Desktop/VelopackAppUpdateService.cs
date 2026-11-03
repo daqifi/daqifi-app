@@ -55,6 +55,29 @@ internal sealed class VelopackAppUpdateService : IAppUpdateService
     public void ApplyAndRestart(AppUpdateOffer offer) =>
         _manager.ApplyUpdatesAndRestart(PendingFor(offer).TargetFullRelease);
 
+    /// <summary>
+    /// Velopack's apply step ends every process whose image is under the install folder, in every
+    /// session it can open, and for an install for all users it runs as administrator. This looks
+    /// at the same processes from this one, which usually cannot read another user's paths, so
+    /// <see cref="InstallUsage"/> counts an unreadable process with DAQiFi's name as in use.
+    /// </summary>
+    public bool IsInstallInUseElsewhere()
+    {
+        if (!OperatingSystem.IsWindows()) { return false; }
+
+        var root = InstallRoot() ?? throw new InvalidOperationException("The install folder could not be found.");
+        return InstallUsage.IsInUseElsewhere(
+            WindowsProcesses.Snapshot(), Environment.ProcessId, root, AppProcessNames());
+    }
+
+    // This exe, and the stub in the install root that the Start Menu shortcut starts. The stub
+    // exits once it has started the app, but it is also under the folder while it runs.
+    private static string[] AppProcessNames()
+    {
+        var self = Path.GetFileNameWithoutExtension(Environment.ProcessPath);
+        return string.IsNullOrEmpty(self) ? ["DAQiFi"] : [self, "DAQiFi"];
+    }
+
     private UpdateInfo PendingFor(AppUpdateOffer offer)
     {
         var pending = _pending;
@@ -84,11 +107,14 @@ internal sealed class VelopackAppUpdateService : IAppUpdateService
     /// Velopack installs to <c>{root}\current\</c>; this exe runs from <c>current</c>, and updates
     /// replace it from <c>{root}</c>. An install for all users puts <c>{root}</c> in Program Files.
     /// </summary>
+    private static string? InstallRoot() =>
+        Directory.GetParent(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar))?.FullName;
+
     private static bool IsInstallFolderWritable()
     {
         try
         {
-            var root = Directory.GetParent(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar))?.FullName;
+            var root = InstallRoot();
             if (root is null) { return false; }
 
             var probe = Path.Combine(root, $".daqifi-write-probe-{Guid.NewGuid():N}");
