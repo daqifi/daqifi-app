@@ -20,7 +20,8 @@ name: Release
 # Pack identity is permanent once shipped. packId Daqifi.App decides the install folder
 # (Program Files\Daqifi.App) and the updater's identity; changing it later strands every
 # installed copy on its old version. It is also deliberately not "DAQiFi", so an uninstall can
-# never reach the WPF app's Program Files\DAQiFi folder.
+# never reach the WPF app's Program Files\DAQiFi folder, and the MSI's uninstall cleanup, which
+# deletes %LOCALAPPDATA%\<packId>, can never reach the app's data in %LOCALAPPDATA%\DAQiFi.
 
 on:
   push:
@@ -41,9 +42,17 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Pinned, and matched to the Velopack PackageReference in Daqifi.Avalonia.Desktop.csproj:
-  # the packer and the library that reads its output must agree on the package format.
-  VPK_VERSION: '1.2.161'
+  # Pinned, and matched to the Velopack PackageReference in Daqifi.Avalonia.Desktop.csproj
+  # (checked below): the packer and the library that reads its output must agree on the
+  # package format.
+  #
+  # A prerelease on purpose. 1.2.161's MSI deleted %LOCALAPPDATA%\<packTitle> on every
+  # uninstall AND every upgrade, and with the title DAQiFi that is the app's data folder
+  # (reproduced on a real PC, #480). 1.3.39 keys that cleanup off the pack ID instead
+  # (velopack b40a2781d, 9e559166d), allows same-version MSI upgrades, and limits uninstall
+  # cleanup to the install being removed. Once any MSI ships, its removal steps run again on
+  # every later upgrade from it, so the first MSI must already be built with the fix.
+  VPK_VERSION: '1.3.39-g8d2844f'
   PACK_ID: Daqifi.App
   PACK_TITLE: DAQiFi
 
@@ -55,6 +64,7 @@ jobs:
       tag: ${{ steps.check.outputs.tag }}
       version: ${{ steps.check.outputs.version }}
       prerelease: ${{ steps.check.outputs.prerelease }}
+      msi_version: ${{ steps.check.outputs.msi_version }}
       sha: ${{ steps.sha.outputs.sha }}
     steps:
       # Fully qualified: given a bare name, actions/checkout prefers a BRANCH of that name over
@@ -73,6 +83,13 @@ jobs:
       # v3.4.0 on a tree that still says 3.3.0 would ship packages the updater compares wrongly
       # and a Sentry release with the wrong name. app.manifest repeats the number as X.Y.Z.0
       # and nothing else keeps it in step, so it is checked here too.
+      #
+      # It also derives the MSI ProductVersion. Windows Installer compares only three fields,
+      # so vpk's default (X.Y.Z.0) gives every 3.4.0 beta and 3.4.0 itself one version and an
+      # MSI push cannot upgrade between them. The script maps each tag to a build field that
+      # grows in SemVer order (patch*100 + rank: alpha.N 1-29, beta.N 31-69, rc.N 71-98,
+      # stable 99), so 3.4.0-beta.3 is 3.4.33 and 3.4.0 is 3.4.99, and it refuses a tag the
+      # scheme cannot place. vpk 1.3's AllowSameVersionUpgrades is the backstop, not the plan.
       - name: Check the tag against DaqifiAppVersion and app.manifest
         id: check
         env:
@@ -89,6 +106,7 @@ jobs:
       TAG: ${{ needs.version.outputs.tag }}
       VERSION: ${{ needs.version.outputs.version }}
       PRERELEASE: ${{ needs.version.outputs.prerelease }}
+      MSI_VERSION: ${{ needs.version.outputs.msi_version }}
     defaults:
       run:
         shell: bash
@@ -139,6 +157,39 @@ jobs:
             exit 1
           fi
 
+      # The packer must match the library the app was built against. Both are prereleases for
+      # now (see VPK_VERSION), so a bump of one without the other is easy to miss.
+      #
+      # And the MSI's cleanup must not be aimed at the app's data folder. It deletes
+      # %LOCALAPPDATA%\<name>: the pack ID from vpk 1.3, but the pack TITLE before that, and our
+      # title is DAQiFi, the data folder's name. So the pack ID is always checked, and a vpk
+      # older than 1.3 is refused while the title is DAQiFi, so a downgrade cannot bring the
+      # data loss back.
+      - name: Pack identity and packer version are safe
+        run: |
+          set -euo pipefail
+          lib=$(sed -n 's/.*Include="Velopack" Version="\([^"]*\)".*/\1/p' Daqifi.Avalonia.Desktop/Daqifi.Avalonia.Desktop.csproj)
+          echo "Velopack library ${lib}, vpk ${VPK_VERSION}"
+          if [ "${lib}" != "${VPK_VERSION}" ]; then
+            echo "::error::vpk ${VPK_VERSION} does not match the Velopack library ${lib} in Daqifi.Avalonia.Desktop.csproj."
+            exit 1
+          fi
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+          if [ "$(lower "${PACK_ID}")" = "daqifi" ]; then
+            echo "::error::PACK_ID '${PACK_ID}' is the app's data folder name. The MSI's cleanup would delete it on uninstall and upgrade."
+            exit 1
+          fi
+          IFS=. read -r vpk_major vpk_minor _ <<< "${VPK_VERSION}"
+          if { [ "${vpk_major}" -lt 1 ] || { [ "${vpk_major}" -eq 1 ] && [ "${vpk_minor}" -lt 3 ]; }; } \
+             && [ "$(lower "${PACK_TITLE}")" = "daqifi" ]; then
+            echo "::error::vpk ${VPK_VERSION} is older than 1.3, whose MSI cleanup deletes %LOCALAPPDATA%\\<packTitle>. With the title '${PACK_TITLE}' that is the app's data folder."
+            exit 1
+          fi
+          if [ "${PACK_ID}" != "Daqifi.App" ]; then
+            echo "::error::PACK_ID changed from Daqifi.App. Installed copies would stop updating; see the note at the top of this file."
+            exit 1
+          fi
+
       - name: Install vpk
         run: dotnet tool install --global vpk --version "${VPK_VERSION}"
 
@@ -162,7 +213,7 @@ jobs:
           fi
           vpk pack \
             --packId "${PACK_ID}" --packTitle "${PACK_TITLE}" --packAuthors DAQiFi \
-            --packVersion "${VERSION}" --runtime win-x64 \
+            --packVersion "${VERSION}" --msiVersion "${MSI_VERSION}" --runtime win-x64 \
             --packDir "${RUNNER_TEMP}/publish" --mainExe Daqifi.Avalonia.Desktop.exe \
             --icon Daqifi.Avalonia/Daqifi.Desktop/Images/AppIcon.ico \
             --msi --instLocation Either --noPortable --shortcuts StartMenuRoot \
@@ -191,8 +242,12 @@ jobs:
 
       # Attached to the tag's release. A release that does not exist yet is created as a DRAFT,
       # so a person writes the notes and publishes it; the updater cannot see a draft. An
-      # existing release (notes already written) just gets the files, replacing any from an
-      # earlier run of the same tag.
+      # existing DRAFT just gets the files, replacing any from an earlier run of the same tag.
+      #
+      # A PUBLISHED release is never touched. `gh release upload --clobber` deletes each file
+      # before uploading its replacement, so a failed re-run could leave a live feed pointing
+      # at a package that is gone, or remove the feed itself. A correction to a published
+      # release ships as a new version.
       #
       # An existing release must carry the prerelease flag the tag implies. The updater's
       # GithubSource filters on GitHub's flag, not the version suffix, so a beta's feed on a
@@ -203,12 +258,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          existing=$(gh release view "${TAG}" --json isPrerelease -q .isPrerelease 2>/dev/null | tr -d '\r' || true)
-          if [ -z "${existing}" ]; then
+          state=$(gh release view "${TAG}" --json isDraft,isPrerelease -q '"\(.isDraft) \(.isPrerelease)"' 2>/dev/null | tr -d '\r' || true)
+          draft=${state%% *}
+          existing=${state##* }
+          if [ -z "${state}" ]; then
             pre=()
             if [ "${PRERELEASE}" = "true" ]; then pre=(--prerelease); fi
             gh release create "${TAG}" --draft --verify-tag "${pre[@]}" \
               --title "${TAG}" --notes "Built by the release workflow from ${TAG}. Notes to follow."
+          elif [ "${draft}" != "true" ]; then
+            echo "::error::Release ${TAG} is already published, so its files are not replaced: a failed upload would break the live update feed. Ship the correction as a new version; nothing was uploaded."
+            exit 1
           elif [ "${existing}" != "${PRERELEASE}" ]; then
             echo "::error::Release ${TAG} has prerelease=${existing}, but the tag says prerelease=${PRERELEASE}. Fix the release's 'Set as a pre-release' box and re-run; nothing was uploaded."
             exit 1
