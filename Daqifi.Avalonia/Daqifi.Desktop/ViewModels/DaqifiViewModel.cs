@@ -2134,7 +2134,8 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// </summary>
     private UpdateBlocker CurrentUpdateBlocker()
     {
-        if (IsLogging)
+        // A stopped session is still being saved for a moment afterwards, in the background.
+        if (IsLogging || LoggingManager.Instance.IsSavingSession)
         {
             return UpdateBlocker.Logging;
         }
