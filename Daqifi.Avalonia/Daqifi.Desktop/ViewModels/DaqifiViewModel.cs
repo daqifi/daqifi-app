@@ -2150,6 +2150,13 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             return UpdateBlocker.FirmwareUpdate;
         }
 
+        // The SD card pane lives in the main window, so the window count below cannot see it. Its
+        // busy flag covers listing the card's files and importing one or all of them.
+        if (DeviceLogsViewModel?.IsBusy == true)
+        {
+            return UpdateBlocker.SdCardTransfer;
+        }
+
         // Anything else long-running (an export, a firmware or connection dialog) runs in a window
         // of its own. Listing each operation would always miss the next one, so any open window
         // besides the main one blocks the install.

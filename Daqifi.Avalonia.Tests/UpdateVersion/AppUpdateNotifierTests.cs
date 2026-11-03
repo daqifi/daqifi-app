@@ -35,6 +35,12 @@ public class AppUpdateNotifierTests
         }
 
         public void ApplyAndRestart(AppUpdateOffer offer) => Applies++;
+
+        public bool InUseElsewhere { get; set; }
+        public Exception? InUseCheckFailure { get; set; }
+
+        public bool IsInstallInUseElsewhere() =>
+            InUseCheckFailure is null ? InUseElsewhere : throw InUseCheckFailure;
     }
 
     private sealed class Harness
@@ -176,6 +182,89 @@ public class AppUpdateNotifierTests
 
         Assert.Equal(1, h.Service.Downloads);
         Assert.Equal(0, h.Service.Applies);
+    }
+
+    /// <summary>The SD card pane is in the main window, so the window count cannot see an import (#503 review).</summary>
+    [Fact]
+    public async Task WhileSdCardTransferring_InstallRefusesAndSaysWhy()
+    {
+        var h = new Harness { Blocker = UpdateBlocker.SdCardTransfer };
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(0, h.Service.Downloads);
+        Assert.Equal(0, h.Service.Applies);
+        Assert.Contains("SD card", Assert.Single(h.Messages));
+    }
+
+    [Fact]
+    public async Task SdCardTransferStartedDuringDownload_DoesNotRestart()
+    {
+        var h = new Harness();
+        h.Service.OnDownload = () => h.Blocker = UpdateBlocker.SdCardTransfer;
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(1, h.Service.Downloads);
+        Assert.Equal(0, h.Service.Applies);
+        Assert.Contains("SD card", Assert.Single(h.Messages));
+    }
+
+    /// <summary>
+    /// Applying ends every process in the install folder, in every session. On a shared PC that is
+    /// another person's recording (#503 review), so another running copy blocks the install.
+    /// </summary>
+    [Fact]
+    public async Task OtherCopyRunning_InstallRefusesAndSaysWhy()
+    {
+        var h = new Harness();
+        h.Service.InUseElsewhere = true;
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(0, h.Service.Downloads);
+        Assert.Equal(0, h.Service.Applies);
+        Assert.Contains("Another copy of DAQiFi", Assert.Single(h.Messages));
+    }
+
+    [Fact]
+    public async Task OtherCopyStartedDuringDownload_DoesNotRestart()
+    {
+        var h = new Harness();
+        h.Service.OnDownload = () => h.Service.InUseElsewhere = true;
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(1, h.Service.Downloads);
+        Assert.Equal(0, h.Service.Applies);
+        Assert.Contains("Another copy of DAQiFi", Assert.Single(h.Messages));
+    }
+
+    /// <summary>When the check cannot tell, the install waits: closing someone's recording is worse.</summary>
+    [Fact]
+    public async Task OtherCopyCheckFailing_RefusesAndLogs()
+    {
+        var h = new Harness();
+        h.Service.InUseCheckFailure = new InvalidOperationException("no install folder");
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(0, h.Service.Downloads);
+        Assert.Equal(0, h.Service.Applies);
+        Assert.Contains("Another copy of DAQiFi", Assert.Single(h.Messages));
+        Assert.Single(h.Logger.Warnings);
+    }
+
+    /// <summary>This process's own reason is the one the user can act on here, so it is the one shown.</summary>
+    [Fact]
+    public async Task OwnBlocker_IsReportedBeforeAnotherCopy()
+    {
+        var h = new Harness { Blocker = UpdateBlocker.Logging };
+        h.Service.InUseElsewhere = true;
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Contains("Stop logging", Assert.Single(h.Messages));
     }
 
     [Fact]

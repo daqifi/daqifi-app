@@ -48,6 +48,12 @@ public interface IAppUpdateService
 
     /// <summary>Exits the app, installs the downloaded <paramref name="offer"/>, and starts the new version.</summary>
     void ApplyAndRestart(AppUpdateOffer offer);
+
+    /// <summary>
+    /// True when another process, in this or any other user's session, runs from this installation.
+    /// Installing closes all of them, so the install waits. See <see cref="InstallUsage"/>.
+    /// </summary>
+    bool IsInstallInUseElsewhere();
 }
 
 /// <summary>
@@ -92,4 +98,6 @@ public sealed class UnsupportedAppUpdateService : IAppUpdateService
 
     public void ApplyAndRestart(AppUpdateOffer offer) =>
         throw new NotSupportedException("This platform does not update itself.");
+
+    public bool IsInstallInUseElsewhere() => false;
 }

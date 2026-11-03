@@ -18,6 +18,9 @@ public enum UpdateBlocker
 
     /// <summary>Another DAQiFi window (an export, a firmware or connection dialog) is open.</summary>
     OtherWindowOpen,
+
+    /// <summary>Files are being read from a device's SD card, or imported from it.</summary>
+    SdCardTransfer,
 }
 
 /// <summary>
@@ -134,11 +137,35 @@ public sealed class AppUpdateNotifier
             UpdateBlocker.OtherWindowOpen =>
                 "Finish and close DAQiFi's other windows before installing the update. DAQiFi restarts to " +
                 "install it, which would close them.",
+            UpdateBlocker.SdCardTransfer =>
+                "Wait for the SD card transfer to finish before installing the update. DAQiFi restarts to " +
+                "install it, which would stop the transfer.",
             _ => null,
-        };
+        } ?? OtherCopyMessage();
         if (message is null) { return false; }
 
         await _inform(message, "Install update");
         return true;
+    }
+
+    private const string OTHER_COPY_MESSAGE =
+        "Another copy of DAQiFi is running on this PC, possibly in another user's session. Installing " +
+        "the update would close it, and stop anything it is recording or flashing.\n\nClose the other " +
+        "copy first. On a shared PC, install updates when nobody else is using DAQiFi.";
+
+    // Asked after this process's own checks, since those name a cause the user can act on here.
+    // When the check itself fails, the install waits: closing someone else's recording is worse
+    // than one more click later.
+    private string? OtherCopyMessage()
+    {
+        try
+        {
+            return _service.IsInstallInUseElsewhere() ? OTHER_COPY_MESSAGE : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning(ex, "Checking for other running copies of DAQiFi failed");
+            return OTHER_COPY_MESSAGE;
+        }
     }
 }
