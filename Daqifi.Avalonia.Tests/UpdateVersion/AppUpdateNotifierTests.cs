@@ -1,3 +1,5 @@
+using CommunityToolkit.Mvvm.Input;
+using Daqifi.Desktop.Models;
 using Daqifi.Desktop.UpdateVersion;
 using Xunit;
 
@@ -5,7 +7,9 @@ namespace Daqifi.Avalonia.Tests.UpdateVersion;
 
 /// <summary>
 /// The app-update flow (#343): when an update is offered, and what installing it does in each case
-/// the plan on #480 calls out. Runs against a fake service; no test touches the network.
+/// the plan on #480 calls out. Runs against a fake service; no test touches the network. The
+/// update's state lives in one notification, replaced at each step, so these tests read the
+/// sequence of notifications shown.
 /// </summary>
 public class AppUpdateNotifierTests
 {
@@ -16,10 +20,14 @@ public class AppUpdateNotifierTests
         public AppUpdateOffer? Offer { get; set; } = new("3.4.0", "Notes");
         public Exception? CheckFailure { get; set; }
         public Exception? DownloadFailure { get; set; }
-        public Action? OnDownload { get; set; }
+        public Action<IProgress<int>?, CancellationToken>? OnDownload { get; set; }
+        public Func<CancellationToken, Task>? DownloadBody { get; set; }
         public int Checks { get; private set; }
         public int Downloads { get; private set; }
         public int Applies { get; private set; }
+        public Exception? ApplyFailure { get; set; }
+        public bool InUseElsewhere { get; set; }
+        public Exception? InUseCheckFailure { get; set; }
 
         public Task<AppUpdateOffer?> CheckAsync(CancellationToken cancellationToken = default)
         {
@@ -27,17 +35,19 @@ public class AppUpdateNotifierTests
             return CheckFailure is null ? Task.FromResult(Offer) : Task.FromException<AppUpdateOffer?>(CheckFailure);
         }
 
-        public Task DownloadAsync(AppUpdateOffer offer, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
+        public async Task DownloadAsync(AppUpdateOffer offer, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
             Downloads++;
-            OnDownload?.Invoke();
-            return DownloadFailure is null ? Task.CompletedTask : Task.FromException(DownloadFailure);
+            OnDownload?.Invoke(progress, cancellationToken);
+            if (DownloadBody is not null) { await DownloadBody(cancellationToken); }
+            if (DownloadFailure is not null) { throw DownloadFailure; }
         }
 
-        public void ApplyAndRestart(AppUpdateOffer offer) => Applies++;
-
-        public bool InUseElsewhere { get; set; }
-        public Exception? InUseCheckFailure { get; set; }
+        public void ApplyAndRestart(AppUpdateOffer offer)
+        {
+            Applies++;
+            if (ApplyFailure is not null) { throw ApplyFailure; }
+        }
 
         public bool IsInstallInUseElsewhere() =>
             InUseCheckFailure is null ? InUseElsewhere : throw InUseCheckFailure;
@@ -46,10 +56,11 @@ public class AppUpdateNotifierTests
     private sealed class Harness
     {
         public FakeUpdateService Service { get; } = new();
+        public Func<UpdateBlocker> BlockerSource { get; set; }
         public UpdateBlocker Blocker { get; set; }
         public bool ConfirmAnswer { get; set; } = true;
         public List<string> Confirms { get; } = [];
-        public List<string> Messages { get; } = [];
+        public List<Notifications?> Shown { get; } = [];
         public RecordingAppLogger Logger { get; } = new();
 
         /// <summary>Runs at each wait; the test uses it to finish what the update is waiting for.</summary>
@@ -59,20 +70,35 @@ public class AppUpdateNotifierTests
 
         private AppUpdateNotifier? _notifier;
 
+        public Harness() => BlockerSource = () => Blocker;
+
         public AppUpdateNotifier Notifier => _notifier ??= new(
             Service,
-            () => Blocker,
+            () => BlockerSource(),
             (message, _) => { Confirms.Add(message); return Task.FromResult(ConfirmAnswer); },
-            (message, _) => { Messages.Add(message); return Task.CompletedTask; },
+            notice => Shown.Add(notice),
             Logger,
-            _ =>
+            (_, token) =>
             {
                 Delays++;
                 AppliesAtEachDelay.Add(Service.Applies);
                 OnDelay?.Invoke(Delays);
                 if (Delays > 1000) { throw new InvalidOperationException("waited forever"); }
-                return Task.CompletedTask;
+                return token.IsCancellationRequested ? Task.FromCanceled(token) : Task.CompletedTask;
             });
+
+        public Notifications Last => Shown.Last() ?? throw new InvalidOperationException("removed");
+        public List<string> Messages => Shown.Select(n => n?.Message ?? "").ToList();
+
+        /// <summary>Clicks the button on the notification currently shown.</summary>
+        public void ClickCurrent()
+        {
+            switch (Last.Action)
+            {
+                case IAsyncRelayCommand asyncCommand: _ = asyncCommand.ExecuteAsync(null); break;
+                case { } command: command.Execute(null); break;
+            }
+        }
     }
 
     [Theory]
@@ -87,6 +113,7 @@ public class AppUpdateNotifierTests
 
         Assert.Null(await h.Notifier.CheckAsync());
         Assert.Equal(0, h.Service.Checks);
+        Assert.Empty(h.Shown);
     }
 
     [Fact]
@@ -96,6 +123,7 @@ public class AppUpdateNotifierTests
         h.Service.Offer = null;
 
         Assert.Null(await h.Notifier.CheckAsync());
+        Assert.Empty(h.Shown);
     }
 
     [Fact]
@@ -107,18 +135,19 @@ public class AppUpdateNotifierTests
         Assert.Null(await h.Notifier.CheckAsync());
         Assert.Single(h.Logger.Warnings);
         Assert.Empty(h.Logger.Errors);
+        Assert.Empty(h.Shown);
     }
 
     [Fact]
-    public async Task AvailableUpdate_NamesTheVersion_AndDownloadsNothingUntilClicked()
+    public async Task AvailableUpdate_IsShown_NamesTheVersion_AndDownloadsNothingUntilClicked()
     {
         var h = new Harness();
 
         var notification = await h.Notifier.CheckAsync();
 
-        Assert.NotNull(notification);
-        Assert.Contains("3.4.0", notification.Message);
-        Assert.NotNull(notification.Action);
+        Assert.Same(notification, Assert.Single(h.Shown));
+        Assert.Contains("3.4.0", notification!.Message);
+        Assert.Equal("Install and restart", notification.ActionText);
         Assert.Equal(0, h.Service.Downloads);
     }
 
@@ -128,15 +157,59 @@ public class AppUpdateNotifierTests
         var h = new Harness();
         var notification = await h.Notifier.CheckAsync();
 
-        await ((CommunityToolkit.Mvvm.Input.IAsyncRelayCommand)notification!.Action!).ExecuteAsync(null);
+        await ((IAsyncRelayCommand)notification!.Action!).ExecuteAsync(null);
 
         Assert.Equal(1, h.Service.Downloads);
         Assert.Equal(1, h.Service.Applies);
         Assert.Empty(h.Confirms);
     }
 
+    /// <summary>
+    /// The user sees their click did something: the notification becomes the download's percentage,
+    /// once per whole percent (#503 review).
+    /// </summary>
     [Fact]
-    public async Task NothingRunning_InstallsAtOnce_WithoutAMessage()
+    public async Task Download_ShowsItsPercentage_InTheNotification()
+    {
+        var h = new Harness();
+        h.Service.OnDownload = (progress, _) =>
+        {
+            progress!.Report(0);
+            progress.Report(40);
+            progress.Report(40);
+            progress.Report(100);
+        };
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(
+            ["Downloading DAQiFi 3.4.0... 0%", "Downloading DAQiFi 3.4.0... 40%", "Downloading DAQiFi 3.4.0... 100%"],
+            h.Messages);
+        Assert.All(h.Shown, n => Assert.Equal("Cancel", n!.ActionText));
+    }
+
+    /// <summary>Cancel during the download stops it, installs nothing, and offers the update again.</summary>
+    [Fact]
+    public async Task CancelDuringDownload_StopsIt_AndOffersTheUpdateAgain()
+    {
+        var h = new Harness();
+        h.Service.DownloadBody = async token =>
+        {
+            h.ClickCurrent();                       // Cancel on "Downloading..."
+            // Bounded, so a Cancel that does nothing fails this test instead of hanging it.
+            await Task.Delay(TimeSpan.FromSeconds(10), token);
+        };
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(0, h.Service.Applies);
+        Assert.Equal("Install and restart", h.Last.ActionText);
+        Assert.Contains("3.4.0 is available", h.Last.Message);
+        Assert.Empty(h.Logger.Warnings);
+    }
+
+    [Fact]
+    public async Task NothingRunning_InstallsAtOnce_WithoutWaiting()
     {
         var h = new Harness();
 
@@ -144,12 +217,12 @@ public class AppUpdateNotifierTests
 
         Assert.Equal(1, h.Service.Applies);
         Assert.Equal(0, h.Delays);
-        Assert.Empty(h.Messages);
+        Assert.DoesNotContain(h.Messages, m => m.StartsWith("Update ready"));
     }
 
     /// <summary>
-    /// Installing restarts the app. Instead of refusing, the update downloads, says in one line what
-    /// it waits for, and installs by itself when that is done: the user clicks once.
+    /// Installing restarts the app. Instead of refusing, the update downloads, says in the
+    /// notification what it waits for, and installs by itself when that is done.
     /// </summary>
     [Theory]
     [InlineData(UpdateBlocker.Logging, "when logging stops")]
@@ -165,7 +238,7 @@ public class AppUpdateNotifierTests
         await h.Notifier.InstallAsync(h.Service.Offer!);
 
         Assert.Equal(1, h.Service.Downloads);
-        Assert.Contains(waitingFor, Assert.Single(h.Messages));
+        Assert.Contains($"Update ready. Installs {waitingFor}.", h.Messages);
         Assert.Equal([0, 0, 0], h.AppliesAtEachDelay);
         Assert.Equal(1, h.Service.Applies);
     }
@@ -180,7 +253,7 @@ public class AppUpdateNotifierTests
     public async Task WorkStartedDuringDownload_IsWaitedFor(UpdateBlocker blocker)
     {
         var h = new Harness();
-        h.Service.OnDownload = () => h.Blocker = blocker;
+        h.Service.OnDownload = (_, _) => h.Blocker = blocker;
         h.OnDelay = n => { if (n == 2) { h.Blocker = UpdateBlocker.None; } };
 
         await h.Notifier.InstallAsync(h.Service.Offer!);
@@ -189,18 +262,46 @@ public class AppUpdateNotifierTests
         Assert.Equal(1, h.Service.Applies);
     }
 
-    /// <summary>Messages stay one short line.</summary>
+    /// <summary>
+    /// The user decides when the app restarts: Cancel on a waiting update stops the wait, nothing is
+    /// installed, and the update is offered again (#503 review).
+    /// </summary>
     [Fact]
-    public async Task WaitingMessage_IsOneShortLine()
+    public async Task CancelWhileWaiting_StopsTheWait_AndOffersTheUpdateAgain()
     {
-        var h = new Harness { Blocker = UpdateBlocker.OtherWindowOpen };
-        h.OnDelay = _ => h.Blocker = UpdateBlocker.None;
+        var h = new Harness { Blocker = UpdateBlocker.Logging };
+        h.OnDelay = n =>
+        {
+            if (n == 2) { h.ClickCurrent(); }       // Cancel on "Update ready..."
+            if (n == 3) { h.Blocker = UpdateBlocker.None; }
+        };
 
         await h.Notifier.InstallAsync(h.Service.Offer!);
 
-        var message = Assert.Single(h.Messages);
-        Assert.DoesNotContain('\n', message);
-        Assert.True(message.Length <= 90, message);
+        Assert.Equal(0, h.Service.Applies);
+        Assert.Equal(2, h.Delays);
+        Assert.Equal("Install and restart", h.Last.ActionText);
+    }
+
+    /// <summary>Messages stay one short line.</summary>
+    [Fact]
+    public async Task EveryMessage_IsOneShortLine()
+    {
+        var h = new Harness { Blocker = UpdateBlocker.OtherWindowOpen };
+        h.Service.InUseElsewhere = true;
+        h.OnDelay = n =>
+        {
+            if (n == 1) { h.Blocker = UpdateBlocker.None; }
+            if (n == 2) { h.Service.InUseElsewhere = false; }
+        };
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.All(h.Messages, message =>
+        {
+            Assert.DoesNotContain('\n', message);
+            Assert.True(message.Length <= 90, message);
+        });
     }
 
     /// <summary>
@@ -216,7 +317,7 @@ public class AppUpdateNotifierTests
 
         await h.Notifier.InstallAsync(h.Service.Offer!);
 
-        Assert.Contains("other copies of DAQiFi", Assert.Single(h.Messages));
+        Assert.Contains(h.Messages, m => m.Contains("other copies of DAQiFi"));
         Assert.Equal([0, 0], h.AppliesAtEachDelay);
         Assert.Equal(1, h.Service.Applies);
     }
@@ -225,7 +326,7 @@ public class AppUpdateNotifierTests
     public async Task OtherCopyStartedDuringDownload_IsWaitedFor()
     {
         var h = new Harness();
-        h.Service.OnDownload = () => h.Service.InUseElsewhere = true;
+        h.Service.OnDownload = (_, _) => h.Service.InUseElsewhere = true;
         h.OnDelay = _ => h.Service.InUseElsewhere = false;
 
         await h.Notifier.InstallAsync(h.Service.Offer!);
@@ -249,6 +350,25 @@ public class AppUpdateNotifierTests
         Assert.Single(h.Logger.Warnings);
     }
 
+    /// <summary>
+    /// A throwing blocker check must not fault the install silently (#503 review): it is treated
+    /// like the other-copies check, waited on and logged once.
+    /// </summary>
+    [Fact]
+    public async Task BlockerCheckThrowing_KeepsWaiting_AndLogsOnce()
+    {
+        var h = new Harness();
+        var throwing = true;
+        h.BlockerSource = () => throwing ? throw new InvalidOperationException("view gone") : UpdateBlocker.None;
+        h.OnDelay = n => { if (n == 3) { throwing = false; } };
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal([0, 0, 0], h.AppliesAtEachDelay);
+        Assert.Equal(1, h.Service.Applies);
+        Assert.Single(h.Logger.Warnings);
+    }
+
     /// <summary>This process's own reason is the one the user can act on here, so it is the one shown.</summary>
     [Fact]
     public async Task OwnBlocker_IsReportedBeforeAnotherCopy()
@@ -259,12 +379,13 @@ public class AppUpdateNotifierTests
 
         await h.Notifier.InstallAsync(h.Service.Offer!);
 
-        Assert.Contains("logging stops", Assert.Single(h.Messages));
+        Assert.Contains(h.Messages, m => m.Contains("logging stops"));
+        Assert.DoesNotContain(h.Messages, m => m.Contains("other copies"));
     }
 
     /// <summary>A second click while an update waits must not download or install it twice.</summary>
     [Fact]
-    public async Task SecondClickWhileWaiting_DoesNothing()
+    public async Task SecondInstallWhileWaiting_DoesNothing()
     {
         var h = new Harness { Blocker = UpdateBlocker.Logging };
         Task? second = null;
@@ -279,7 +400,6 @@ public class AppUpdateNotifierTests
 
         Assert.Equal(1, h.Service.Downloads);
         Assert.Equal(1, h.Service.Applies);
-        Assert.Single(h.Messages);
     }
 
     [Fact]
@@ -293,6 +413,7 @@ public class AppUpdateNotifierTests
         Assert.Contains("administrator", Assert.Single(h.Confirms));
         Assert.Equal(0, h.Service.Downloads);
         Assert.Equal(0, h.Service.Applies);
+        Assert.Empty(h.Shown);
     }
 
     [Fact]
@@ -308,7 +429,7 @@ public class AppUpdateNotifierTests
     }
 
     [Fact]
-    public async Task FailedDownload_IsReported_AndNothingIsApplied()
+    public async Task FailedDownload_SaysSoInOneLine_AndOffersARetry()
     {
         var h = new Harness();
         h.Service.DownloadFailure = new IOException("disk full");
@@ -316,8 +437,22 @@ public class AppUpdateNotifierTests
         await h.Notifier.InstallAsync(h.Service.Offer!);
 
         Assert.Equal(0, h.Service.Applies);
-        Assert.Contains("couldn't be downloaded", Assert.Single(h.Messages));
+        Assert.Equal("Couldn't download the update.", h.Last.Message);
+        Assert.Equal("Try again", h.Last.ActionText);
         Assert.Contains("Downloading", Assert.Single(h.Logger.Warnings));
+    }
+
+    [Fact]
+    public async Task FailedApply_SaysSoInOneLine_AndOffersARetry()
+    {
+        var h = new Harness();
+        h.Service.ApplyFailure = new InvalidOperationException("locked");
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal("Couldn't install the update.", h.Last.Message);
+        Assert.Equal("Try again", h.Last.ActionText);
+        Assert.Single(h.Logger.Errors);
     }
 
     [Theory]

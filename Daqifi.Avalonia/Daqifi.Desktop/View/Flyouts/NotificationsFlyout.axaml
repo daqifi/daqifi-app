@@ -73,12 +73,20 @@
                                     Background="Transparent" BorderThickness="0" Padding="0"
                                     Foreground="{DynamicResource Accent}"
                                     Cursor="Hand"/>
-                            <Button Content="{Binding ActionText}"
-                                    IsVisible="{Binding Action, Converter={x:Static ObjectConverters.IsNotNull}}"
-                                    Command="{Binding Action}"
-                                    Background="Transparent" BorderThickness="0" Padding="0"
-                                    Foreground="{DynamicResource Accent}"
-                                    Cursor="Hand"/>
+                            <!-- An offered task the app does itself (e.g. importing earlier sessions). -->
+                            <StackPanel Orientation="Horizontal" Spacing="16" Margin="0,6,0,0"
+                                        IsVisible="{Binding ActionText, Converter={x:Static ObjectConverters.IsNotNull}}">
+                                <Button Content="{Binding ActionText}"
+                                        Command="{Binding Action}"
+                                        Classes="accent"
+                                        Cursor="Hand"/>
+                                <Button Content="Dismiss"
+                                        Command="{Binding Dismiss}"
+                                        IsVisible="{Binding Dismiss, Converter={x:Static ObjectConverters.IsNotNull}}"
+                                        Background="Transparent" BorderThickness="0"
+                                        Foreground="{DynamicResource TextSecondary}"
+                                        Cursor="Hand"/>
+                            </StackPanel>
                         </StackPanel>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>

@@ -31,51 +31,52 @@ public enum UpdateBlocker
 /// startup check that asked the WPF app's repository for a version it could never parse (#345).
 /// </summary>
 /// <remarks>
-/// Nothing is downloaded until the user clicks Install (#341: notify only, download on click).
-/// Installing restarts the app, so when something is running that the restart would cut off, the
-/// update waits for it and installs on its own once it is done: the user clicks once.
+/// Nothing is downloaded until the user clicks Install (#341: notify only, download on click). The
+/// update's state then lives in that one notification, replaced at each step: the download's
+/// percentage, what a waiting update waits for, or what went wrong. Each step has a button, and
+/// Cancel stops the download or the wait. Installing restarts the app, so when something is running
+/// that the restart would cut off, the update waits for it and then installs on its own.
 /// </remarks>
 public sealed class AppUpdateNotifier
 {
     /// <summary>How often a waiting update looks again at what it is waiting for.</summary>
     public static readonly TimeSpan RecheckInterval = TimeSpan.FromSeconds(10);
 
-    private const string TITLE = "Update";
-
     private readonly IAppUpdateService _service;
     private readonly Func<UpdateBlocker> _blocker;
     private readonly Func<string, string, Task<bool>> _confirm;
-    private readonly Func<string, string, Task> _inform;
+    private readonly Action<Notifications?> _show;
     private readonly IAppLogger _logger;
-    private readonly Func<TimeSpan, Task> _delay;
-    private bool _installing;
-    private bool _usageCheckFailureLogged;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+    private CancellationTokenSource? _installing;
+    private bool _checkFailureLogged;
 
     /// <param name="service">The update service for this head.</param>
     /// <param name="blocker">What, if anything, installing would interrupt right now.</param>
     /// <param name="confirm">Asks a yes/no question (message, title); true means go ahead.</param>
-    /// <param name="inform">Shows a message (message, title).</param>
+    /// <param name="show">Shows the update's notification in place of the previous one; <c>null</c> removes it. May be called from any thread.</param>
     /// <param name="logger">Where failures are recorded.</param>
-    /// <param name="delay">Waits between checks while the update waits; <see cref="Task.Delay(TimeSpan)"/> unless a test supplies one.</param>
+    /// <param name="delay">Waits between checks while the update waits; <see cref="Task.Delay(TimeSpan, CancellationToken)"/> unless a test supplies one.</param>
     public AppUpdateNotifier(
         IAppUpdateService service,
         Func<UpdateBlocker> blocker,
         Func<string, string, Task<bool>> confirm,
-        Func<string, string, Task> inform,
+        Action<Notifications?> show,
         IAppLogger logger,
-        Func<TimeSpan, Task>? delay = null)
+        Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
         _service = service;
         _blocker = blocker;
         _confirm = confirm;
-        _inform = inform;
+        _show = show;
         _logger = logger;
         _delay = delay ?? Task.Delay;
     }
 
     /// <summary>
-    /// Checks for a newer version. Returns the notification to show, or <c>null</c> when updates are
-    /// unsupported, this copy is current, or the check failed. Never throws.
+    /// Checks for a newer version and, when there is one, shows its notification. Returns that
+    /// notification, or <c>null</c> when updates are unsupported, this copy is current, or the check
+    /// failed. Never throws.
     /// </summary>
     public async Task<Notifications?> CheckAsync(CancellationToken cancellationToken = default)
     {
@@ -95,63 +96,67 @@ public sealed class AppUpdateNotifier
 
         if (offer is null) { return null; }
 
-        return new Notifications
-        {
-            Message = $"DAQiFi {offer.Version} is available.",
-            ActionText = "Install and restart",
-            Action = new AsyncRelayCommand(() => InstallAsync(offer)),
-        };
+        var notification = Offer(offer, $"DAQiFi {offer.Version} is available.", "Install and restart");
+        _show(notification);
+        return notification;
     }
 
     /// <summary>
     /// Downloads <paramref name="offer"/>, waits until nothing would be cut off, then installs it and
-    /// restarts. A second click while one is under way does nothing.
+    /// restarts. Cancel on the notification stops it at any point before the restart. A second call
+    /// while one is under way does nothing.
     /// </summary>
     public async Task InstallAsync(AppUpdateOffer offer)
     {
-        if (_installing) { return; }
-        _installing = true;
+        if (_installing is not null) { return; }
+        using var cancel = new CancellationTokenSource();
+        _installing = cancel;
         try
         {
-            await DownloadAndInstallAsync(offer);
+            await DownloadAndInstallAsync(offer, cancel.Token);
+        }
+        catch (OperationCanceledException) when (cancel.IsCancellationRequested)
+        {
+            _show(Offer(offer, $"DAQiFi {offer.Version} is available.", "Install and restart"));
         }
         finally
         {
-            _installing = false;
+            _installing = null;
         }
     }
 
-    private async Task DownloadAndInstallAsync(AppUpdateOffer offer)
+    private async Task DownloadAndInstallAsync(AppUpdateOffer offer, CancellationToken cancellationToken)
     {
         if (_service.ApplyNeedsElevation && !await _confirm(
-                "Installing needs administrator permission. Windows will ask next.", TITLE))
+                "Installing needs administrator permission. Windows will ask next.", "Update"))
         {
             return;
         }
 
         // Downloading interrupts nothing, so it starts at once even while something is running.
+        var progress = new PercentProgress(percent => _show(Busy($"Downloading DAQiFi {offer.Version}... {percent}%")));
+        _show(Busy($"Downloading DAQiFi {offer.Version}... 0%"));
         try
         {
-            await _service.DownloadAsync(offer);
+            await _service.DownloadAsync(offer, progress, cancellationToken);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             _logger.Warning(ex, $"Downloading app update {offer.Version} failed");
-            await _inform("The update couldn't be downloaded. Try again later.", TITLE);
+            _show(Offer(offer, "Couldn't download the update.", "Try again"));
             return;
         }
 
         // Asked again right before applying: anything may have started while waiting.
         var waitingFor = WaitingFor();
-        if (waitingFor is not null)
+        while (waitingFor is not null)
         {
-            await _inform($"Update ready. DAQiFi will restart to install it {waitingFor}.", TITLE);
-            while (waitingFor is not null)
-            {
-                await _delay(RecheckInterval);
-                waitingFor = WaitingFor();
-            }
+            _show(Busy($"Update ready. Installs {waitingFor}."));
+            await _delay(RecheckInterval, cancellationToken);
+            waitingFor = WaitingFor();
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         // Known gap, accepted for now (#509): on an install for all users, the updater's administrator
         // prompt comes after this last check. A copy another user starts while that prompt is open
@@ -163,45 +168,71 @@ public sealed class AppUpdateNotifier
         catch (Exception ex)
         {
             _logger.Error(ex, $"Applying app update {offer.Version} failed");
-            await _inform("The update couldn't be installed. Try again later.", TITLE);
+            _show(Offer(offer, "Couldn't install the update.", "Try again"));
         }
     }
 
+    private Notifications Offer(AppUpdateOffer offer, string message, string actionText) => new()
+    {
+        Message = message,
+        ActionText = actionText,
+        Action = new AsyncRelayCommand(() => InstallAsync(offer)),
+    };
+
+    // A step under way: its only button stops it.
+    private Notifications Busy(string message) => new()
+    {
+        Message = message,
+        ActionText = "Cancel",
+        Action = new RelayCommand(() => _installing?.Cancel()),
+    };
+
     /// <summary>
-    /// What the restart would cut off, as the end of "install it ...", or <c>null</c> when nothing.
-    /// This process's own work comes first; then other copies, which the updater also closes, in
-    /// every user's session. If that check fails the update keeps waiting: closing someone else's
-    /// recording is worse than installing later.
+    /// What the restart would cut off, as the end of "Installs ...", or <c>null</c> when nothing.
+    /// This process's own work comes first, then other copies, which the updater also closes, in
+    /// every user's session. If either check fails the update keeps waiting, since closing someone's
+    /// recording is worse than installing later; the failure is logged once.
     /// </summary>
     private string? WaitingFor()
     {
-        var own = _blocker() switch
-        {
-            UpdateBlocker.Logging => "when logging stops",
-            UpdateBlocker.FirmwareUpdate => "when the firmware update finishes",
-            UpdateBlocker.OtherWindowOpen => "when DAQiFi's other windows are closed",
-            UpdateBlocker.SdCardTransfer => "when the SD card transfer finishes",
-            UpdateBlocker.LoggedDataBusy => "when the import or delete finishes",
-            _ => null,
-        };
-        if (own is not null) { return own; }
-
         try
         {
+            var own = _blocker() switch
+            {
+                UpdateBlocker.Logging => "when logging stops",
+                UpdateBlocker.FirmwareUpdate => "when the firmware update finishes",
+                UpdateBlocker.OtherWindowOpen => "when DAQiFi's other windows are closed",
+                UpdateBlocker.SdCardTransfer => "when the SD card transfer finishes",
+                UpdateBlocker.LoggedDataBusy => "when the import or delete finishes",
+                _ => null,
+            };
+            if (own is not null) { return own; }
+
             return _service.IsInstallInUseElsewhere() ? OTHER_COPIES : null;
         }
         catch (Exception ex)
         {
-            // Once per install: a waiting update asks again every few seconds.
-            if (!_usageCheckFailureLogged)
+            if (!_checkFailureLogged)
             {
-                _usageCheckFailureLogged = true;
-                _logger.Warning(ex, "Checking for other running copies of DAQiFi failed");
+                _checkFailureLogged = true;
+                _logger.Warning(ex, "Checking what an app update would interrupt failed");
             }
 
-            return OTHER_COPIES;
+            return "when DAQiFi is idle";
         }
     }
 
     private const string OTHER_COPIES = "when other copies of DAQiFi on this PC are closed";
+
+    /// <summary>Reports only when the whole-number percentage changes, so the notification is not replaced on every byte.</summary>
+    private sealed class PercentProgress(Action<int> report) : IProgress<int>
+    {
+        private int _last; // 0% is shown before the download starts
+
+        public void Report(int value)
+        {
+            var percent = Math.Clamp(value, 0, 100);
+            if (Interlocked.Exchange(ref _last, percent) != percent) { report(percent); }
+        }
+    }
 }

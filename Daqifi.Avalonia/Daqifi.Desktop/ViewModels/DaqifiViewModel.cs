@@ -2126,10 +2126,6 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         => ConfirmOverlay.ShowAsync(title, message, affirmativeLabel, isDestructive);
 
     /// <summary>
-    /// Asks the update service whether a newer version exists and, if so, adds a notification
-    /// whose button installs it (#343). Replaces the old check against the WPF app's releases (#345).
-    /// </summary>
-    /// <summary>
     /// What installing an update would cut off right now, since installing restarts the app.
     /// </summary>
     private UpdateBlocker CurrentUpdateBlocker()
@@ -2175,6 +2171,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         return UpdateBlocker.None;
     }
 
+    /// <summary>
+    /// Asks the update service whether a newer version exists and, if so, adds a notification
+    /// whose button installs it (#343). Replaces the old check against the WPF app's releases (#345).
+    /// </summary>
     private async Task CheckForAppUpdateAsync()
     {
         var notifier = new AppUpdateNotifier(
@@ -2188,18 +2188,34 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                 return await _messageBoxService.ShowAsync(message, title, MessageBoxButton.OKCancel, MessageBoxImage.Question)
                        == MessageBoxResult.OK;
             },
-            async (message, title) =>
-                await _messageBoxService.ShowAsync(message, title, MessageBoxButton.OK, MessageBoxImage.Information),
+            // Download progress arrives on a background thread.
+            notice => Dispatcher.UIThread.Post(() => ShowUpdateNotice(notice)),
             _appLogger);
 
-        var notification = await notifier.CheckAsync();
-        if (notification is null) { return; }
+        await notifier.CheckAsync();
+    }
 
-        Dispatcher.UIThread.Post(() =>
+    private Notifications? _updateNotice;
+
+    /// <summary>Replaces the update notification (its text is init-only), or removes it when null.</summary>
+    private void ShowUpdateNotice(Notifications? notice)
+    {
+        var index = _updateNotice is null ? -1 : NotificationList.IndexOf(_updateNotice);
+        if (notice is null)
         {
-            NotificationList.Add(notification);
-            NotificationCount = NotificationList.Count;
-        });
+            if (index >= 0) NotificationList.RemoveAt(index);
+        }
+        else if (index >= 0)
+        {
+            NotificationList[index] = notice;
+        }
+        else
+        {
+            NotificationList.Add(notice);
+        }
+
+        _updateNotice = notice;
+        NotificationCount = NotificationList.Count;
     }
 
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.CloseFlyouts
