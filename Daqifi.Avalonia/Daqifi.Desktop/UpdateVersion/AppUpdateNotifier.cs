@@ -29,32 +29,45 @@ public enum UpdateBlocker
 /// </summary>
 /// <remarks>
 /// Nothing is downloaded until the user clicks Install (#341: notify only, download on click).
+/// Installing restarts the app, so when something is running that the restart would cut off, the
+/// update waits for it and installs on its own once it is done: the user clicks once.
 /// </remarks>
 public sealed class AppUpdateNotifier
 {
+    /// <summary>How often a waiting update looks again at what it is waiting for.</summary>
+    public static readonly TimeSpan RecheckInterval = TimeSpan.FromSeconds(10);
+
+    private const string TITLE = "Update";
+
     private readonly IAppUpdateService _service;
     private readonly Func<UpdateBlocker> _blocker;
     private readonly Func<string, string, Task<bool>> _confirm;
     private readonly Func<string, string, Task> _inform;
     private readonly IAppLogger _logger;
+    private readonly Func<TimeSpan, Task> _delay;
+    private bool _installing;
+    private bool _usageCheckFailureLogged;
 
     /// <param name="service">The update service for this head.</param>
-    /// <param name="blocker">What, if anything, installing would interrupt right now. Installing restarts the app, so it waits.</param>
+    /// <param name="blocker">What, if anything, installing would interrupt right now.</param>
     /// <param name="confirm">Asks a yes/no question (message, title); true means go ahead.</param>
     /// <param name="inform">Shows a message (message, title).</param>
     /// <param name="logger">Where failures are recorded.</param>
+    /// <param name="delay">Waits between checks while the update waits; <see cref="Task.Delay(TimeSpan)"/> unless a test supplies one.</param>
     public AppUpdateNotifier(
         IAppUpdateService service,
         Func<UpdateBlocker> blocker,
         Func<string, string, Task<bool>> confirm,
         Func<string, string, Task> inform,
-        IAppLogger logger)
+        IAppLogger logger,
+        Func<TimeSpan, Task>? delay = null)
     {
         _service = service;
         _blocker = blocker;
         _confirm = confirm;
         _inform = inform;
         _logger = logger;
+        _delay = delay ?? Task.Delay;
     }
 
     /// <summary>
@@ -87,20 +100,33 @@ public sealed class AppUpdateNotifier
         };
     }
 
-    /// <summary>Downloads and installs <paramref name="offer"/>, then restarts into it.</summary>
+    /// <summary>
+    /// Downloads <paramref name="offer"/>, waits until nothing would be cut off, then installs it and
+    /// restarts. A second click while one is under way does nothing.
+    /// </summary>
     public async Task InstallAsync(AppUpdateOffer offer)
     {
-        if (await RefuseWhileBusyAsync()) { return; }
+        if (_installing) { return; }
+        _installing = true;
+        try
+        {
+            await DownloadAndInstallAsync(offer);
+        }
+        finally
+        {
+            _installing = false;
+        }
+    }
 
+    private async Task DownloadAndInstallAsync(AppUpdateOffer offer)
+    {
         if (_service.ApplyNeedsElevation && !await _confirm(
-                $"DAQiFi is installed for all users, so installing version {offer.Version} needs " +
-                "administrator permission.\n\nWindows will ask next. Its prompt names Velopack, the " +
-                "updater DAQiFi uses.",
-                "Install update"))
+                "Installing needs administrator permission. Windows will ask next.", TITLE))
         {
             return;
         }
 
+        // Downloading interrupts nothing, so it starts at once even while something is running.
         try
         {
             await _service.DownloadAsync(offer);
@@ -108,12 +134,21 @@ public sealed class AppUpdateNotifier
         catch (Exception ex)
         {
             _logger.Warning(ex, $"Downloading app update {offer.Version} failed");
-            await _inform($"DAQiFi {offer.Version} could not be downloaded.\n\n{ex.Message}", "Update failed");
+            await _inform("The update couldn't be downloaded. Try again later.", TITLE);
             return;
         }
 
-        // The download can take a while; a session or a flash may have started in the meantime.
-        if (await RefuseWhileBusyAsync()) { return; }
+        // Asked again right before applying: anything may have started while waiting.
+        var waitingFor = WaitingFor();
+        if (waitingFor is not null)
+        {
+            await _inform($"Update ready. DAQiFi will restart to install it {waitingFor}.", TITLE);
+            while (waitingFor is not null)
+            {
+                await _delay(RecheckInterval);
+                waitingFor = WaitingFor();
+            }
+        }
 
         try
         {
@@ -122,50 +157,44 @@ public sealed class AppUpdateNotifier
         catch (Exception ex)
         {
             _logger.Error(ex, $"Applying app update {offer.Version} failed");
-            await _inform($"DAQiFi {offer.Version} could not be installed.\n\n{ex.Message}", "Update failed");
+            await _inform("The update couldn't be installed. Try again later.", TITLE);
         }
     }
 
-    private async Task<bool> RefuseWhileBusyAsync()
+    /// <summary>
+    /// What the restart would cut off, as the end of "install it ...", or <c>null</c> when nothing.
+    /// This process's own work comes first; then other copies, which the updater also closes, in
+    /// every user's session. If that check fails the update keeps waiting: closing someone else's
+    /// recording is worse than installing later.
+    /// </summary>
+    private string? WaitingFor()
     {
-        var message = _blocker() switch
+        var own = _blocker() switch
         {
-            UpdateBlocker.Logging => "Stop logging before installing the update. DAQiFi restarts to install it.",
-            UpdateBlocker.FirmwareUpdate =>
-                "Wait for the firmware update to finish before installing the update. DAQiFi restarts to " +
-                "install it, which would interrupt the device mid-update.",
-            UpdateBlocker.OtherWindowOpen =>
-                "Finish and close DAQiFi's other windows before installing the update. DAQiFi restarts to " +
-                "install it, which would close them.",
-            UpdateBlocker.SdCardTransfer =>
-                "Wait for the SD card transfer to finish before installing the update. DAQiFi restarts to " +
-                "install it, which would stop the transfer.",
+            UpdateBlocker.Logging => "when logging stops",
+            UpdateBlocker.FirmwareUpdate => "when the firmware update finishes",
+            UpdateBlocker.OtherWindowOpen => "when DAQiFi's other windows are closed",
+            UpdateBlocker.SdCardTransfer => "when the SD card transfer finishes",
             _ => null,
-        } ?? OtherCopyMessage();
-        if (message is null) { return false; }
+        };
+        if (own is not null) { return own; }
 
-        await _inform(message, "Install update");
-        return true;
-    }
-
-    private const string OTHER_COPY_MESSAGE =
-        "Another copy of DAQiFi is running on this PC, possibly in another user's session. Installing " +
-        "the update would close it, and stop anything it is recording or flashing.\n\nClose the other " +
-        "copy first. On a shared PC, install updates when nobody else is using DAQiFi.";
-
-    // Asked after this process's own checks, since those name a cause the user can act on here.
-    // When the check itself fails, the install waits: closing someone else's recording is worse
-    // than one more click later.
-    private string? OtherCopyMessage()
-    {
         try
         {
-            return _service.IsInstallInUseElsewhere() ? OTHER_COPY_MESSAGE : null;
+            return _service.IsInstallInUseElsewhere() ? OTHER_COPIES : null;
         }
         catch (Exception ex)
         {
-            _logger.Warning(ex, "Checking for other running copies of DAQiFi failed");
-            return OTHER_COPY_MESSAGE;
+            // Once per install: a waiting update asks again every few seconds.
+            if (!_usageCheckFailureLogged)
+            {
+                _usageCheckFailureLogged = true;
+                _logger.Warning(ex, "Checking for other running copies of DAQiFi failed");
+            }
+
+            return OTHER_COPIES;
         }
     }
+
+    private const string OTHER_COPIES = "when other copies of DAQiFi on this PC are closed";
 }
