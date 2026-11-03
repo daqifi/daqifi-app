@@ -112,7 +112,14 @@ public sealed class PreviousSessionImport
     /// Whether to offer the import: it has not been finished with, and the old database holds at
     /// least one complete session this user's database lacks. Reads both databases; never throws.
     /// </summary>
-    public bool HasSessionsToImport()
+    public bool HasSessionsToImport() => CheckForSessionsToImport() == true;
+
+    /// <summary>
+    /// <see cref="HasSessionsToImport"/>, but <c>null</c> when the check itself failed (the old file
+    /// locked or unreadable, say). Only <c>false</c> means nothing is left, so only that may retire
+    /// the offer for good. Never throws.
+    /// </summary>
+    public bool? CheckForSessionsToImport()
     {
         try
         {
@@ -133,7 +140,7 @@ public sealed class PreviousSessionImport
         }
         catch
         {
-            return false;
+            return null;
         }
     }
 

@@ -295,6 +295,20 @@ public sealed class PreviousSessionImportTests : IDisposable
     }
 
     [Fact]
+    public async Task A_check_that_fails_is_not_mistaken_for_nothing_left()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1);
+        await RunImport();
+        Assert.False(Import().CheckForSessionsToImport());
+
+        // Unreadable now: the answer is "can't tell", which must not retire the offer.
+        File.WriteAllText(_previous, "not a database");
+        Assert.Null(Import().CheckForSessionsToImport());
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
     public void Never_creates_the_current_database()
     {
         CreatePreviousDatabase();

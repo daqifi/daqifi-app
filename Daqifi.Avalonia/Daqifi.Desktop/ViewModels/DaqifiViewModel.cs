@@ -1800,8 +1800,9 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                 ApplyImportedSessions(outcome);
             }
 
-            // Not done while anything is left (a session still recording): offered again next launch.
-            if (!await Task.Run(import.HasSessionsToImport))
+            // Not done while anything is left (a session still recording), or when the check
+            // failed and cannot say: offered again next launch.
+            if (await Task.Run(import.CheckForSessionsToImport) == false)
             {
                 import.MarkDone();
             }
