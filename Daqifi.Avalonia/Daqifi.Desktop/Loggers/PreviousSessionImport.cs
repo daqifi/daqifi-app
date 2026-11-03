@@ -35,10 +35,12 @@ namespace Daqifi.Desktop.Logger;
 /// live import, and lets only one copy of the app import earlier sessions at a time.
 /// </para>
 /// <para>
-/// <b>Never a cut-short session.</b> The other app may still be recording. A session that gains
-/// samples during its copy is dropped, and so is the newest session when the old file was written in
-/// the last couple of minutes. Either is left for later: the offer is only retired once nothing is
-/// left to import, so it comes back at the next launch.
+/// <b>Guarding against cut-short sessions.</b> The other app may still be recording. A session that
+/// gains samples during its copy is dropped, and so is the newest session when the old file was
+/// written in the last couple of minutes. Either is left for later: the offer is only retired once
+/// nothing is left to import, so it comes back at the next launch. Not a guarantee: an older session
+/// still being recorded (two recorders at once) that adds no sample during its own copy can be copied
+/// short. That is a known limit, listed for a follow-up.
 /// </para>
 /// <para>
 /// <b>Short locks.</b> Samples are copied in small batches, each in its own transaction, so the
