@@ -409,6 +409,43 @@ public sealed class PreviousSessionImportTests : IDisposable
     }
 
     [Fact]
+    public async Task Never_takes_the_ID_a_logging_session_has_just_been_promised()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1);
+        // The logger reads its next ID, then inserts a moment later, outside any shared transaction.
+        int promised;
+        using (var context = TestDatabase.Contexts(_current).CreateDbContext())
+        {
+            promised = SessionIdAllocator.NextSessionId(context);
+        }
+
+        var imported = (await RunImport()).Imported;
+        Execute(_current, $"INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES ({promised}, '2026-11-03 00:00:00.0000000', 'Live', 0);");
+
+        Assert.NotEqual(promised, imported[0]);
+    }
+
+    [Fact]
+    public async Task Deletes_a_partial_copy_larger_than_one_batch_completely()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1);
+        var rows = PreviousSessionImport.BatchSpan + 10;
+        Execute(_current,
+            "INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2);" +
+            "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            $"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < {rows}) " +
+            "SELECT 7, x, x, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1 FROM c;");
+
+        var outcome = await RunImport();
+
+        Assert.Equal([7], outcome.Removed);
+        Assert.Equal(0L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = 7"));
+        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples"));
+    }
+
+    [Fact]
     public async Task Reports_the_partial_copies_it_replaced()
     {
         CreatePreviousDatabase();

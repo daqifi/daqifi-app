@@ -206,12 +206,14 @@ public sealed class PreviousSessionImport
             cancellationToken.ThrowIfCancellationRequested();
 
             // The row goes in only now, so an interruption leaves at most this one session partial.
-            // Its ID comes from the same allocator the app's other writers use, so it can never
-            // pick up orphan samples or metadata an old delete left behind.
+            // Its ID comes from the allocator the app's other writers use, so it can never pick up
+            // orphan samples or metadata an old delete left behind. One ID is skipped: the logger
+            // and the SD card importer read the maximum and insert a moment later, outside any
+            // shared transaction, so the next ID may already be promised to one of them.
             long newId;
             using (var transaction = connection.BeginTransaction())
             {
-                newId = SessionIdAllocator.NextSessionId(connection, transaction);
+                newId = SessionIdAllocator.NextSessionId(connection, transaction) + 1;
                 using var insert = Command(connection,
                     "INSERT INTO main.Sessions (ID, SessionStart, Name, SampleCount, Status) VALUES ($id, $start, $name, $count, $status)",
                     transaction);
@@ -257,6 +259,14 @@ public sealed class PreviousSessionImport
                     grown.Parameters.AddWithValue("$old", oldId);
                     if (Convert.ToInt64(grown.ExecuteScalar()) > last)
                     {
+                        // Flagged failed first, so a crash during the deletion is cleaned up next time.
+                        using (var flag = Command(connection, "UPDATE main.Sessions SET Status = $failed WHERE ID = $new"))
+                        {
+                            flag.Parameters.AddWithValue("$failed", (int)SessionStatus.ImportFailed);
+                            flag.Parameters.AddWithValue("$new", newId);
+                            flag.ExecuteNonQuery();
+                        }
+
                         DeleteSessions(connection, $"{newId}");
                         outcome.LeftForLater++;
                         continue;
@@ -385,9 +395,11 @@ public sealed class PreviousSessionImport
 
     /// <summary>
     /// Deletes copies an earlier, interrupted import left behind (flagged
-    /// <see cref="SessionStatus.ImportFailed"/>), so they are redone. Only failed rows: an
-    /// <see cref="SessionStatus.Importing"/> row may belong to an import still running in another
-    /// instance, and startup already turns abandoned ones into failed ones.
+    /// <see cref="SessionStatus.ImportFailed"/>), so they are redone. Rows still marked
+    /// <see cref="SessionStatus.Importing"/> are left alone, which protects an import running in
+    /// another instance in most cases. Not all: that instance's startup sweep flags any
+    /// <c>Importing</c> row as failed, so two instances importing at once can still collide. The app
+    /// has no cross-process database ownership guard (see <c>DatabaseMigrator</c>).
     /// </summary>
     /// <returns>The IDs deleted.</returns>
     private static List<int> RemoveFailedImports(SqliteConnection connection, string complete)
@@ -412,19 +424,35 @@ public sealed class PreviousSessionImport
         return ids;
     }
 
-    /// <summary>Deletes sessions of this user's database, with their samples and metadata.</summary>
+    /// <summary>
+    /// Deletes sessions of this user's database, with their samples and metadata. Samples go in
+    /// batches, each its own transaction, for the same reason the copy is batched: a partial copy can
+    /// hold hundreds of millions of samples, and one transaction over them would hold the write lock
+    /// (and grow the journal) for minutes. The session rows go last, so until then they stay marked
+    /// failed and a crash part-way is finished off by the next import.
+    /// </summary>
     private static void DeleteSessions(SqliteConnection connection, string idList)
     {
-        using var transaction = connection.BeginTransaction();
-        foreach (var table in new[] { "Samples", "SessionDeviceMetadata" })
+        int deleted;
+        do
         {
-            using var delete = Command(connection, $"DELETE FROM main.{table} WHERE LoggingSessionID IN ({idList})", transaction);
-            delete.ExecuteNonQuery();
+            using var transaction = connection.BeginTransaction();
+            using var batch = Command(connection,
+                $"DELETE FROM main.Samples WHERE ID IN (SELECT ID FROM main.Samples WHERE LoggingSessionID IN ({idList}) LIMIT {BatchSpan})",
+                transaction);
+            deleted = batch.ExecuteNonQuery();
+            transaction.Commit();
         }
+        while (deleted > 0);
 
-        using var sessions = Command(connection, $"DELETE FROM main.Sessions WHERE ID IN ({idList})", transaction);
-        sessions.ExecuteNonQuery();
-        transaction.Commit();
+        using (var transaction = connection.BeginTransaction())
+        {
+            using var metadata = Command(connection, $"DELETE FROM main.SessionDeviceMetadata WHERE LoggingSessionID IN ({idList})", transaction);
+            metadata.ExecuteNonQuery();
+            using var sessions = Command(connection, $"DELETE FROM main.Sessions WHERE ID IN ({idList})", transaction);
+            sessions.ExecuteNonQuery();
+            transaction.Commit();
+        }
     }
 
     /// <summary>How recently the old file must have been written to suspect a recording in progress.</summary>
