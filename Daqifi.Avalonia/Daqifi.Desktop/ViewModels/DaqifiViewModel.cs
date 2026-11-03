@@ -2158,6 +2158,12 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             return UpdateBlocker.SdCardTransfer;
         }
 
+        // The Logged Data pane: importing a log file from disk, deleting a session, or deleting all.
+        if (IsLoggedDataBusy)
+        {
+            return UpdateBlocker.LoggedDataBusy;
+        }
+
         // Anything else long-running (an export, a firmware or connection dialog) runs in a window
         // of its own. Listing each operation would always miss the next one, so any open window
         // besides the main one blocks the install.

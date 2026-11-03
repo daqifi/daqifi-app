@@ -21,6 +21,9 @@ public enum UpdateBlocker
 
     /// <summary>Files are being read from a device's SD card, or imported from it.</summary>
     SdCardTransfer,
+
+    /// <summary>Logged data is being imported from a file, or sessions are being deleted.</summary>
+    LoggedDataBusy,
 }
 
 /// <summary>
@@ -175,6 +178,7 @@ public sealed class AppUpdateNotifier
             UpdateBlocker.FirmwareUpdate => "when the firmware update finishes",
             UpdateBlocker.OtherWindowOpen => "when DAQiFi's other windows are closed",
             UpdateBlocker.SdCardTransfer => "when the SD card transfer finishes",
+            UpdateBlocker.LoggedDataBusy => "when the import or delete finishes",
             _ => null,
         };
         if (own is not null) { return own; }

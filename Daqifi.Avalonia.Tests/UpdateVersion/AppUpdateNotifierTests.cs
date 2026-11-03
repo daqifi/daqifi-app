@@ -156,6 +156,7 @@ public class AppUpdateNotifierTests
     [InlineData(UpdateBlocker.FirmwareUpdate, "when the firmware update finishes")]
     [InlineData(UpdateBlocker.OtherWindowOpen, "when DAQiFi's other windows are closed")]
     [InlineData(UpdateBlocker.SdCardTransfer, "when the SD card transfer finishes")]
+    [InlineData(UpdateBlocker.LoggedDataBusy, "when the import or delete finishes")]
     public async Task WhileBusy_DownloadsWaitsAndInstallsWhenDone(UpdateBlocker blocker, string waitingFor)
     {
         var h = new Harness { Blocker = blocker };
@@ -175,6 +176,7 @@ public class AppUpdateNotifierTests
     [InlineData(UpdateBlocker.FirmwareUpdate)]
     [InlineData(UpdateBlocker.OtherWindowOpen)]
     [InlineData(UpdateBlocker.SdCardTransfer)]
+    [InlineData(UpdateBlocker.LoggedDataBusy)]
     public async Task WorkStartedDuringDownload_IsWaitedFor(UpdateBlocker blocker)
     {
         var h = new Harness();

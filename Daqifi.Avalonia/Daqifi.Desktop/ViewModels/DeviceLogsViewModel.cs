@@ -64,6 +64,26 @@ public partial class DeviceLogsViewModel : ObservableObject
     [ObservableProperty]
     private bool _isBusy;
 
+    // A refresh, an import and an import-all can overlap (on different devices, say), so busy is a
+    // count, not a flag: one finishing must not report the pane idle while another still runs. An
+    // app update waits on IsBusy (#503).
+    private int _busyOperations;
+
+    internal void BeginBusy()
+    {
+        _busyOperations++;
+        IsBusy = true;
+    }
+
+    internal void EndBusy()
+    {
+        if (_busyOperations > 0) { _busyOperations--; }
+        if (_busyOperations > 0) { return; }
+
+        IsBusy = false;
+        BusyMessage = string.Empty;
+    }
+
     [ObservableProperty]
     private string _busyMessage;
 
@@ -479,7 +499,7 @@ public partial class DeviceLogsViewModel : ObservableObject
 
         try
         {
-            IsBusy = true;
+            BeginBusy();
             BusyMessage = "Refreshing files...";
             SdCardState = SdCardState.Unknown;
             SdCardErrorMessage = string.Empty;
@@ -533,8 +553,7 @@ public partial class DeviceLogsViewModel : ObservableObject
         }
         finally
         {
-            IsBusy = false;
-            BusyMessage = string.Empty;
+            EndBusy();
         }
     }
 
@@ -578,7 +597,7 @@ public partial class DeviceLogsViewModel : ObservableObject
 
         try
         {
-            IsBusy = true;
+            BeginBusy();
             BusyMessage = $"Downloading {file.FileName}...";
 
             var importer = ResolveImporter();
@@ -634,8 +653,7 @@ public partial class DeviceLogsViewModel : ObservableObject
         }
         finally
         {
-            IsBusy = false;
-            BusyMessage = string.Empty;
+            EndBusy();
         }
     }
 
@@ -652,7 +670,7 @@ public partial class DeviceLogsViewModel : ObservableObject
 
         try
         {
-            IsBusy = true;
+            BeginBusy();
 
             var importer = ResolveImporter();
 
@@ -750,8 +768,7 @@ public partial class DeviceLogsViewModel : ObservableObject
         }
         finally
         {
-            IsBusy = false;
-            BusyMessage = string.Empty;
+            EndBusy();
         }
     }
 
