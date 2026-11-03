@@ -126,6 +126,30 @@ public class AppUpdateNotifierTests
         Assert.Empty(h.Shown);
     }
 
+    /// <summary>A request that times out is cancelled by the HTTP stack, not by the caller: still "offline", never thrown.</summary>
+    [Fact]
+    public async Task TimedOutCheck_IsAWarning_AndDoesNotThrow()
+    {
+        var h = new Harness();
+        h.Service.CheckFailure = new TaskCanceledException("timed out");
+
+        Assert.Null(await h.Notifier.CheckAsync());
+        Assert.Single(h.Logger.Warnings);
+        Assert.Empty(h.Shown);
+    }
+
+    [Fact]
+    public async Task CallerCancellingTheCheck_Propagates()
+    {
+        var h = new Harness();
+        using var cancel = new CancellationTokenSource();
+        cancel.Cancel();
+        h.Service.CheckFailure = new OperationCanceledException(cancel.Token);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => h.Notifier.CheckAsync(cancel.Token));
+        Assert.Empty(h.Logger.Warnings);
+    }
+
     [Fact]
     public async Task FailedCheck_IsAWarningNotAnError_AndShowsNothing()
     {

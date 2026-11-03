@@ -87,7 +87,8 @@ public sealed class AppUpdateNotifier
         {
             offer = await _service.CheckAsync(cancellationToken);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        // A timed-out request also surfaces as a cancellation; only the caller's own cancel propagates.
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // Offline is normal for this app (field and lab networks), so this is not an error.
             _logger.Warning(ex, "Checking for an app update failed");
