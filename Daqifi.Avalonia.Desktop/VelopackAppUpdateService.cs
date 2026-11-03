@@ -58,8 +58,8 @@ internal sealed class VelopackAppUpdateService : IAppUpdateService
     /// <summary>
     /// Velopack's apply step ends every process whose image is under the install folder, in every
     /// session it can open, and for an install for all users it runs as administrator. This looks
-    /// at the same processes from this one, which usually cannot read another user's paths, so
-    /// <see cref="InstallUsage"/> counts an unreadable process with DAQiFi's name as in use.
+    /// at the same processes from this one, which usually cannot read another user's paths, so for
+    /// that install <see cref="InstallUsage"/> counts an unreadable process with DAQiFi's name as in use.
     /// </summary>
     public bool IsInstallInUseElsewhere()
     {
@@ -67,7 +67,7 @@ internal sealed class VelopackAppUpdateService : IAppUpdateService
 
         var root = InstallRoot() ?? throw new InvalidOperationException("The install folder could not be found.");
         return InstallUsage.IsInUseElsewhere(
-            WindowsProcesses.Snapshot(), Environment.ProcessId, root, AppProcessNames());
+            WindowsProcesses.Snapshot(), Environment.ProcessId, root, AppProcessNames(), ApplyNeedsElevation);
     }
 
     // This exe, and the stub in the install root that the Start Menu shortcut starts. The stub

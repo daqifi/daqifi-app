@@ -26,14 +26,20 @@ public static class InstallUsage
     /// <param name="installRoot">The install folder, the one the updater clears of processes.</param>
     /// <param name="appProcessNames">
     /// The names a DAQiFi process from this install can have. When a process's path cannot be read,
-    /// a matching name counts as in use. Most often it is another user's copy, which is the case
-    /// this check exists for.
+    /// a matching name counts as in use, but only if <paramref name="appliesForAllUsers"/>. Most
+    /// often it is another user's copy, which is the case this check exists for.
+    /// </param>
+    /// <param name="appliesForAllUsers">
+    /// True for an install for all users, whose updater runs as administrator and reaches every
+    /// user's processes. An install for one user updates as that user and ends only processes whose
+    /// paths this one can read, so an unreadable DAQiFi there belongs to some other install.
     /// </param>
     public static bool IsInUseElsewhere(
         IEnumerable<RunningProcess> processes,
         int selfId,
         string installRoot,
-        IReadOnlyCollection<string> appProcessNames)
+        IReadOnlyCollection<string> appProcessNames,
+        bool appliesForAllUsers)
     {
         var root = WithTrailingSeparator(Path.GetFullPath(installRoot));
 
@@ -43,7 +49,7 @@ public static class InstallUsage
 
             if (process.ImagePath is null)
             {
-                if (appProcessNames.Contains(process.Name, StringComparer.OrdinalIgnoreCase)) { return true; }
+                if (appliesForAllUsers && appProcessNames.Contains(process.Name, StringComparer.OrdinalIgnoreCase)) { return true; }
                 continue;
             }
 

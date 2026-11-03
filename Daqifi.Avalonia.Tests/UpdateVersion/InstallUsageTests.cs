@@ -16,7 +16,7 @@ public class InstallUsageTests
     private static string Under(params string[] parts) => Path.Combine([Root, .. parts]);
 
     private static bool InUse(params RunningProcess[] processes) =>
-        InstallUsage.IsInUseElsewhere(processes, SELF, Root, Names);
+        InstallUsage.IsInUseElsewhere(processes, SELF, Root, Names, appliesForAllUsers: true);
 
     [Fact]
     public void OnlyThisProcess_IsNotInUse() =>
@@ -57,6 +57,21 @@ public class InstallUsageTests
     public void UnreadableProcessWithAppName_IsInUse(string name) =>
         Assert.True(InUse(new RunningProcess(7, name, null)));
 
+    /// <summary>
+    /// An install for one user updates as that user, so another user's unreadable DAQiFi is never
+    /// closed by it and must not hold the update (#503 audit).
+    /// </summary>
+    [Fact]
+    public void UnreadableProcessWithAppName_ForOneUserInstall_IsNotInUse() =>
+        Assert.False(InstallUsage.IsInUseElsewhere(
+            [new RunningProcess(7, "DAQiFi", null)], SELF, Root, Names, appliesForAllUsers: false));
+
+    /// <summary>A readable process under the folder still counts for an install for one user.</summary>
+    [Fact]
+    public void ProcessUnderTheInstall_ForOneUserInstall_IsInUse() =>
+        Assert.True(InstallUsage.IsInUseElsewhere(
+            [new RunningProcess(7, "x", Under("current", "x.exe"))], SELF, Root, Names, appliesForAllUsers: false));
+
     [Fact]
     public void UnreadableProcessWithOtherName_IsNotInUse() =>
         Assert.False(InUse(new RunningProcess(4, "System", null), new RunningProcess(8, "svchost", null)));
@@ -68,7 +83,7 @@ public class InstallUsageTests
     [Fact]
     public void RootGivenWithTrailingSeparator_MatchesTheSame() =>
         Assert.True(InstallUsage.IsInUseElsewhere(
-            [new RunningProcess(7, "x", Under("current", "x.exe"))], SELF, Root + Path.DirectorySeparatorChar, Names));
+            [new RunningProcess(7, "x", Under("current", "x.exe"))], SELF, Root + Path.DirectorySeparatorChar, Names, true));
 
     [Fact]
     public void MalformedPath_IsNotInUse() =>
