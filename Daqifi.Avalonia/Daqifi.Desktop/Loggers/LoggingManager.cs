@@ -1047,6 +1047,32 @@ public partial class LoggingManager : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Adds sessions written to the database by something other than this manager (the import of
+    /// earlier sessions, #353) to <see cref="LoggingSessions"/>, without reloading the rest. A full
+    /// reload would replace the live session object while logging. Downstream addition.
+    /// </summary>
+    public void AddPersistedLoggingSessions(IReadOnlyCollection<int> sessionIds)
+    {
+        if (sessionIds.Count == 0)
+        {
+            return;
+        }
+
+        using var context = _loggingContext.CreateDbContext();
+        var sessions = context.Sessions
+            .AsNoTracking()
+            .Include(session => session.DeviceMetadata)
+            .Where(session => sessionIds.Contains(session.ID))
+            .OrderBy(session => session.ID)
+            .ToList();
+
+        foreach (var session in sessions.Where(session => LoggingSessions.All(existing => existing.ID != session.ID)))
+        {
+            LoggingSessions.Add(session);
+        }
+    }
+
     // @port: Daqifi.Desktop.Logger.LoggingManager.DeleteLoggingSessionIfPresent
     private void DeleteLoggingSessionIfPresent(int sessionId)
     {

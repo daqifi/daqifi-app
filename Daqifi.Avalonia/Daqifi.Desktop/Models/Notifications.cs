@@ -27,4 +27,16 @@ public class Notifications
 
     // @port: Daqifi.Desktop.Models.Notifications.Link
     public string Link { get; set; }
+
+    /// <summary>
+    /// Label of a button that does the work the notification offers, or <c>null</c> for none.
+    /// Downstream addition, as are <see cref="Action"/> and <see cref="Dismiss"/>.
+    /// </summary>
+    public string? ActionText { get; init; }
+
+    /// <summary>What the <see cref="ActionText"/> button runs.</summary>
+    public System.Windows.Input.ICommand? Action { get; init; }
+
+    /// <summary>Runs when the user dismisses the notification, or <c>null</c> when it cannot be dismissed.</summary>
+    public System.Windows.Input.ICommand? Dismiss { get; init; }
 }

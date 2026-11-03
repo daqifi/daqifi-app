@@ -4,7 +4,6 @@
 // the correspondence map.
 
 using Daqifi.Desktop.Channel;
-using Daqifi.Desktop.Common;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.Configuration;
 using Daqifi.Desktop.Device;
@@ -922,9 +921,9 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // is simply empty with no explanation of where the sessions went.
                     ReportQuarantinedDatabase();
 
-                    // #353: data no longer follows elevation into %ProgramData%. If a database is
-                    // still there, say where it is and how to get those sessions back, once.
-                    ReportPreviousDataFolder();
+                    // #353: data no longer follows elevation into %ProgramData%. If sessions are
+                    // still there, offer to bring them over (checked in the background).
+                    _ = OfferPreviousSessionImportAsync();
 
                     // Summary Logger
                     SummaryLogger = new SummaryLogger();
@@ -1688,24 +1687,124 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     }
 
     /// <summary>
-    /// Adds a one-time notification when a DAQiFi database remains in the machine-wide
-    /// <c>%ProgramData%\DAQiFi</c> folder (#353). See <see cref="PreviousDataFolderNotice"/>.
-    /// Skipped in UI-test mode, whose screenshots must not depend on what is on the machine.
+    /// Offers, once, to import sessions left in the machine-wide <c>%ProgramData%\DAQiFi</c>
+    /// database (#353). See <see cref="PreviousSessionImport"/>. The check reads both databases, so
+    /// it runs off the UI thread; it never throws. Skipped in UI-test mode, whose screenshots must
+    /// not depend on what is on the machine.
     /// </summary>
-    private void ReportPreviousDataFolder()
+    private async Task OfferPreviousSessionImportAsync()
     {
-        if (App.IsTestMode || PreviousDataFolderNotice.ForThisPc().TakeNotice() is not { } message)
+        if (App.IsTestMode)
         {
             return;
         }
 
-        // Null DeviceSerialNo for the same reason as ReportHotplugDetectionUnavailable above.
-        NotificationList.Add(new Notifications
+        try
         {
-            IsFirmwareUpdate = false,
-            Message = message
-        });
+            var import = PreviousSessionImport.ForThisPc(App.DatabasePath);
+            if (await Task.Run(import.HasSessionsToImport))
+            {
+                Dispatcher.UIThread.Post(() => ShowPreviousSessionNotice(OfferedImportNotice(import, PreviousSessionImport.OfferMessage)));
+            }
+        }
+        catch (Exception ex)
+        {
+            _appLogger.Error(ex, "Failed to check for sessions from an earlier version");
+        }
+    }
+
+    private Notifications? _previousSessionNotice;
+    private bool _isImportingPreviousSessions;
+
+    /// <summary>The offer (or a retry after a failure): a short line, Import, and Dismiss.</summary>
+    private Notifications OfferedImportNotice(PreviousSessionImport import, string message) => new()
+    {
+        Message = message,
+        ActionText = "Import",
+        Action = new AsyncRelayCommand(() => ImportPreviousSessionsAsync(import)),
+        Dismiss = new RelayCommand(() =>
+        {
+            import.MarkDone();
+            ShowPreviousSessionNotice(null);
+        }),
+    };
+
+    /// <summary>Replaces the import notification (its text is init-only), or removes it when null.</summary>
+    private void ShowPreviousSessionNotice(Notifications? notice)
+    {
+        var index = _previousSessionNotice is null ? -1 : NotificationList.IndexOf(_previousSessionNotice);
+        if (notice is null)
+        {
+            if (index >= 0) NotificationList.RemoveAt(index);
+        }
+        else if (index >= 0)
+        {
+            NotificationList[index] = notice;
+        }
+        else
+        {
+            NotificationList.Add(notice);
+        }
+
+        _previousSessionNotice = notice;
         NotificationCount = NotificationList.Count;
+    }
+
+    private async Task ImportPreviousSessionsAsync(PreviousSessionImport import)
+    {
+        if (_isImportingPreviousSessions)
+        {
+            return;
+        }
+
+        _isImportingPreviousSessions = true;
+        var shownPercent = -1;
+        var finished = false;
+        void ShowProgress(double fraction)
+        {
+            var percent = (int)(fraction * 100);
+            // A report still queued when the import ends must not cover the result.
+            if (finished || percent == shownPercent) return;
+            shownPercent = percent;
+            ShowPreviousSessionNotice(new Notifications { Message = $"Importing sessions… {percent}%" });
+        }
+
+        try
+        {
+            ShowProgress(0);
+            // Created here, on the UI thread, so its callbacks come back to it.
+            var progress = new Progress<double>(ShowProgress);
+            IReadOnlyList<int> imported;
+            try
+            {
+                imported = await Task.Run(() => import.ImportAsync(progress));
+            }
+            finally
+            {
+                finished = true;
+            }
+
+            import.MarkDone();
+            LoggingManager.Instance.AddPersistedLoggingSessions(imported);
+            ShowPreviousSessionNotice(new Notifications
+            {
+                Message = imported.Count == 1 ? "Imported 1 session." : $"Imported {imported.Count} sessions."
+            });
+        }
+        catch (NotEnoughDiskSpaceException ex)
+        {
+            _appLogger.Warning(ex.Message);
+            ShowPreviousSessionNotice(OfferedImportNotice(import, "Not enough disk space to import."));
+        }
+        catch (Exception ex)
+        {
+            _appLogger.Error(ex, "Importing sessions from an earlier version failed");
+            ShowPreviousSessionNotice(OfferedImportNotice(import, "Couldn't import the sessions."));
+        }
+        finally
+        {
+            _isImportingPreviousSessions = false;
+        }
     }
 
     /// <summary>
