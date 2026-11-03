@@ -22,7 +22,9 @@ namespace Daqifi.Desktop.Common;
 /// elevated launch of this app would have opened and migrated it.</item>
 /// </list>
 ///
-/// Keeping the database and the logs under the same root avoids split or lost data.
+/// Keeping the database and the logs under the same root avoids split or lost data. A database an
+/// earlier elevated launch left in <c>%ProgramData%\DAQiFi</c> is not moved; instead
+/// <see cref="PreviousDataFolderNotice"/> tells the user once where it is.
 /// </summary>
 // @port: Daqifi.Desktop.Common.AppDataPaths
 public static class AppDataPaths

@@ -4,6 +4,7 @@
 // the correspondence map.
 
 using Daqifi.Desktop.Channel;
+using Daqifi.Desktop.Common;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.Configuration;
 using Daqifi.Desktop.Device;
@@ -921,6 +922,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // is simply empty with no explanation of where the sessions went.
                     ReportQuarantinedDatabase();
 
+                    // #353: data no longer follows elevation into %ProgramData%. If a database is
+                    // still there, say where it is and how to get those sessions back, once.
+                    ReportPreviousDataFolder();
+
                     // Summary Logger
                     SummaryLogger = new SummaryLogger();
                     LoggingManager.Instance.AddLogger(SummaryLogger);
@@ -1674,6 +1679,27 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         // Null DeviceSerialNo for the same reason as ReportHotplugDetectionUnavailable above: an
         // app-level condition with no owning device, which is what exempts it from
         // RemoveNotification's per-device pruning so it survives the next UpdateUi pass.
+        NotificationList.Add(new Notifications
+        {
+            IsFirmwareUpdate = false,
+            Message = message
+        });
+        NotificationCount = NotificationList.Count;
+    }
+
+    /// <summary>
+    /// Adds a one-time notification when a DAQiFi database remains in the machine-wide
+    /// <c>%ProgramData%\DAQiFi</c> folder (#353). See <see cref="PreviousDataFolderNotice"/>.
+    /// Skipped in UI-test mode, whose screenshots must not depend on what is on the machine.
+    /// </summary>
+    private void ReportPreviousDataFolder()
+    {
+        if (App.IsTestMode || PreviousDataFolderNotice.ForThisPc().TakeNotice() is not { } message)
+        {
+            return;
+        }
+
+        // Null DeviceSerialNo for the same reason as ReportHotplugDetectionUnavailable above.
         NotificationList.Add(new Notifications
         {
             IsFirmwareUpdate = false,
