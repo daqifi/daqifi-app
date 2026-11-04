@@ -110,16 +110,25 @@
           </Border.Styles>
           <StackPanel Spacing="10">
             <!-- Heading follows the same flag the border does. Text comes from a style pair
-                 rather than a converter so the two words live beside the colours they go with. -->
+                 rather than a converter so the two words live beside the colours they go with —
+                 the Classes.x-plus-style shape LiveGraphPane's LOGGING ON/OFF label already uses,
+                 and the one MobileAutomationNameTests points at for state-driven labels.
+
+                 AutomationProperties.Name is set alongside each Text for the reason that label
+                 records: a TextBlock's automation name does not track Text changed by a style, so
+                 without this the heading is in the accessibility tree with the wrong word or none
+                 — and the accessibility tree is how #521 was diagnosed in the first place. -->
             <TextBlock Classes="outcomeHeading" FontWeight="SemiBold"
                        Classes.outcomeFailed="{Binding ImportOutcomeIsFailure}"
                        FontSize="{DynamicResource FontSizeBody}">
               <TextBlock.Styles>
                 <Style Selector="TextBlock.outcomeHeading">
                   <Setter Property="Text" Value="Import complete" />
+                  <Setter Property="(AutomationProperties.Name)" Value="Import complete" />
                 </Style>
                 <Style Selector="TextBlock.outcomeHeading.outcomeFailed">
                   <Setter Property="Text" Value="Import failed" />
+                  <Setter Property="(AutomationProperties.Name)" Value="Import failed" />
                 </Style>
               </TextBlock.Styles>
             </TextBlock>
