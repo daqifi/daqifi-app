@@ -96,6 +96,46 @@ public partial class DeviceLogsViewModel : ObservableObject
     [ObservableProperty]
     private string _sdCardErrorGuidance = SdCardFailureClassifier.GENERIC_CARD_GUIDANCE;
 
+    /// <summary>
+    /// What the last finished import had to say, as bindable state, or empty when there is nothing
+    /// to report. Set by <see cref="ReportImportOutcome"/> from the same <see cref="ImportOutcome"/>
+    /// the dialog is built from, so the two surfaces cannot word the same event differently.
+    /// </summary>
+    /// <remarks>
+    /// This exists because an import outcome had exactly one surface — a modal dialog — and the
+    /// mobile head has nowhere to put one. <see cref="AvaloniaMessageBoxService"/> shows a
+    /// <c>MessageDialog</c>, which is a <c>Window</c> owned by
+    /// <c>IClassicDesktopStyleApplicationLifetime.MainWindow</c>; under the single-view lifetime
+    /// Android and iOS run there is no window to own it, so <c>ShowAsync</c> returns
+    /// <c>MessageBoxResult.None</c> and the message is silently dropped. The result on the phone
+    /// was an import that failed, succeeded or did nothing and looked identical in all three cases
+    /// (issue #521).
+    /// <para>So the outcome is held as state here, which each head renders in its own idiom: the
+    /// desktop head keeps its dialog, and the mobile view binds an inline notice — the same
+    /// affordance it already uses for the SD card error panel and the shell uses for a failed
+    /// connect. It is deliberately NOT a second message-building path: both surfaces read the one
+    /// <see cref="ImportOutcome"/> that <see cref="DescribeImport"/> or
+    /// <see cref="DescribeImportFailure"/> produced.</para>
+    /// <para>Not a fix for <c>AvaloniaMessageBoxService</c> itself, which is still mute on mobile
+    /// for every one of its other callers and leaves no trace when it drops a message. That is a
+    /// wider gap than this view — it is reported in this change's pull request rather than widened
+    /// into here, because giving the single-view lifetime a dialog host is a decision of its own and
+    /// a modal is not the mobile idiom.</para>
+    /// </remarks>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasImportOutcome))]
+    private string _importOutcomeMessage = string.Empty;
+
+    /// <summary>
+    /// Whether <see cref="ImportOutcomeMessage"/> reports a failure rather than a completed import.
+    /// Drives the notice's styling; the text itself says what happened either way.
+    /// </summary>
+    [ObservableProperty]
+    private bool _importOutcomeIsFailure;
+
+    /// <summary>True when there is an import outcome to show.</summary>
+    public bool HasImportOutcome => !string.IsNullOrEmpty(ImportOutcomeMessage);
+
     private ObservableCollection<SdCardFile> _deviceFiles;
 
     // @port: Daqifi.Desktop.ViewModels.DeviceLogsViewModel.DeviceFiles
@@ -576,6 +616,11 @@ public partial class DeviceLogsViewModel : ObservableObject
         var device = SelectedDevice;
         if (file == null || device == null || !CanAccessSdCard) return;
 
+        // A notice from the previous import is cleared before this one starts: the mobile head shows
+        // it inline rather than in a modal the user has to dismiss, so leaving it up would have the
+        // last file's outcome sitting beside a running import of a different one.
+        ClearImportOutcome();
+
         try
         {
             IsBusy = true;
@@ -591,35 +636,12 @@ public partial class DeviceLogsViewModel : ObservableObject
             var result = await Task.Run(() =>
                 importer.ImportFromDeviceAsync(device, file.FileName, progress, CancellationToken.None));
 
-            string message;
             if (result.SessionPersisted)
             {
                 AddImportedSession(result.Session);
-                message = $"Successfully imported {file.FileName}";
-
-                // A persisted session can still owe the user a word — readings that were NaN
-                // and had to be left out of an otherwise good import (#412).
-                if (result.OutcomeGuidance.Length > 0)
-                {
-                    message += $"\n\n{result.OutcomeGuidance}";
-                }
-            }
-            else
-            {
-                // Nothing threw, but no finished session came of it — an empty log, or samples
-                // that could not be recorded as a completed session. The importer says which;
-                // reporting a successful import here would name a session that is not there, or
-                // is there flagged as incomplete.
-                message = $"{file.FileName}: {result.OutcomeGuidance}";
             }
 
-            var timestampWarning = result.TimestampQuality.BuildUserWarning();
-            if (timestampWarning != null)
-            {
-                message += $"\n\nWarning: {timestampWarning}";
-            }
-
-            await ShowMessage("Import Complete", message, MessageBoxButton.OK);
+            await ReportImportOutcome(DescribeImport(file.FileName, result));
         }
         catch (OperationCanceledException)
         {
@@ -628,9 +650,7 @@ public partial class DeviceLogsViewModel : ObservableObject
         catch (Exception ex)
         {
             var failure = HandleImportFailure(ex, file.FileName, device);
-            await ShowMessage("Import Failed",
-                $"Could not import {file.FileName}.\n\n{failure.Guidance}",
-                MessageBoxButton.OK);
+            await ReportImportOutcome(DescribeImportFailure(file.FileName, failure));
         }
         finally
         {
@@ -649,6 +669,8 @@ public partial class DeviceLogsViewModel : ObservableObject
 
         var filesToImport = DeviceFiles.ToList();
         var outcome = new ImportAllOutcome { TotalCount = filesToImport.Count };
+
+        ClearImportOutcome();
 
         try
         {
@@ -739,14 +761,16 @@ public partial class DeviceLogsViewModel : ObservableObject
                 }
             }
 
-            await ShowMessage("Import Complete", BuildImportAllSummary(outcome), MessageBoxButton.OK);
+            await ReportImportOutcome(new ImportOutcome(
+                "Import Complete", BuildImportAllSummary(outcome), IsFailure: false));
         }
         catch (Exception ex)
         {
             _logger.Error(ex, "Error importing all files");
-            await ShowMessage("Import Failed",
+            await ReportImportOutcome(new ImportOutcome(
+                "Import Failed",
                 "Import failed. Please check the device connection and try again.",
-                MessageBoxButton.OK);
+                IsFailure: true));
         }
         finally
         {
@@ -900,6 +924,105 @@ public partial class DeviceLogsViewModel : ObservableObject
         {
             _logger.Error(ex, context);
         }
+    }
+
+    /// <summary>
+    /// What a finished import has to say, in the terms every surface reports it in. Built once and
+    /// handed to <see cref="ReportImportOutcome"/>, which puts it on both of them.
+    /// </summary>
+    /// <param name="Title">Dialog caption on the desktop head; not shown by the inline notice,
+    /// which gets its register from <paramref name="IsFailure"/> instead.</param>
+    /// <param name="Message">The sentence(s) the user reads, identical on both heads.</param>
+    /// <param name="IsFailure">Whether this reports an import that failed.</param>
+    internal sealed record ImportOutcome(string Title, string Message, bool IsFailure);
+
+    /// <summary>
+    /// Words the outcome of one import that did not throw: a persisted session, or a run that
+    /// produced no finished session at all.
+    /// </summary>
+    /// <remarks>
+    /// Pure and <c>static</c> so the wording can be asserted without a device, a dialog or a
+    /// dispatcher. That matters more than it looks: the persisted branch is unreachable from a
+    /// unit test driving the view model, because <c>AddImportedSession</c> reaches
+    /// <c>LoggingManager.Instance</c> through <c>Dispatcher.UIThread.Invoke</c> and this test
+    /// project builds no Avalonia lifetime (see <c>DeviceLogsImportBatchTests</c>' remarks). Split
+    /// out here, the success sentence is testable; left inline in the command, it was not.
+    /// </remarks>
+    internal static ImportOutcome DescribeImport(string fileName, SdCardImportResult result)
+    {
+        string message;
+        if (result.SessionPersisted)
+        {
+            // Says what landed, not just that something did. A bare "Successfully imported" left
+            // the user with no way to tell a full log from one truncated to a handful of samples,
+            // and on mobile this sentence is the ONLY confirmation an import ever produced
+            // (issue #521) — the desktop head at least writes a row to its session list in view.
+            message = $"Imported {fileName} — {result.SamplesImported:N0} " +
+                      $"{(result.SamplesImported == 1 ? "sample" : "samples")}.";
+
+            // A persisted session can still owe the user a word — readings that were NaN
+            // and had to be left out of an otherwise good import (#412).
+            if (result.OutcomeGuidance.Length > 0)
+            {
+                message += $"\n\n{result.OutcomeGuidance}";
+            }
+        }
+        else
+        {
+            // Nothing threw, but no finished session came of it — an empty log, or samples
+            // that could not be recorded as a completed session. The importer says which;
+            // reporting a successful import here would name a session that is not there, or
+            // is there flagged as incomplete.
+            message = $"{fileName}: {result.OutcomeGuidance}";
+        }
+
+        var timestampWarning = result.TimestampQuality.BuildUserWarning();
+        if (timestampWarning != null)
+        {
+            message += $"\n\nWarning: {timestampWarning}";
+        }
+
+        // Not IsFailure even when no session was persisted: nothing went wrong with the device or
+        // the app, the log simply had nothing in it. Painting it red would have a card of empty
+        // logs — what an interrupted recording leaves behind — read as a card of errors.
+        return new ImportOutcome("Import Complete", message, IsFailure: false);
+    }
+
+    /// <summary>
+    /// Words an import that threw, from the failure <see cref="SdCardFailureClassifier"/> already
+    /// classified. The sentence is <see cref="SdCardFailure.Guidance"/>, unchanged — this method
+    /// composes nothing of its own beyond naming the file.
+    /// </summary>
+    internal static ImportOutcome DescribeImportFailure(string fileName, SdCardFailure failure) =>
+        new("Import Failed", $"Could not import {fileName}.\n\n{failure.Guidance}", IsFailure: true);
+
+    /// <summary>
+    /// Puts one outcome on every surface this view model has: the inline notice both heads can
+    /// bind, and the modal dialog only the desktop head can show.
+    /// </summary>
+    /// <remarks>
+    /// The notice is set BEFORE the dialog is awaited, because the dialog does not return until the
+    /// user dismisses it — setting it afterwards would leave the mobile head's only surface blank
+    /// for as long as a desktop dialog is open, and blank forever on a head where
+    /// <see cref="AvaloniaMessageBoxService"/> never shows one.
+    /// </remarks>
+    private async Task ReportImportOutcome(ImportOutcome outcome)
+    {
+        // The flag before the message: HasImportOutcome — what the notice's visibility binds to —
+        // changes with the message, so setting the message last means the notice is never shown for
+        // an instant carrying the previous outcome's colour and heading.
+        ImportOutcomeIsFailure = outcome.IsFailure;
+        ImportOutcomeMessage = outcome.Message;
+
+        await ShowMessage(outcome.Title, outcome.Message, MessageBoxButton.OK);
+    }
+
+    /// <summary>Dismisses the inline import notice. The desktop dialog has its own OK button.</summary>
+    [RelayCommand]
+    private void ClearImportOutcome()
+    {
+        ImportOutcomeMessage = string.Empty;
+        ImportOutcomeIsFailure = false;
     }
 
     // @port: Daqifi.Desktop.ViewModels.DeviceLogsViewModel.ShowMessage

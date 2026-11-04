@@ -75,6 +75,64 @@
                   IsEnabled="{Binding CanAccessSdCard}" MinHeight="40" />
         </StackPanel>
 
+        <!-- Import outcome (issue #521).
+
+             The mobile head's only report on a finished import. DeviceLogsViewModel hands every
+             outcome to both its inline state and IMessageBoxService; the dialog the latter opens is
+             a Window owned by IClassicDesktopStyleApplicationLifetime.MainWindow, so under the
+             single-view lifetime this head runs there is nothing to own it and ShowAsync returns
+             MessageBoxResult.None without drawing anything. Before this, an import that failed, one
+             that succeeded and one that did nothing were pixel-identical on the phone.
+
+             Bound, not a toast: the same affordance as the SD card error panel below and the
+             shell's connect-failure status line, and it stays put until dismissed or until the next
+             import starts — a transient would be gone before a user who looked away came back,
+             which is how the failure in #521 was missed in the first place. -->
+        <Border IsVisible="{Binding HasImportOutcome}"
+                Background="{DynamicResource SurfaceRaised}"
+                BorderThickness="1"
+                Classes.outcomeFailed="{Binding ImportOutcomeIsFailure}"
+                CornerRadius="8" Padding="16,14">
+          <Border.Styles>
+            <!-- Default (an import that finished) is green; a failure repaints it red. -->
+            <Style Selector="Border">
+              <Setter Property="BorderBrush" Value="{DynamicResource StatusGreen}" />
+            </Style>
+            <Style Selector="Border.outcomeFailed">
+              <Setter Property="BorderBrush" Value="{DynamicResource StatusRed}" />
+            </Style>
+            <Style Selector="Border TextBlock.outcomeHeading">
+              <Setter Property="Foreground" Value="{DynamicResource StatusGreen}" />
+            </Style>
+            <Style Selector="Border.outcomeFailed TextBlock.outcomeHeading">
+              <Setter Property="Foreground" Value="{DynamicResource StatusRed}" />
+            </Style>
+          </Border.Styles>
+          <StackPanel Spacing="10">
+            <!-- Heading follows the same flag the border does. Text comes from a style pair
+                 rather than a converter so the two words live beside the colours they go with. -->
+            <TextBlock Classes="outcomeHeading" FontWeight="SemiBold"
+                       Classes.outcomeFailed="{Binding ImportOutcomeIsFailure}"
+                       FontSize="{DynamicResource FontSizeBody}">
+              <TextBlock.Styles>
+                <Style Selector="TextBlock.outcomeHeading">
+                  <Setter Property="Text" Value="Import complete" />
+                </Style>
+                <Style Selector="TextBlock.outcomeHeading.outcomeFailed">
+                  <Setter Property="Text" Value="Import failed" />
+                </Style>
+              </TextBlock.Styles>
+            </TextBlock>
+            <TextBlock Text="{Binding ImportOutcomeMessage}" TextWrapping="Wrap"
+                       AutomationProperties.AutomationId="ImportOutcomeText"
+                       FontSize="{DynamicResource FontSizeCaption}"
+                       Foreground="{DynamicResource TextPrimary}" />
+            <Button Content="Dismiss" Theme="{StaticResource PillButton}"
+                    Command="{Binding ClearImportOutcomeCommand}"
+                    HorizontalAlignment="Left" MinHeight="40" />
+          </StackPanel>
+        </Border>
+
         <!-- No-device callout: SD offload works once a device is connected (USB or Wi-Fi). -->
         <Border IsVisible="{Binding !CanAccessSdCard}"
                 Background="{DynamicResource SurfaceRaised}"
@@ -158,6 +216,15 @@
                       </Border>
                       <Border Classes="chip">
                         <TextBlock Text="{Binding FormatDisplay}" />
+                      </Border>
+                      <!-- Size (issue #521). A zero-byte log reads "Empty" and the chip warns:
+                           it is the one file on a card that cannot import, and with no size on the
+                           row there was nothing to tell it apart from one whose transfer failed.
+                           chipWarn has to be a class on the TextBlock, not an inline Foreground —
+                           see the comment on that style in Components.axaml. -->
+                      <Border Classes="chip">
+                        <TextBlock Text="{Binding SizeDisplay}"
+                                   Classes.chipWarn="{Binding IsEmpty}" />
                       </Border>
                     </StackPanel>
                   </StackPanel>
