@@ -243,8 +243,8 @@ public partial class LoggingManager : ObservableObject
                     foreach (var metadata in BuildDeviceMetadataForSession(newId))
                     {
                         // EF Core's relationship fix-up automatically attaches
-                        // this row to Session.DeviceMetadata because the FK
-                        // matches the tracked Session. Adding to the nav
+                        // this row to session.DeviceMetadata because the FK
+                        // matches the tracked session. Adding to the nav
                         // collection explicitly would insert the same CLR
                         // reference a second time, making FrequencyDisplay show
                         // duplicate entries until the next reload.
