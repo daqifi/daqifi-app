@@ -1710,7 +1710,17 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     }
 
     private Notifications? _previousSessionNotice;
-    private bool _isImportingPreviousSessions;
+    private volatile bool _isImportingPreviousSessions;
+
+    /// <summary>
+    /// True while sessions from an earlier version are being copied. An app update waits for it
+    /// (#513). Settable only so tests can stand in for a running import.
+    /// </summary>
+    internal bool IsImportingPreviousSessions
+    {
+        get => _isImportingPreviousSessions;
+        set => _isImportingPreviousSessions = value;
+    }
 
     /// <summary>The offer (or a retry after a failure): a short line, Import, and Dismiss.</summary>
     private Notifications OfferedImportNotice(PreviousSessionImport import, string message) => new()
@@ -2284,7 +2294,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// <summary>
     /// What installing an update would cut off right now, since installing restarts the app.
     /// </summary>
-    private UpdateBlocker CurrentUpdateBlocker()
+    internal UpdateBlocker CurrentUpdateBlocker()
     {
         // A stopped session is still being saved for a moment afterwards, in the background.
         if (IsLogging || LoggingManager.Instance.IsSavingSession)
@@ -2311,7 +2321,9 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         }
 
         // The Logged Data pane: importing a log file from disk, deleting a session, or deleting all.
-        if (IsLoggedDataBusy)
+        // Also the import of sessions from an earlier version, which runs from its notification
+        // and commits in batches, so a restart part way leaves a session to import again (#513).
+        if (IsLoggedDataBusy || IsImportingPreviousSessions)
         {
             return UpdateBlocker.LoggedDataBusy;
         }
