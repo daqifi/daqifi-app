@@ -1545,6 +1545,24 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         {
             // User cancelled — do nothing
         }
+        catch (Exception ex) when (SdCardLogParseFailureClassifier.Classify(ex) is { } parseFailure)
+        {
+            // The parser refused the file. Two things follow from that, and the generic handler
+            // below got both wrong (#515).
+            //
+            // The user is shown the parser's own sentence, which names the offending row and says
+            // what is wrong with it. "Please verify the file is a valid SD card log file" is the
+            // one thing a user cannot check by eye, and it replaced an explanation the app was
+            // already holding.
+            //
+            // And it is logged at Warning, so it raises no Sentry issue: picking a hand-edited,
+            // truncated or non-firmware file is an expected condition, not a fault in this app.
+            // Note the import can still reach here having logged its own Warning from
+            // SdCardSessionImporter — the parse is lazy, so the refusal surfaces mid-write — and
+            // this line is the one that says what the user was told about it.
+            _appLogger.Warning(ex, $"SD card log file import refused: {parseFailure.Explanation}");
+            await ShowMessage("Import Failed", parseFailure.BuildUserMessage(), MessageBoxButton.OK);
+        }
         catch (Exception ex)
         {
             _appLogger.Error(ex, "Error importing SD card log file");

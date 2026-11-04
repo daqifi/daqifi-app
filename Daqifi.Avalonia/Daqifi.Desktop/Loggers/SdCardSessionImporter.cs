@@ -613,18 +613,25 @@ public class SdCardSessionImporter : ISdCardSessionImporter
             // stays: batches commit as they go, the source log is usually damaged in a way a
             // re-import cannot get past, and destroying the prefix would be the one outcome the
             // user cannot undo. What must not survive is the session pretending to be finished.
+            //
+            // The parse is lazy — logSession.Samples is parsed as it is enumerated above — so a
+            // row Core refuses arrives HERE, not at the ParseAsync call that built the session.
+            // That is why the level is decided here too: a refused file is the user's input, not
+            // a fault in this app, and an Error line is a Sentry event (#515).
+            var parseFailure = SdCardLogParseFailureClassifier.Classify(ex);
+
             if (samplesProcessed == 0)
             {
                 // Nothing was written, so there is nothing to preserve and nothing for a marker to
                 // point at. The failure dialog is the report; the database goes back to how it was.
-                _logger.Error(ex,
+                LogImportFailure(ex, parseFailure,
                     $"SD card import of '{logSession.FileName}' failed before any sample was written; " +
                     $"removing session {session.ID}");
                 RemoveSessions([session.ID]);
             }
             else
             {
-                _logger.Error(ex,
+                LogImportFailure(ex, parseFailure,
                     $"SD card import of '{logSession.FileName}' failed after {samplesProcessed} samples; " +
                     $"session {session.ID} keeps them and is flagged as an incomplete import");
                 FinalizeSession(session, samplesProcessed, SessionStatus.ImportFailed);
@@ -634,6 +641,32 @@ public class SdCardSessionImporter : ISdCardSessionImporter
         }
 
         return (samplesProcessed, readingsDropped);
+    }
+
+    /// <summary>
+    /// Records an import that did not finish, at the level its cause deserves.
+    /// </summary>
+    /// <param name="ex">The failure, logged with the line either way.</param>
+    /// <param name="parseFailure">
+    /// The parser's refusal of the file, or <c>null</c> when the failure was something else.
+    /// </param>
+    /// <param name="context">What the importer did about it, which is logged unchanged.</param>
+    /// <remarks>
+    /// Warning for a file the parser refused, Error for everything else — the same rule
+    /// <c>DeviceLogsViewModel.LogFailure</c> applies to the device-side conditions, and the one
+    /// #412 applies to a NaN reading. The line is still written in full for either: this decides
+    /// whether a bad file pages the team, not whether it is recorded.
+    /// </remarks>
+    private void LogImportFailure(Exception ex, SdCardLogParseFailure? parseFailure, string context)
+    {
+        if (parseFailure != null)
+        {
+            _logger.Warning(ex, $"{context}. {parseFailure.Explanation}");
+        }
+        else
+        {
+            _logger.Error(ex, context);
+        }
     }
 
     /// <summary>
