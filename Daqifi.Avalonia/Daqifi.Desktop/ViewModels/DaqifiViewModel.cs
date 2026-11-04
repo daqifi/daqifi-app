@@ -917,6 +917,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // is simply empty with no explanation of where the sessions went.
                     ReportQuarantinedDatabase();
 
+                    // #353: data no longer follows elevation into %ProgramData%. If sessions are
+                    // still there, offer to bring them over (checked in the background).
+                    _ = OfferPreviousSessionImportAsync();
+
                     // Summary Logger
                     SummaryLogger = new SummaryLogger();
                     LoggingManager.Instance.AddLogger(SummaryLogger);
@@ -1676,6 +1680,158 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             Message = message
         });
         NotificationCount = NotificationList.Count;
+    }
+
+    /// <summary>
+    /// Offers, once, to import sessions left in the machine-wide <c>%ProgramData%\DAQiFi</c>
+    /// database (#353). See <see cref="PreviousSessionImport"/>. The check reads both databases, so
+    /// it runs off the UI thread; it never throws. Skipped in UI-test mode, whose screenshots must
+    /// not depend on what is on the machine.
+    /// </summary>
+    private async Task OfferPreviousSessionImportAsync()
+    {
+        if (App.IsTestMode)
+        {
+            return;
+        }
+
+        try
+        {
+            var import = PreviousSessionImport.ForThisPc(App.DatabasePath);
+            if (await Task.Run(import.HasSessionsToImport))
+            {
+                Dispatcher.UIThread.Post(() => ShowPreviousSessionNotice(OfferedImportNotice(import, PreviousSessionImport.OfferMessage)));
+            }
+        }
+        catch (Exception ex)
+        {
+            _appLogger.Error(ex, "Failed to check for sessions from an earlier version");
+        }
+    }
+
+    private Notifications? _previousSessionNotice;
+    private bool _isImportingPreviousSessions;
+
+    /// <summary>The offer (or a retry after a failure): a short line, Import, and Dismiss.</summary>
+    private Notifications OfferedImportNotice(PreviousSessionImport import, string message) => new()
+    {
+        Message = message,
+        ActionText = "Import",
+        Action = new AsyncRelayCommand(() => ImportPreviousSessionsAsync(import)),
+        Dismiss = new RelayCommand(() =>
+        {
+            import.MarkDone();
+            ShowPreviousSessionNotice(null);
+        }),
+    };
+
+    /// <summary>Replaces the import notification (its text is init-only), or removes it when null.</summary>
+    private void ShowPreviousSessionNotice(Notifications? notice)
+    {
+        var index = _previousSessionNotice is null ? -1 : NotificationList.IndexOf(_previousSessionNotice);
+        if (notice is null)
+        {
+            if (index >= 0) NotificationList.RemoveAt(index);
+        }
+        else if (index >= 0)
+        {
+            NotificationList[index] = notice;
+        }
+        else
+        {
+            NotificationList.Add(notice);
+        }
+
+        _previousSessionNotice = notice;
+        NotificationCount = NotificationList.Count;
+    }
+
+    private void ApplyImportedSessions(ImportOutcome outcome)
+    {
+        try
+        {
+            LoggingManager.Instance.ApplyPersistedSessionChanges(outcome.Removed, outcome.Imported);
+        }
+        catch (Exception ex)
+        {
+            // The sessions are in the database and show at the next launch.
+            _appLogger.Error(ex, "Failed to show imported sessions");
+        }
+    }
+
+    private async Task ImportPreviousSessionsAsync(PreviousSessionImport import)
+    {
+        if (_isImportingPreviousSessions)
+        {
+            return;
+        }
+
+        _isImportingPreviousSessions = true;
+        var shownPercent = -1;
+        var finished = false;
+        void ShowProgress(double fraction)
+        {
+            var percent = (int)(fraction * 100);
+            // A report still queued when the import ends must not cover the result.
+            if (finished || percent == shownPercent) return;
+            shownPercent = percent;
+            ShowPreviousSessionNotice(new Notifications { Message = $"Importing sessions… {percent}%" });
+        }
+
+        var outcome = new ImportOutcome();
+        try
+        {
+            ShowProgress(0);
+            // Created here, on the UI thread, so its callbacks come back to it.
+            var progress = new Progress<double>(ShowProgress);
+            try
+            {
+                await Task.Run(() => import.ImportAsync(outcome, progress));
+            }
+            finally
+            {
+                finished = true;
+                // Even after a failure: sessions finished before it, and partial copies it deleted,
+                // must show as they now are.
+                ApplyImportedSessions(outcome);
+            }
+
+            // Not done while anything is left (a session still recording), or when the check
+            // failed and cannot say: offered again next launch.
+            if (await Task.Run(import.CheckForSessionsToImport) == false)
+            {
+                import.MarkDone();
+            }
+
+            ShowPreviousSessionNotice(new Notifications
+            {
+                Message = outcome.Imported.Count switch
+                {
+                    0 => "Nothing new to import yet.",
+                    1 => "Imported 1 session.",
+                    var n => $"Imported {n} sessions.",
+                }
+            });
+        }
+        catch (ImportAlreadyRunningException ex)
+        {
+            _appLogger.Information(ex.Message);
+            ShowPreviousSessionNotice(OfferedImportNotice(import, "Already importing in another DAQiFi window."));
+        }
+        catch (NotEnoughDiskSpaceException ex)
+        {
+            _appLogger.Warning(ex.Message);
+            ShowPreviousSessionNotice(OfferedImportNotice(import, "Not enough disk space to import."));
+        }
+        catch (Exception ex)
+        {
+            _appLogger.Error(ex, "Importing sessions from an earlier version failed");
+            ShowPreviousSessionNotice(OfferedImportNotice(import, "Couldn't import the sessions."));
+        }
+        finally
+        {
+            _isImportingPreviousSessions = false;
+        }
     }
 
     /// <summary>

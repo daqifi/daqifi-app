@@ -10,15 +10,21 @@ namespace Daqifi.Desktop.Common;
 /// <summary>
 /// Single source of truth for where DAQiFi stores its application data (database and logs).
 ///
-/// Production (elevated) runs use the machine-wide <c>CommonApplicationData</c>
-/// (<c>%ProgramData%</c>) location. Any un-elevated run — the UI-test harness
-/// (<c>DAQIFI_TEST_MODE=1</c>) <b>or</b> a normal non-admin Debug launch (the Debug build
-/// ships an <c>asInvoker</c> manifest) — uses the per-user-writable
-/// <c>LocalApplicationData</c> (<c>%LocalAppData%</c>) location instead, because a standard
-/// token cannot write an admin-owned machine-wide store (which otherwise crashes startup
-/// with a read-only database and/or fails to write logs).
+/// Every run uses the per-user <c>LocalApplicationData</c> location (<c>%LocalAppData%</c> on
+/// Windows), whether or not the process is elevated. Upstream WPF switched to the machine-wide
+/// <c>CommonApplicationData</c> (<c>%ProgramData%</c>) for elevated runs because its release
+/// build always ran as administrator; this app does not (#353):
+/// <list type="bullet">
+/// <item>An install for the whole PC runs un-elevated, so following elevation would split one
+/// person's data across two folders depending on how they launched it — sessions logged during
+/// a "Run as administrator" launch would seem to vanish at the next normal one.</item>
+/// <item><c>%ProgramData%\DAQiFi</c> is where the release WPF app keeps its database. An
+/// elevated launch of this app would have opened and migrated it.</item>
+/// </list>
 ///
-/// Keeping the database and the logs under the same root avoids split or lost data.
+/// Keeping the database and the logs under the same root avoids split or lost data. Sessions an
+/// earlier elevated launch left in <c>%ProgramData%\DAQiFi</c> stay there; the app offers once to
+/// import them (<see cref="Daqifi.Desktop.Logger.PreviousSessionImport"/>).
 /// </summary>
 // @port: Daqifi.Desktop.Common.AppDataPaths
 public static class AppDataPaths
@@ -56,9 +62,8 @@ public static class AppDataPaths
     private static readonly (string Directory, Exception? Fault) ResolvedDataDirectory = ResolveDataDirectory();
 
     /// <summary>
-    /// Root DAQiFi data directory for the current elevation/test context. Honors an explicit
-    /// <c>DAQIFI_DATA_DIR</c> override (absolute-ised) when set; otherwise per-user when the
-    /// process is un-elevated or in test mode, and machine-wide otherwise. The override lets a
+    /// Root DAQiFi data directory. Honors an explicit <c>DAQIFI_DATA_DIR</c> override
+    /// (absolute-ised) when set; otherwise <see cref="DefaultDataDirectory"/>. The override lets a
     /// test/tooling boot (e.g. the parity-audit capture harness) point the database and logs at
     /// an isolated throwaway directory so it never reads or migrates the developer's real
     /// <c>DAQiFiDatabase.db</c>. Mirrors <see cref="TestExportPath"/>: a one-liner the harness
@@ -115,7 +120,7 @@ public static class AppDataPaths
     }
 
     // Downstream addition (no upstream counterpart): resolves the data root, preferring the
-    // DAQIFI_DATA_DIR override before falling back to the elevation/test-mode default. Returns
+    // DAQIFI_DATA_DIR override before falling back to the per-user default. Returns
     // the failure instead of throwing it — see DataDirectoryFault for why this must not throw.
     private static (string Directory, Exception? Fault) ResolveDataDirectory()
     {
@@ -161,12 +166,17 @@ public static class AppDataPaths
         // compile-time-valid enum and Path.Combine no longer rejects characters, so the
         // no-override path performs no filesystem work and cannot throw — App.Initialize /
         // InitializeMobile still create the directory, exactly as before.
-        return (Path.Combine(
-            Environment.GetFolderPath(IsTestMode || !IsElevated
-                ? Environment.SpecialFolder.LocalApplicationData
-                : Environment.SpecialFolder.CommonApplicationData),
-            "DAQiFi"), null);
+        return (DefaultDataDirectory(), null);
     }
+
+    /// <summary>
+    /// The data root when no override is set: <c>DAQiFi</c> under the per-user
+    /// <c>LocalApplicationData</c> folder. Deliberately independent of <see cref="IsElevated"/>
+    /// and <see cref="IsTestMode"/> — see the type remarks for why elevation must not move it.
+    /// </summary>
+    // Downstream change (#353): upstream picks CommonApplicationData when elevated.
+    internal static string DefaultDataDirectory() =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DAQiFi");
 
     // Where a run is pointed when DAQIFI_DATA_DIR is set but unusable. Deliberately NOT the
     // default store: the override exists to keep a test/tooling boot away from the developer's
@@ -222,8 +232,8 @@ public static class AppDataPaths
         }
         catch
         {
-            // If the elevation check fails for any reason, treat the process as un-elevated
-            // so it falls back to the always-writable per-user location.
+            // If the elevation check fails for any reason, treat the process as un-elevated, so
+            // nothing that needs administrator rights (the firewall rule) is attempted.
             return false;
         }
     }

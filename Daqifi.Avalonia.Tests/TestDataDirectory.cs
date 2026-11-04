@@ -10,7 +10,7 @@ namespace Daqifi.Avalonia.Tests;
 /// Several library types resolve <c>Daqifi.Desktop.Common.AppDataPaths.DataDirectory</c> from a
 /// static field initializer — <c>LoggingManager</c> is one — and resolving it eagerly creates the
 /// directory and write-probes it. Merely referencing such a type from a test is therefore enough
-/// to touch <c>~/Library/Application Support/DAQiFi</c> (or <c>%ProgramData%\DAQiFi</c>), next to
+/// to touch <c>~/Library/Application Support/DAQiFi</c> (or <c>%LocalAppData%\DAQiFi</c>), next to
 /// the real <c>DAQiFiDatabase.db</c>. <c>AppDataPaths</c> already supports the
 /// <c>DAQIFI_DATA_DIR</c> override for exactly this reason, so point it at a throwaway path
 /// before any test code runs.

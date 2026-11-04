@@ -9,8 +9,9 @@ namespace Daqifi.Avalonia.Tests.Configuration;
 /// <summary>
 /// Characterisation tests for the firewall-rule bootstrap: the un-elevated early return in
 /// <see cref="FirewallConfiguration.InitializeFirewallRules"/>, and the input validation in
-/// <see cref="WindowsFirewallWrapper"/> that has to reject a bad rule name *before* the
-/// Windows Firewall COM objects are ever reached.
+/// <see cref="WindowsFirewallWrapper"/> that has to reject bad input *before* the Windows
+/// Firewall COM objects are ever reached. Which existing rule counts as this app's own is in
+/// <see cref="FirewallRuleMatchTests"/>.
 ///
 /// <para>
 /// Nothing pinned any of this. That matters most for the validation half: every guard in
@@ -24,9 +25,8 @@ namespace Daqifi.Avalonia.Tests.Configuration;
 /// The validation rows run on any OS. The COM path is Windows-only, which is exactly what makes
 /// these assertions sharp on a non-Windows host: a name the guard accepts reaches
 /// <see cref="Type.GetTypeFromProgID"/> and fails, so "returned false" and "threw" tell the two
-/// branches apart with no mocking at all. <see cref="RuleExists_reaches_COM_and_fails_for_a_VALID_name"/>
-/// is the positive control that keeps the rejection tests honest — without it, a
-/// <c>RuleExists</c> that returned false unconditionally would pass every other row.
+/// branches apart with no mocking at all. The positive-control rows keep the rejection tests
+/// honest — without them, a method that returned false unconditionally would pass every other row.
 /// </para>
 /// </summary>
 public class FirewallConfigurationTests
@@ -45,12 +45,12 @@ public class FirewallConfigurationTests
         + "non-Windows head. On Windows it may legitimately be true, so the assertion is not "
         + "merely untestable there — it is the wrong assertion.";
 
-    /// <summary>Why <see cref="RuleExists_reaches_COM_and_fails_for_a_VALID_name"/> cannot run on
-    /// Windows — the runner shows this against the skipped row.</summary>
+    /// <summary>Why <see cref="RuleExists_reaches_COM_and_fails_for_a_VALID_name_and_path"/> cannot
+    /// run on Windows — the runner shows this against the skipped row.</summary>
     private const string RuleExistsControlIsUnixOnly =
         "Unix-only: this positive control works by the Windows Firewall COM objects being absent, "
-        + "so a valid name throws instead of answering. On Windows they are present and the call "
-        + "returns a real answer, which proves nothing about the guard.";
+        + "so a valid name and path throw instead of answering. On Windows they are present and the "
+        + "call returns a real answer, which proves nothing about the guard.";
 
     /// <summary>Why <see cref="CreateUdpRule_reaches_COM_for_inputs_that_clear_every_guard"/>
     /// cannot run on Windows — the runner shows this against the skipped row.</summary>
@@ -128,7 +128,7 @@ public class FirewallConfigurationTests
 
     #endregion
 
-    #region RuleExists — the name guard runs before COM
+    #region RuleExists — the name and path guards run before COM
 
     /// <summary>
     /// A rule name carrying any of the characters that could be used to inject into the COM
@@ -152,24 +152,33 @@ public class FirewallConfigurationTests
     [InlineData("rule\nname")]
     public void RuleExists_rejects_a_dangerous_or_empty_name_without_reaching_COM(string ruleName)
     {
-        Assert.False(new WindowsFirewallWrapper().RuleExists(ruleName));
+        Assert.False(new WindowsFirewallWrapper().RuleExists(ruleName, WriteTempFile(".exe")));
     }
 
     /// <summary>256 characters is one over the limit; 255 is inside it.</summary>
     [Fact]
     public void RuleExists_rejects_a_name_longer_than_255_characters()
     {
-        Assert.False(new WindowsFirewallWrapper().RuleExists(new string('a', 256)));
+        Assert.False(new WindowsFirewallWrapper().RuleExists(new string('a', 256), WriteTempFile(".exe")));
+    }
+
+    /// <summary>A blank application path cannot be this app's, so it never reaches COM either.</summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void RuleExists_answers_false_for_a_blank_path_without_reaching_COM(string path)
+    {
+        Assert.False(new WindowsFirewallWrapper().RuleExists("DAQiFi", path));
     }
 
     /// <summary>
-    /// POSITIVE CONTROL. A name the guard accepts goes on to the Windows Firewall COM objects,
-    /// which do not exist on this host, so the call throws <see cref="InvalidOperationException"/>
-    /// rather than returning false. Without this row every rejection test above would still pass
+    /// POSITIVE CONTROL. A valid name and path go on to the Windows Firewall COM objects, which do
+    /// not exist on this host, so the call throws <see cref="InvalidOperationException"/> rather
+    /// than returning false. Without this row every rejection test above would still pass
     /// against a <c>RuleExists</c> that had stopped doing anything at all.
     /// </summary>
     [UnixOnlyFact(RuleExistsControlIsUnixOnly)]
-    public void RuleExists_reaches_COM_and_fails_for_a_VALID_name()
+    public void RuleExists_reaches_COM_and_fails_for_a_VALID_name_and_path()
     {
         // Fail-safe, not the skip: the [UnixOnlyFact] above is what stands this row down on
         // Windows. Reaching here means it stopped doing so, and the row must say so rather than
@@ -181,7 +190,7 @@ public class FirewallConfigurationTests
         }
 
         Assert.Throws<InvalidOperationException>(
-            () => new WindowsFirewallWrapper().RuleExists("DAQiFi Desktop"));
+            () => new WindowsFirewallWrapper().RuleExists("DAQiFi", WriteTempFile(".exe")));
     }
 
     #endregion
@@ -190,8 +199,7 @@ public class FirewallConfigurationTests
 
     /// <summary>
     /// A bad rule name is an <see cref="ArgumentException"/> on <c>ruleName</c>, thrown before
-    /// any COM object is created — a different failure mode from <c>RuleExists</c>, which
-    /// answers false for the same input.
+    /// any COM object is created.
     /// </summary>
     [Theory]
     [InlineData("")]
