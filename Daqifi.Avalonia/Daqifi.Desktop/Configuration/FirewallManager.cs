@@ -17,7 +17,13 @@ namespace Daqifi.Desktop.Configuration;
 public static class FirewallConfiguration
 {
     private static readonly IAppLogger Logger = AppLogger.Instance;
-    private const string RuleName = "DAQiFi Desktop";
+
+    // Not upstream's "DAQiFi Desktop": that is the WPF app's rule, and sharing its name would make
+    // a by-name cleanup (netsh, an IT script) take both apps' rules at once (#353).
+    private const string RuleName = "DAQiFi";
+
+    /// <summary>DAQiFi's UDP discovery port.</summary>
+    internal const int DiscoveryPort = 30303;
     private static readonly WindowsFirewallWrapper FirewallHelper = new();
     private static readonly IMessageBoxService MessageBox = new AvaloniaMessageBoxService();
 
@@ -52,14 +58,14 @@ public static class FirewallConfiguration
                 throw new InvalidOperationException("Invalid or missing application path for firewall rule creation.");
             }
 
-            // Check if rule already exists
-            if (FirewallHelper.RuleExists(RuleName))
+            // Name AND executable (#353): see FirewallRuleMatch for why the name alone missed
+            // this copy, and why no other rule counts.
+            if (FirewallHelper.RuleExists(RuleName, appPath))
             {
                 return;
             }
 
-            // Create new rule with specific UDP port (30303 is DAQiFi's UDP discovery port)
-            FirewallHelper.CreateUdpRule(RuleName, appPath, 30303);
+            FirewallHelper.CreateUdpRule(RuleName, appPath, DiscoveryPort);
         }
         catch (Exception ex)
         {
@@ -104,35 +110,54 @@ public class WindowsFirewallWrapper
         return Activator.CreateInstance(type)!;
     }
 
+    /// <summary>
+    /// Whether a rule named <paramref name="ruleName"/> exists for <paramref name="applicationPath"/>.
+    /// A dangerous or blank name, or a blank path, answers <c>false</c> without touching the firewall.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The firewall could not be read.</exception>
     // @port: Daqifi.Desktop.Configuration.WindowsFirewallWrapper.RuleExists
-    public bool RuleExists(string ruleName)
+    // Downstream change (#353): upstream looked the rule up by name alone, and Rules.Item(name)
+    // returns only the first rule of that name, so every rule is read instead.
+    public bool RuleExists(string ruleName, string applicationPath)
     {
-        if (!IsValidRuleName(ruleName))
+        if (!IsValidRuleName(ruleName) || string.IsNullOrWhiteSpace(applicationPath))
             return false;
 
         object? policy = null;
         try
         {
             policy = GetPolicy();
-            dynamic rules = policy.GetType().InvokeMember("Rules",
-                System.Reflection.BindingFlags.GetProperty, null, policy, null);
+            var rules = policy.GetType().InvokeMember("Rules",
+                System.Reflection.BindingFlags.GetProperty, null, policy, null)!;
+            // .NET marshals the collection's _NewEnum as an IEnumerator, not IEnumVARIANT.
+            var enumerator = (System.Collections.IEnumerator)rules.GetType().InvokeMember("_NewEnum",
+                System.Reflection.BindingFlags.GetProperty, null, rules, null)!;
 
-            try
+            while (enumerator.MoveNext())
             {
-                _ = rules.GetType().InvokeMember("Item",
-                    System.Reflection.BindingFlags.InvokeMethod, null, rules, new object[] { ruleName });
-                return true;
+                var rule = enumerator.Current;
+                if (rule is null)
+                    continue;
+
+                try
+                {
+                    if (FirewallRuleMatch.IsOwnRule(ReadRule(rule), ruleName, applicationPath))
+                        return true;
+                }
+                catch (Exception ex)
+                {
+                    // One unreadable rule (another program's, malformed) must not fail the whole
+                    // check; at worst this app adds a rule it did not strictly need.
+                    Logger.Warning(ex, "Skipped an unreadable firewall rule");
+                }
+                finally
+                {
+                    if (Marshal.IsComObject(rule))
+                        Marshal.ReleaseComObject(rule);
+                }
             }
-            catch (COMException ex) when (ex.HResult == unchecked((int)0x80070002)) // ERROR_FILE_NOT_FOUND
-            {
-                return false;
-            }
-            catch (System.Reflection.TargetInvocationException ex) when (
-                (ex.InnerException is COMException comEx && comEx.HResult == unchecked((int)0x80070002)) ||
-                ex.InnerException is FileNotFoundException)
-            {
-                return false;
-            }
+
+            return false;
         }
         catch (Exception ex)
         {
@@ -146,6 +171,14 @@ public class WindowsFirewallWrapper
                 Marshal.ReleaseComObject(policy);
             }
         }
+    }
+
+    private static FirewallRuleInfo ReadRule(object rule)
+    {
+        object? Get(string name) => rule.GetType().InvokeMember(name,
+            System.Reflection.BindingFlags.GetProperty, null, rule, null);
+
+        return new FirewallRuleInfo(Get("Name") as string, Get("ApplicationName") as string);
     }
 
     // @port: Daqifi.Desktop.Configuration.WindowsFirewallWrapper.CreateUdpRule

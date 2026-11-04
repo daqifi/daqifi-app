@@ -144,10 +144,8 @@ public class AppLogger : IAppLogger
 
         // Step 3. Set target properties
         fileTarget.CreateDirs = true;
-        // Write logs alongside the rest of the app data (see AppDataPaths): machine-wide for
-        // elevated production runs, per-user for un-elevated runs (test harness / non-admin
-        // Debug). Keeping logs and the database in the same root avoids dropping logs when
-        // the machine-wide store is admin-owned and the process is not elevated.
+        // Write logs alongside the rest of the app data (see AppDataPaths), so a support bundle
+        // finds the logs and the database under one per-user root.
         //
         // This is the first thing in the whole app to touch AppDataPaths, and it does so from
         // inside a static readonly initializer, so AppDataPaths' own initialization MUST be
@@ -199,7 +197,7 @@ public class AppLogger : IAppLogger
         // Init is guarded because it now writes to the filesystem, and this constructor runs
         // inside a static readonly initializer. SentrySdk.Init does not catch: it builds the
         // caching transport, which calls CreateDirectory on CacheDirectoryPath unguarded. An
-        // unwritable directory — a locked-down %ProgramData% ACL on an elevated desktop run, an
+        // unwritable directory — a locked-down profile folder or redirected %LocalAppData%, an
         // Android storage failure — would therefore escape the constructor, and the CLR would
         // wrap it as TypeInitializationException and poison the type for the life of the
         // process. Every later AppLogger.Instance access would throw, taking NLog file logging

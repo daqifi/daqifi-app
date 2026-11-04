@@ -113,6 +113,36 @@ public sealed class SdCardImportAtomicityTests : IDisposable
 
     #endregion
 
+    /// <summary>
+    /// While an import runs, no copy of the app's startup cleanup may flag its row as abandoned
+    /// (#510): the import holds the lease the cleanup needs alone, and lets go when it ends.
+    /// </summary>
+    [Fact]
+    public async Task An_import_holds_the_import_lease_until_it_ends()
+    {
+        var importer = new SdCardSessionImporter(Factory());
+        var reclaimableDuringImport = new List<bool>();
+
+        async IAsyncEnumerable<SdCardLogEntry> Watched()
+        {
+            await foreach (var entry in Entries(3))
+            {
+                using (var reclaim = ImportLease.TryReclaim(DatabasePath))
+                {
+                    reclaimableDuringImport.Add(reclaim is not null);
+                }
+
+                yield return entry;
+            }
+        }
+
+        await importer.ImportSessionAsync(Log("log_watched.bin", Watched()), progress: null, ct: CancellationToken.None);
+
+        Assert.Equal([false, false, false], reclaimableDuringImport);
+        using var after = ImportLease.TryReclaim(DatabasePath);
+        Assert.NotNull(after);
+    }
+
     #region A successful import
 
     [Fact]

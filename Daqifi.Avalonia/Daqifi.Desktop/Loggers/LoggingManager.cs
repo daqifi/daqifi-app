@@ -24,9 +24,9 @@ public partial class LoggingManager : ObservableObject
     #region Private Variables
     // @port: Daqifi.Desktop.Logger.LoggingManager.Instance
     private readonly AppLogger AppLogger = AppLogger.Instance;
-    // Use the shared, elevation-aware data directory (AppDataPaths) so the profiles XML is
-    // written to a location the process can actually write (per-user when un-elevated),
-    // instead of failing on the admin-owned %ProgramData% file.
+    // Use the shared per-user data directory (AppDataPaths) so the profiles XML sits with the
+    // database and logs, in a location the process can always write, instead of upstream's
+    // admin-owned %ProgramData% file.
     private static string ProfileAppDirectory = Daqifi.Desktop.Common.AppDataPaths.DataDirectory;
     // Path.Combine, not upstream's `ProfileAppDirectory + "\\..."` — see the same fix in
     // DaqifiSettings. On macOS/Linux the backslash is a legal filename character, so the
@@ -823,25 +823,20 @@ public partial class LoggingManager : ObservableObject
     /// importing right now would otherwise have its row relabelled and then immediately deleted by
     /// that purge. As ordered, its row survives this pass untouched but for the label, which the
     /// live import overwrites when it finishes; a genuinely abandoned empty row is purged on the
-    /// next launch. (The app has no cross-process database ownership guard of any kind — see
-    /// <c>DatabaseMigrator</c>'s quarantine notes — so ordering is the whole defence available.)
+    /// next launch. (Kept as a second defence behind the lease below.)
     /// </para>
     /// <para>One conditional UPDATE, not a read followed by a save of tracked entities: an import
     /// finishing in another instance between the two would otherwise have its <c>Complete</c>
     /// overwritten by a stale <c>ImportFailed</c>. As a single statement the only rows touched are
     /// the ones the database still shows as importing at that instant, and a live import writes
     /// its own status afterwards.</para>
-    /// <para>What this deliberately does NOT do is prove the import is dead before flagging it —
-    /// no ownership token, no lease, no expiry. The app has no cross-process database ownership
-    /// guard of any kind (no named mutex, no lock file, no single-instance gate; see
-    /// <c>DatabaseMigrator</c>'s quarantine notes), so two instances already share this database
-    /// independently of anything here, and adding ownership would be a new app-wide mechanism
-    /// governing every writer rather than part of an import fix. It would also be the wrong trade:
-    /// a lease this had to wait out would leave a session abandoned by a crashed import invisible
-    /// and unflagged until it expired, which is the bug this exists to close, with a timer on it.
-    /// What bounds the exposure is that this runs once, at startup, before this process can import
-    /// anything — so the only import it can race is another instance's, whose own finalization
-    /// then corrects the label.</para>
+    /// <para>Only when no import is running in any copy of the app (#510). Every import holds
+    /// <see cref="ImportLease"/> while it can leave an <c>Importing</c> row, and this flags rows
+    /// only while holding that lease alone. Otherwise a second instance would flag the first's live
+    /// import, and its next import of earlier sessions would delete the session being copied. When
+    /// an import is running, flagging waits for a later launch. There is no timer to wait out: a
+    /// crashed import's handle is closed by the OS, so its rows are flagged at the next launch.
+    /// </para>
     /// <para>Best-effort: a session list that loads is worth more than this bookkeeping, so a
     /// failure here is logged and swallowed rather than taking startup down with it.</para>
     /// </remarks>
@@ -849,6 +844,13 @@ public partial class LoggingManager : ObservableObject
     {
         try
         {
+            using var lease = ImportLease.TryReclaim(context.Database.GetDbConnection().DataSource);
+            if (lease is null)
+            {
+                AppLogger.Information("An import is running; sessions left mid-import are checked at the next launch.");
+                return;
+            }
+
             var flagged = context.Sessions
                 .Where(session => session.Status == SessionStatus.Importing)
                 .ExecuteUpdate(setters => setters.SetProperty(s => s.Status, SessionStatus.ImportFailed));
@@ -1044,6 +1046,45 @@ public partial class LoggingManager : ObservableObject
         foreach (var session in persistedSessions)
         {
             LoggingSessions.Add(session);
+        }
+    }
+
+    /// <summary>
+    /// Brings <see cref="LoggingSessions"/> up to date with sessions another writer changed in the
+    /// database (the import of earlier sessions, #353): drops the ones it deleted, then adds or
+    /// replaces the ones it wrote. Only those IDs are touched. A full reload would replace the live
+    /// session object while logging, and could list the live session before it has finished.
+    /// Downstream addition.
+    /// </summary>
+    public void ApplyPersistedSessionChanges(IReadOnlyCollection<int> removedIds, IReadOnlyCollection<int> writtenIds)
+    {
+        foreach (var stale in LoggingSessions.Where(s => removedIds.Contains(s.ID) || writtenIds.Contains(s.ID)).ToList())
+        {
+            LoggingSessions.Remove(stale);
+        }
+
+        if (writtenIds.Count == 0)
+        {
+            return;
+        }
+
+        using var context = _loggingContext.CreateDbContext();
+        var written = context.Sessions
+            .AsNoTracking()
+            .Include(session => session.DeviceMetadata)
+            .Where(session => writtenIds.Contains(session.ID))
+            .OrderBy(session => session.ID)
+            .ToList();
+
+        foreach (var session in written)
+        {
+            var index = 0;
+            while (index < LoggingSessions.Count && LoggingSessions[index].ID < session.ID)
+            {
+                index++;
+            }
+
+            LoggingSessions.Insert(index, session);
         }
     }
 
