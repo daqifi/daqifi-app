@@ -500,6 +500,23 @@
                             </DataTemplate>
                         </DataGridTemplateColumn.CellTemplate>
                     </DataGridTemplateColumn>
+                    <!-- SIZE (issue #521). Not decoration: a zero-byte log is the one file on a
+                         card that cannot import, and with no size column the listing gave no sign
+                         of which one that was. Added on this head too, and not only on the mobile
+                         one the issue was filed against, because the size now rides on the shared
+                         SdCardFile and a head that drops it is how the two listings drift. -->
+                    <DataGridTemplateColumn Header="SIZE" Width="110">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding SizeDisplay}"
+                                           FontFamily="Consolas"
+                                           FontSize="12"
+                                           Foreground="{StaticResource TextSecondary}"
+                                           VerticalAlignment="Center"
+                                           Margin="4,10"/>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
                     <DataGridTemplateColumn Header="FORMAT" Width="100">
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
