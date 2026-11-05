@@ -85,8 +85,19 @@ public partial class LoggingManager : ObservableObject
     [ObservableProperty]
     private LoggingMode _currentMode;
 
-    [ObservableProperty]
     private LoggingSession _session;
+
+    /// <summary>The current run's session.</summary>
+    /// <remarks>
+    /// Written by reference, not by <see cref="LoggingSession.Equals"/>, which compares IDs. A run
+    /// stopped before any sample arrives is deleted and its ID is reused, and an ID comparison
+    /// would keep the old object in place of the new one (#519).
+    /// </remarks>
+    public LoggingSession Session
+    {
+        get => _session;
+        set => SetProperty(ref _session, value, ReferenceEqualityComparer.Instance);
+    }
 
     [ObservableProperty]
     private ObservableCollection<LoggingSession> _loggingSessions = [];
@@ -224,8 +235,12 @@ public partial class LoggingManager : ObservableObject
                 // clear all three related tables and not just Sessions.
                 var newId = SessionIdAllocator.NextSessionId(context);
                 var name = $"Session_{newId}";
-                Session = new LoggingSession(newId, name);
-                context.Sessions.Add(Session);
+
+                // A fresh object, assigned to Session only once it is saved (#519). Adding the
+                // previous run's object instead would attach that run's metadata, which collides
+                // with this run's when a stopped-empty run's ID is reused.
+                var session = new LoggingSession(newId, name);
+                context.Sessions.Add(session);
 
                 // Capture per-device metadata (sampling frequency, name) for the
                 // devices that own the subscribed channels, so the session UI can
@@ -238,8 +253,8 @@ public partial class LoggingManager : ObservableObject
                     foreach (var metadata in BuildDeviceMetadataForSession(newId))
                     {
                         // EF Core's relationship fix-up automatically attaches
-                        // this row to Session.DeviceMetadata because the FK
-                        // matches the tracked Session. Adding to the nav
+                        // this row to session.DeviceMetadata because the FK
+                        // matches the tracked session. Adding to the nav
                         // collection explicitly would insert the same CLR
                         // reference a second time, making FrequencyDisplay show
                         // duplicate entries until the next reload.
@@ -249,9 +264,20 @@ public partial class LoggingManager : ObservableObject
                 catch (Exception ex)
                 {
                     AppLogger.Error(ex, $"Failed to capture device metadata for session {newId}; continuing without it.");
+
+                    // Without this, a row that failed part way stays attached and the save below
+                    // fails too, so the session would not start after all (#519).
+                    foreach (var entry in context.ChangeTracker.Entries<SessionDeviceMetadata>().ToList())
+                    {
+                        entry.State = EntityState.Detached;
+                    }
+
+                    session.DeviceMetadata.Clear();
                 }
 
                 context.SaveChanges();
+
+                Session = session;
             }
 
             SessionStartFailure = null;

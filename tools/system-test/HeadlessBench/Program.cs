@@ -1792,8 +1792,9 @@ internal static class HeadlessBench
 
     /// <summary>
     /// CONN-LOST at the matrix's stated edge case: the link goes away <em>mid-stream</em>. What the
-    /// app owes the user is a teardown and one notification — not a device stuck in the list, not
-    /// channels left subscribed to a device that is gone, and not a dialog per drop report.
+    /// app owes the user is a teardown, a closed session and one notification — not a device stuck
+    /// in the list, not channels left subscribed to a device that is gone, not a run still reading
+    /// LOGGING ON with nothing behind it, and not a dialog per drop report.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -1904,11 +1905,21 @@ internal static class HeadlessBench
             // manager having raised into nothing.
             var consumed = !ConnectionManager.Instance.NotifyConnection
                            && ConnectionManager.Instance.LastDisconnectReason.Length == 0;
+            // The SESSION, which this row used to measure and then decline to judge (issue #525).
+            // That drop took the last device, so the run is over and the app owes the user the same
+            // close its own toggle performs: writer flushed, SampleCount persisted,
+            // LoggingManager.Active down, toggle OFF. Left running it read LOGGING ON over a toggle
+            // that CanToggleLogging had just disabled — the channels the drop released are what
+            // disables it — so there was no way out but to reconnect the device AND re-enable a
+            // channel, or restart the app.
+            var sessionClosed = PumpUntil(
+                () => !shell.IsLogging && !LoggingManager.Instance.Active,
+                TimeSpan.FromSeconds(5));
             var shot = Capture(main, "t1-connlost-dropped");
 
             Step(1, "CONN-LOST", "works",
                  midStream && removed && subscribedAfter == 0
-                     && raisedByDrop == ChangesPerNotification && consumed,
+                     && raisedByDrop == ChangesPerNotification && consumed && sessionClosed,
                  $"streaming when the link went: LoggingManager.Active={activeBefore}, " +
                  $"{subscribedBefore} subscribed channel(s), {plottedBefore} live plot point(s); " +
                  $"after the drop the device left both lists in {sw.Elapsed.TotalSeconds:F1} s " +
@@ -1917,9 +1928,9 @@ internal static class HeadlessBench
                  $"{subscribedAfter} channel(s) were left subscribed; the manager raised " +
                  $"{raisedByDrop} NotifyConnection change(s) against the " +
                  $"{ChangesPerNotification} that one notification is worth, and the shell " +
-                 $"consumed the notification={consumed}; the session itself is left running " +
-                 $"(shell.IsLogging={shell.IsLogging}), which the teardown does not stop and this " +
-                 "row does not judge",
+                 $"consumed the notification={consumed}; the session that drop ended was closed " +
+                 $"with it (shell.IsLogging={shell.IsLogging}, " +
+                 $"LoggingManager.Active={LoggingManager.Instance.Active})",
                  shot, sw.Elapsed.TotalSeconds);
 
             // Once, not repeatedly. TWO mechanisms hold this up and the check cannot tell them

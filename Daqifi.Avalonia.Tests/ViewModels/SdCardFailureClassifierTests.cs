@@ -2,6 +2,7 @@ using Daqifi.Core.Communication.Transport;
 using Daqifi.Core.Device;
 using Daqifi.Core.Device.SdCard;
 using Daqifi.Desktop.Device;
+using Daqifi.Desktop.Loggers;
 using Daqifi.Desktop.ViewModels;
 using Xunit;
 
@@ -247,6 +248,50 @@ public class SdCardFailureClassifierTests
                 ? SdCardFailureClassifier.STOP_SD_LOGGING_GUIDANCE
                 : SdCardFailureClassifier.STOP_STREAMING_GUIDANCE,
             failure.Guidance);
+    }
+
+    #endregion
+
+    #region A file the parser refused is about the file, not the card
+
+    [Fact]
+    public void A_log_the_parser_refused_is_an_expected_condition_carrying_the_parsers_own_sentence()
+    {
+        // The file came off the card intact and the parser would not read it: a log the firmware
+        // did not write, or one edited since it was downloaded. Before this had an arm it fell to
+        // the default one — an Error, a Sentry issue, and "check the device connection and try
+        // again" over a connection that was fine (#515).
+        var refusal = "SD card log row '2000,0.123,2000,100' mixes values written with a decimal "
+            + "point with whole numbers, so no single unit covers the row.";
+
+        var failure = SdCardFailureClassifier.Classify(new InvalidDataException(refusal));
+
+        Assert.True(failure.IsExpectedDeviceCondition);
+        Assert.Equal(refusal, failure.StatusMessage);
+        Assert.Equal(SdCardLogParseFailureClassifier.MALFORMED_LOG_GUIDANCE, failure.Guidance);
+        Assert.NotEqual(SdCardFailureClassifier.UNEXPECTED_FAILURE_GUIDANCE, failure.Guidance);
+    }
+
+    [Fact]
+    public void A_log_the_parser_refused_does_not_write_off_the_card()
+    {
+        // Nothing is wrong with the card or the device, so one unimportable log must not abandon
+        // every file listed after it in a batch, nor paint the card-wide error panel over a file
+        // list that is still good.
+        var failure = SdCardFailureClassifier.Classify(new InvalidDataException("not a log this device wrote"));
+
+        Assert.False(failure.IsCardUnavailable);
+    }
+
+    [Fact]
+    public void A_device_condition_still_wins_over_the_parse_arm()
+    {
+        // The parse arm sits last-but-one, above the default. It must not shadow any of Core's SD
+        // types — this one would be the casualty, since a refused transfer is not a refused file.
+        var failure = SdCardFailureClassifier.Classify(new SdCardNotPresentException([]));
+
+        Assert.Equal(SdCardState.NotPresent, failure.State);
+        Assert.Equal(SdCardFailureClassifier.NO_CARD_GUIDANCE, failure.Guidance);
     }
 
     #endregion

@@ -125,7 +125,7 @@ are the only rows that can run on a machine with no hardware attached:
 | `session-10h` | `LOGGED-PLOT` | one session, 108 000 samples at 3 Hz across ten hours | the Logged Data pane plots it and the drawn range covers all ten hours |
 | `export-readonly` | `EXPORT-FAIL` | one 600-sample session, plus a `chmod 555` destination | the export fails with the *classified* message and leaves the destination empty — measured against a control export to a writable folder in the same run |
 | `sd-empty` | `SD-LIST` | a device whose SD card answers with nothing on it | an empty card reads `Ok` with zero files and the pane shows its NO FILES panel — not "no SD card installed" and not an error — then flips to the file grid when one file appears |
-| `drop-mid-stream` | `CONN-LOST` | a device that loses its transport while a logging session is streaming | the device leaves both lists, no channel is left subscribed to it, and the app raises exactly one notification however many times the drop is reported |
+| `drop-mid-stream` | `CONN-LOST` | a device that loses its transport while a logging session is streaming | the device leaves both lists, no channel is left subscribed to it, the session that drop ended is closed with it, and the app raises exactly one notification however many times the drop is reported |
 
 The first three seed `<out>/appdata/DAQiFiDatabase.db` **before** the app boots, because the one
 caller of `LoggingManager.ReloadPersistedLoggingSessions` is `DaqifiViewModel`'s one-time init:
@@ -254,10 +254,14 @@ These are real limits of the current rig, not of the app.
   report reaches nobody, and `OnDeviceConnectionLost`'s `ConnectedDevices.Contains` guard catches
   the race where a second path arrives before that. Measured: removing either alone leaves the
   check green; removing both raises a second notification and fails it.
-- **`CONN-LOST` says nothing about what happens to the session.** The teardown leaves
-  `shell.IsLogging` true — a session still running with no device behind it. The row reports that
-  in its evidence and does not judge it, because whether the app should stop the session is a
-  product question this rig has no standing to answer.
+- **`CONN-LOST` judges the session only for the LAST device.** Since #525 the row asserts that a
+  drop which empties `ConnectedDevices` closes the run (`shell.IsLogging` and
+  `LoggingManager.Active` both false) — that was the state it used to measure and decline to judge.
+  The other half of that decision, that a drop with siblings still streaming must *keep* the
+  session, is not driven here: every scripted state connects a single `ScriptedDevice`, and a
+  second one would change what this row's `midStream` and removal checks mean. It is pinned in
+  `Daqifi.Avalonia.Tests` instead (`DroppedDeviceSessionStopTests`), where the view model's
+  notification handler can be called directly with a fleet behind it.
 - **`sd-empty` needs its one-file control, and it is not padding.** A binding that cannot resolve
   leaves `IsVisible` at its **default**, which is `true` — so a typo'd `HasNoFiles` leaves the NO
   FILES panel on screen for the wrong reason and an empty-card-only check reads green. Measured:

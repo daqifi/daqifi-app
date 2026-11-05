@@ -284,22 +284,30 @@ public class DeviceLogsViewBindingTests
     /// <see cref="No_subtree_switches_compile_checking_back_off"/> sits beside it: a binding under a
     /// subtree that opted out still counts here.
     /// </para>
+    ///
+    /// <para>
+    /// 36 since issue #521 added a SIZE column. Its one binding lands in the <c>DataGrid</c>'s
+    /// inferred item scope, which resolves against <c>SdCardFile</c> — the same scope the NAME,
+    /// CREATED and FORMAT cells already bind in, and the scope
+    /// <see cref="The_inferred_item_scopes_are_the_element_types_of_the_collections_beside_them"/>
+    /// pins.
+    /// </para>
     /// </summary>
     [Fact]
-    public void All_thirty_five_bindings_are_compile_checked()
+    public void All_thirty_six_bindings_are_compile_checked()
     {
         var bindings = Root().DescendantsAndSelf()
             .SelectMany(element => element.Attributes())
             .Count(attribute => attribute.Value.TrimStart().StartsWith("{Binding", StringComparison.Ordinal));
 
-        Assert.Equal(35, bindings);
+        Assert.Equal(36, bindings);
     }
 
     /// <summary>
     /// The hole the two tests above leave between them, found by Qodo on this PR and confirmed by
     /// measurement: <c>x:CompileBindings</c> is <b>inherited and overridable per subtree</b>, and
     /// neither guard looks below the root. <see cref="The_view_declares_its_data_type"/> reads the
-    /// root attribute only, and <see cref="All_thirty_five_bindings_are_compile_checked"/> counts
+    /// root attribute only, and <see cref="All_thirty_six_bindings_are_compile_checked"/> counts
     /// binding text, which an opted-out binding still contributes to.
     ///
     /// <para>

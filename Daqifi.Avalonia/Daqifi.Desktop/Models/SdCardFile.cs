@@ -29,6 +29,41 @@ public class SdCardFile
         : CreatedDate.ToString("g");
 
     /// <summary>
+    /// The size the device's directory listing reported for the file, or <c>null</c> when the
+    /// listing entry carried no size token.
+    /// </summary>
+    /// <remarks>
+    /// Nullable rather than defaulted to zero, because the two are different facts and the
+    /// difference is the whole point of showing this: 0 is a log the device really did write with
+    /// nothing in it (an interrupted recording), while "unknown" is a listing this app could not
+    /// read a size out of. Collapsing them would have the list assert that a file is empty on the
+    /// strength of a missing token. Core draws the same distinction for the same reason — see
+    /// <c>Daqifi.Core.Device.SdCard.SdCardFileInfo.SizeInBytes</c>.
+    /// </remarks>
+    public long? SizeInBytes { get; init; }
+
+    /// <summary>
+    /// A user-facing size label. Says "Empty" rather than "0 B" for a zero-byte log, which is the
+    /// fact a user needs in front of them: an empty log is the one file on a card that cannot
+    /// import, and before this the list gave no sign of it at all (issue #521).
+    /// </summary>
+    public string SizeDisplay => SizeInBytes switch
+    {
+        null => "Size unknown",
+        0 => "Empty",
+        < 1024 => $"{SizeInBytes.Value} B",
+        < 1024L * 1024 => $"{SizeInBytes.Value / 1024.0:0.#} KB",
+        < 1024L * 1024 * 1024 => $"{SizeInBytes.Value / (1024.0 * 1024):0.#} MB",
+        _ => $"{SizeInBytes.Value / (1024.0 * 1024 * 1024):0.##} GB",
+    };
+
+    /// <summary>
+    /// True when the device reported this log as zero bytes. Drives the warning styling on the
+    /// size chip: nothing can be imported from it, so it is worth more than a neutral chip.
+    /// </summary>
+    public bool IsEmpty => SizeInBytes == 0;
+
+    /// <summary>
     /// Gets a user-facing format label based on the file extension.
     /// </summary>
     // @port: Daqifi.Desktop.Models.SdCardFile.FormatDisplay

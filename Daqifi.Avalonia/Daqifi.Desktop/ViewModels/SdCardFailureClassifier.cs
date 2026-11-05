@@ -2,6 +2,7 @@ using Daqifi.Core.Communication.Transport; // TransportNotConnectedException (ty
 using Daqifi.Core.Device; // FeatureNotSupportedException (firmware feature gating, Core ADR 0001)
 using Daqifi.Core.Device.SdCard;
 using Daqifi.Desktop.Device; // SdOperationBlockedException (the app's own quiescence guard)
+using Daqifi.Desktop.Loggers; // SdCardLogParseFailureClassifier (the file half of this classification)
 
 namespace Daqifi.Desktop.ViewModels;
 
@@ -21,9 +22,10 @@ namespace Daqifi.Desktop.ViewModels;
 /// The actionable sentence shown to the user: what they should do about it.
 /// </param>
 /// <param name="IsExpectedDeviceCondition">
-/// <c>true</c> for device/environmental conditions the desktop cannot prevent (no card, wedged SD
-/// subsystem, filesystem error). These are logged at Warning so they do not raise Sentry issues;
-/// anything else is a genuine defect and keeps the Error path.
+/// <c>true</c> for conditions the desktop cannot prevent: device/environmental ones (no card,
+/// wedged SD subsystem, filesystem error) and a log file whose contents the parser refuses, which
+/// is a property of the file rather than of this app. These are logged at Warning so they do not
+/// raise Sentry issues; anything else is a genuine defect and keeps the Error path.
 /// </param>
 /// <param name="IsCardUnavailable">
 /// <c>true</c> only when the SD subsystem — not just this one file — is unmistakably unusable, so
@@ -396,6 +398,32 @@ public static class SdCardFailureClassifier
                     : STOP_STREAMING_GUIDANCE,
                 IsExpectedDeviceCondition: true,
                 IsCardUnavailable: true),
+
+            // The file came off the card intact and the PARSER refused it: a log that is not one
+            // the firmware wrote, or was edited after it was downloaded. Delegated to the
+            // importer's own classifier so the device import and the import-from-disk path cannot
+            // disagree about which exceptions are a refused file or about what the user is told
+            // (#515) — before this arm existed, a malformed file fell to the default arm below and
+            // was reported as an app defect: an Error, a Sentry issue, and "check the device
+            // connection and try again" over a connection that was fine.
+            //
+            // Expected, so it logs at Warning, but NOT card-wide: nothing is wrong with the card
+            // or the device, and one unimportable log must not abandon every file listed after it
+            // in a batch. IsCardUnavailable: false also keeps HandleImportFailure from painting
+            // the card-wide error panel, which would hide the file list over one bad file; State
+            // is carried only for the shape of the record.
+            //
+            // Placed last-but-one on purpose. The arms above are Core's SD types, none of which
+            // this matches, so the order is free today — but should the parse classifier ever
+            // recognise a type under SdCardOperationException, that arm would win and this one
+            // would go dead. It recognises System.IO parse exceptions only, which no SD type
+            // derives from.
+            _ when SdCardLogParseFailureClassifier.Classify(ex) is { } parseFailure => new SdCardFailure(
+                State: SdCardState.Error,
+                StatusMessage: parseFailure.Explanation,
+                Guidance: parseFailure.Guidance,
+                IsExpectedDeviceCondition: true,
+                IsCardUnavailable: false),
 
             // A bare TimeoutException is deliberately NOT matched: one reaching here from some
             // other layer is not evidence that the SD subsystem is wedged and must keep the Error

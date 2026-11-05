@@ -164,8 +164,18 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     [NotifyPropertyChangedFor(nameof(SelectedStreamingFrequency))]
     private IStreamingDevice? _selectedDevice;
 
-    [ObservableProperty]
     private LoggingSession _selectedLoggingSession;
+
+    /// <summary>The session the Logged Data pane's flyouts show and rename.</summary>
+    /// <remarks>
+    /// Written by reference: <see cref="LoggingSession.Equals"/> compares IDs, and a deleted
+    /// session's ID is reused, so an ID comparison would keep the deleted object selected (#519).
+    /// </remarks>
+    public LoggingSession SelectedLoggingSession
+    {
+        get => _selectedLoggingSession;
+        set => SetProperty(ref _selectedLoggingSession, value, ReferenceEqualityComparer.Instance);
+    }
     private bool _isLogging;
 
     [ObservableProperty]
@@ -1541,6 +1551,24 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         {
             // User cancelled — do nothing
         }
+        catch (Exception ex) when (SdCardLogParseFailureClassifier.Classify(ex) is { } parseFailure)
+        {
+            // The parser refused the file. Two things follow from that, and the generic handler
+            // below got both wrong (#515).
+            //
+            // The user is shown the parser's own sentence, which names the offending row and says
+            // what is wrong with it. "Please verify the file is a valid SD card log file" is the
+            // one thing a user cannot check by eye, and it replaced an explanation the app was
+            // already holding.
+            //
+            // And it is logged at Warning, so it raises no Sentry issue: picking a hand-edited,
+            // truncated or non-firmware file is an expected condition, not a fault in this app.
+            // Note the import can still reach here having logged its own Warning from
+            // SdCardSessionImporter — the parse is lazy, so the refusal surfaces mid-write — and
+            // this line is the one that says what the user was told about it.
+            _appLogger.Warning(ex, $"SD card log file import refused: {parseFailure.Explanation}");
+            await ShowMessage("Import Failed", parseFailure.BuildUserMessage(), MessageBoxButton.OK);
+        }
         catch (Exception ex)
         {
             _appLogger.Error(ex, "Error importing SD card log file");
@@ -2261,6 +2289,12 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // Clear so a later notification that doesn't set its own reason never shows
                     // this one's stale device/reason text.
                     ConnectionManager.Instance.LastDisconnectReason = string.Empty;
+
+                    // AFTER the flag is consumed, never before. Closing the session writes
+                    // LoggingManager.Active, and this view model is subscribed to that singleton
+                    // too — so the write re-enters UpdateUi. With NotifyConnection still raised,
+                    // that re-entry would show a second dialog for the same drop.
+                    CloseSessionIfTheDropTookTheLastDevice();
                 }
                 break;
         }
@@ -2268,6 +2302,71 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         _ = _firmwareCoordinator.RefreshFirmwareUpdatesAsync();
         RemoveNotification();
     }
+
+    /// <summary>
+    /// Ends the logging session when the spontaneous disconnect that raised the notification took
+    /// the LAST connected device with it (issue #525).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A drop tears the device's channels out of <c>LoggingManager</c> — deliberately, see
+    /// <c>ConnectionManager.TearDownDroppedDevice</c> — and that is what drives
+    /// <see cref="CanToggleLogging"/> to false at the end of this handler. Without this, the
+    /// session those channels belonged to was left running: the header kept reading LOGGING ON, the toggle that
+    /// would clear it was disabled, and <c>LoggingManager.Active</c> stayed true with the session
+    /// row never finalised. The only ways out were to reconnect the device AND re-enable a channel,
+    /// or to restart the app.
+    /// </para>
+    /// <para>
+    /// <b>Why this lives here rather than in the teardown.</b> The session is this view model's:
+    /// the <see cref="IsLogging"/> setter is its single entry point, and only it knows the local
+    /// <c>_isLogging</c> flag, owns the disk-space monitor, and can fan the stop out over the
+    /// fleet. <c>ConnectionManager</c> knows about transports and would have to reach back through
+    /// a new seam to say any of that. Writing <see cref="IsLogging"/> is also what makes this the
+    /// same stop the user's own toggle and the disk-space hard stop perform — the writer is
+    /// flushed, <c>SampleCount</c> is persisted by <c>LoggingManager.OnActiveChanged</c>, and the
+    /// toggle is left OFF rather than ON-and-disabled — instead of a second way to end a session
+    /// that could drift from the first.
+    /// </para>
+    /// <para>
+    /// <b>Why only the LAST device.</b> One device dropping out of a fleet that is still streaming
+    /// must not take the run away from the devices that are still recording — the same decision
+    /// <c>LoggingFleet</c>'s partial-refusal handling already makes on the start path. So the stop
+    /// is behind "nothing is left connected", and a drop with siblings still present is a no-op
+    /// here.
+    /// </para>
+    /// <para>
+    /// The count comes from <c>ConnectionManager.Instance.ConnectedDevices</c>, not from this view
+    /// model's own <see cref="ConnectedDevices"/>. The manager's list is the authority — the
+    /// teardown removes the device from it synchronously, before raising the notification that
+    /// brought us here — while this view model's copy is rebuilt from it by the
+    /// <c>"ConnectedDevices"</c> case above, which clears the collection before repopulating it.
+    /// That clear is only safe to read past because <c>UpdateConnectedDeviceUI</c> happens to
+    /// complete synchronously; reading the authority instead means a rebuild that one day really
+    /// did suspend could not leave this looking at a transiently empty list and end a session that
+    /// still has devices behind it.
+    /// </para>
+    /// </remarks>
+    private void CloseSessionIfTheDropTookTheLastDevice()
+    {
+        if (ConnectionManager.Instance.ConnectedDevices.Count > 0)
+        {
+            return;
+        }
+
+        // With nothing connected, AnyDeviceActivelyLogging() is false by construction, so this is
+        // reading _isLogging: was there a session of this app's own to close?
+        if (!IsLogging)
+        {
+            return;
+        }
+
+        _appLogger.Information(
+            "The last connected device dropped while logging; closing the session.");
+
+        IsLogging = false;
+    }
+
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.ShowMessage
     // MahApps ShowMessageAsync on the MetroWindow → IMessageBoxService (dialog_service
     // mechanism); MessageBoxButton.OK maps to MessageBoxButton.OK.

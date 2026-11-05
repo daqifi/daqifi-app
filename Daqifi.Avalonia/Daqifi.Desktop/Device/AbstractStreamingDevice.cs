@@ -1751,13 +1751,25 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         await coreDevice.DeleteSdCardFileAsync(fileName, ct);
     }
 
+    /// <remarks>
+    /// Visible to <c>Daqifi.Avalonia.Tests</c> only, via InternalsVisibleTo in
+    /// Daqifi.Avalonia.csproj. The live path through it, <see cref="RefreshSdCardFiles"/>, needs a
+    /// connected Core device, so the one thing this mapper decides on its own — which fields of a
+    /// listing entry survive into the listing the user reads — is otherwise unreachable. Dropping
+    /// the reported size here is what issue #521's second half was.
+    /// </remarks>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.MapSdCardFiles
-    private static List<SdCardFile> MapSdCardFiles(IEnumerable<CoreSdCardFileInfo> files)
+    internal static List<SdCardFile> MapSdCardFiles(IEnumerable<CoreSdCardFileInfo> files)
     {
         return files.Select(file => new SdCardFile
             {
                 FileName = file.FileName,
-                CreatedDate = file.CreatedDate ?? DateTime.MinValue
+                CreatedDate = file.CreatedDate ?? DateTime.MinValue,
+                // Carried through, not dropped: a zero-byte log is the one file on a card that
+                // cannot import, and without the size the list gave no sign of which one that was
+                // (issue #521). Core's null (no size token in the listing entry) stays null rather
+                // than becoming 0 — see SdCardFile.SizeInBytes.
+                SizeInBytes = file.SizeInBytes
             })
             .Where(file => IsImportableSdLogFileName(file.FileName))
             .ToList();
