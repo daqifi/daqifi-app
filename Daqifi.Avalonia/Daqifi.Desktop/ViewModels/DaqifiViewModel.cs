@@ -165,8 +165,18 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     private IStreamingDevice? _selectedDevice;
 
     private VersionNotification? _versionNotification;
-    [ObservableProperty]
     private LoggingSession _selectedLoggingSession;
+
+    /// <summary>The session the Logged Data pane's flyouts show and rename.</summary>
+    /// <remarks>
+    /// Written by reference: <see cref="LoggingSession.Equals"/> compares IDs, and a deleted
+    /// session's ID is reused, so an ID comparison would keep the deleted object selected (#519).
+    /// </remarks>
+    public LoggingSession SelectedLoggingSession
+    {
+        get => _selectedLoggingSession;
+        set => SetProperty(ref _selectedLoggingSession, value, ReferenceEqualityComparer.Instance);
+    }
     private bool _isLogging;
 
     [ObservableProperty]
