@@ -151,9 +151,10 @@ invocation:
 success is the exact failure mode this whole file is about: silence that looks like
 health. Both workflows fail the job on 2.
 
-Every self-test in `.github/scripts` also runs on every push and PR via the
-`scripts` job in `build.yml` — without it, these two guards would only be exercised
-on a Dependabot PR or on a Monday, and a regression could sit unnoticed for a week.
+Every self-test in `.github/scripts` also runs on every pull request and every
+merge-queue entry via the `scripts` job in `build.yml` — without it, these two guards
+would only be exercised on a Dependabot PR or on a Monday, and a regression could sit
+unnoticed for a week.
 
 `refresh_lock_files.sh` is not a guard — it is a remedy, and the only shell script
 here — but it follows the same shape for the same reason: its refusals are the part
