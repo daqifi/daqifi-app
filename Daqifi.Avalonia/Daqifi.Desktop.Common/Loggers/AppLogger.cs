@@ -56,10 +56,10 @@ public class AppLogger : IAppLogger
     /// </remarks>
     private static string? ResolveSentryDsn()
     {
+        string? configured = null;
         try
         {
-            var configured = ConfigurationManager.AppSettings["SentryDsn"];
-            if (!string.IsNullOrWhiteSpace(configured)) { return configured; }
+            configured = ConfigurationManager.AppSettings["SentryDsn"];
         }
         catch
         {
@@ -67,14 +67,30 @@ public class AppLogger : IAppLogger
             // Not an error — it is the normal case on mobile.
         }
 
-        var fromEnvironment = Environment.GetEnvironmentVariable("DAQIFI_SENTRY_DSN");
-        if (!string.IsNullOrWhiteSpace(fromEnvironment)) { return fromEnvironment; }
-
         // Baked in at build time from the SentryDsn MSBuild property, so every head gets a
         // DSN without shipping a config file. Absent property -> no attribute -> disabled.
-        return typeof(AppLogger).Assembly
+        var builtIn = typeof(AppLogger).Assembly
             .GetCustomAttributes<AssemblyMetadataAttribute>()
             .FirstOrDefault(a => a.Key == "SentryDsn")?.Value;
+
+        return ChooseSentryDsn(
+            configured, Environment.GetEnvironmentVariable("DAQIFI_SENTRY_DSN"), AppDataPaths.IsTestMode, builtIn);
+    }
+
+    /// <summary>
+    /// App.config first, then <c>DAQIFI_SENTRY_DSN</c>, then the built-in default, except in
+    /// unattended test runs (<c>DAQIFI_TEST_MODE=1</c>: HeadlessBench, the parity capture).
+    /// </summary>
+    /// <remarks>
+    /// Those runs fail on purpose, and with the built-in default each run was reported to the
+    /// production project as a new user's error. An explicit DSN still applies, for testing
+    /// reporting itself.
+    /// </remarks>
+    internal static string? ChooseSentryDsn(string? configured, string? fromEnvironment, bool testMode, string? builtIn)
+    {
+        if (!string.IsNullOrWhiteSpace(configured)) { return configured; }
+        if (!string.IsNullOrWhiteSpace(fromEnvironment)) { return fromEnvironment; }
+        return testMode ? null : builtIn;
     }
 
     /// <summary>

@@ -1,8 +1,6 @@
 using Avalonia;
 using Avalonia.iOS;
 using Foundation;
-using Optris.Icons.Avalonia;
-using Optris.Icons.Avalonia.MaterialDesign;
 
 namespace Daqifi.Avalonia.iOS;
 
@@ -39,7 +37,7 @@ public partial class AppDelegate : AvaloniaAppDelegate<App>
     {
         // Register the Material Design icon pack so `i:Icon` (the mdi-* glyphs the
         // mobile landscape shell reuses from the desktop nav rail) renders on iOS.
-        IconProvider.Current.Register<MaterialDesignIconProvider>();
+        Daqifi.Avalonia.Services.AppIcons.EnsureRegistered();
         return base.CustomizeAppBuilder(builder)
             .WithInterFont();
     }

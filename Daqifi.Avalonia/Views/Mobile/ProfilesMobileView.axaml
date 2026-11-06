@@ -103,6 +103,13 @@
                    Foreground="{DynamicResource StatusAmber}"/>
       </Border>
 
+      <!-- desktop: status-bar TextBlock (Notice / HasNotice) — why the last tile tap did nothing (#520). -->
+      <TextBlock Text="{Binding Notice}"
+                 IsVisible="{Binding HasNotice}"
+                 TextWrapping="Wrap"
+                 FontSize="{DynamicResource FontSizeSmall}" FontWeight="SemiBold"
+                 Foreground="{DynamicResource StatusAmber}"/>
+
       <!-- desktop: Button.IsEnabled (!IsLoggingActive) + Button.Command.
            Primary action → shared AccentPillButton (rounded pill). Portrait only — in
            landscape the ADD action lives in the bottom status bar; toggled in code-behind (#13). -->
