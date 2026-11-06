@@ -167,13 +167,18 @@ public sealed class SdCardImportNaNTests : IDisposable
     /// The other half of the measurement behind the guard: an infinity is NOT refused by the
     /// database, so — like #294's live-path guard — the importer keeps it rather than discarding a
     /// reading it could have stored.
+    ///
+    /// <para>Both infinities are spelled without a decimal point or exponent, like the row's
+    /// neighbours. Since Core 1.9.0 the CSV parser reads a value's unit from its lexical form and
+    /// refuses a row that mixes the volts form (<c>1e400</c>) with whole numbers, which is not a
+    /// row firmware writes.</para>
     /// </summary>
     [Fact]
     public async Task Infinities_are_stored_not_dropped()
     {
         var path = WriteCsv("log_20260901_120000_inf.csv",
             "1000,100,1000,200",
-            "2000,1e400,2000,-Infinity",
+            "2000,Infinity,2000,-Infinity",
             "3000,102,3000,202");
 
         var result = await Importer().ImportFromFileAsync(path);
