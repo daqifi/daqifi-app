@@ -92,9 +92,9 @@ public partial class ProfilesPaneViewModel : ObservableObject
     // Downstream-only: no upstream counterpart.
     public const string LoggingActiveNotice = "Stop logging to change the active profile.";
 
-    /// <summary>What the drawer says when a matched device has none of the profile's channels.</summary>
+    /// <summary>What the drawer says when a matched device has none of the channels the profile switches on for it.</summary>
     // Downstream-only: no upstream counterpart.
-    public const string NoChannelsMatchedMessage = "None of this profile's channels exist on the connected devices.";
+    public const string NoChannelsMatchedMessage = "A connected device has none of the channels this profile switches on.";
 
     /// <summary>Live view of the saved profiles backed by <see cref="LoggingManager"/>.</summary>
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.Profiles
@@ -298,17 +298,7 @@ public partial class ProfilesPaneViewModel : ObservableObject
         if (profile == null) return;
         Notice = string.Empty;
 
-        if (LoggingManager.Instance.Active)
-        {
-            // Not by opening the drawer: it cannot be opened while logging, and opening it here
-            // would contradict the gear button. The status line says why instead. This used to be
-            // a breadcrumb and nothing else, so a click mid-session looked like a broken profile
-            // (#520).
-            _logger.AddBreadcrumb("profile", "Blocked activate while logging active");
-            Notice = LoggingActiveNotice;
-            if (IsDrawerOpen) DrawerError = LoggingActiveNotice;
-            return;
-        }
+        if (RefusedWhileLogging()) return;
 
         var anyActive = Profiles.FirstOrDefault(p => p.IsProfileActive);
 
@@ -320,23 +310,9 @@ public partial class ProfilesPaneViewModel : ObservableObject
             return;
         }
 
-        // Case 2 & 3 share this validation: the new profile must match at least
-        // one connected device before we touch anything.
+        // Case 2 & 3 share this validation: nothing is touched unless it passes.
         var newMatches = MatchProfileToConnected(profile);
-        if (newMatches.Count == 0)
-        {
-            ShowError(profile, "No connected devices match this profile.");
-            return;
-        }
-
-        // A matched device that has none of the profile's channels (a different model, or names
-        // from another firmware) would be cleared and given nothing while the tile said ACTIVE.
-        // Refuse before anything is touched, including the profile that is active now.
-        if (NamesChannels(profile) && !newMatches.Any(m => ResolveChannels(m.Key, m.Value).Count > 0))
-        {
-            ShowError(profile, NoChannelsMatchedMessage);
-            return;
-        }
+        if (RefusedMatches(profile, newMatches)) return;
 
         // Case 2: a different profile is active — ask the user to switch.
         if (anyActive != null)
@@ -347,6 +323,12 @@ public partial class ProfilesPaneViewModel : ObservableObject
                 affirmativeLabel: "SWITCH");
             if (!confirmed) return;
 
+            // The overlay is in-pane only, so logging can start from another tab, or a device can
+            // drop, while it is open. Check again against what is true now (#529 audit).
+            if (RefusedWhileLogging()) return;
+            newMatches = MatchProfileToConnected(profile);
+            if (RefusedMatches(profile, newMatches)) return;
+
             var oldMatches = MatchProfileToConnected(anyActive);
             ApplyProfileToDevices(anyActive, oldMatches, activate: false);
         }
@@ -354,6 +336,47 @@ public partial class ProfilesPaneViewModel : ObservableObject
         // Case 2 (post-confirm) and Case 3 (no profile active): activate the new one.
         DrawerError = string.Empty;
         ApplyProfileToDevices(profile, newMatches, activate: true);
+    }
+
+    /// <summary>
+    /// Refuse while logging, saying why on the status line. Not by opening the drawer: it cannot
+    /// be opened while logging, and opening it here would contradict the gear button. This used
+    /// to be a breadcrumb and nothing else, so a click mid-session looked like a broken profile
+    /// (#520).
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    private bool RefusedWhileLogging()
+    {
+        if (!LoggingManager.Instance.Active) return false;
+
+        _logger.AddBreadcrumb("profile", "Blocked activate while logging active");
+        Notice = LoggingActiveNotice;
+        if (IsDrawerOpen) DrawerError = LoggingActiveNotice;
+        return true;
+    }
+
+    /// <summary>
+    /// Refuse, with the reason in the drawer, when no device matches, or when a matched device
+    /// the profile switches channels on has none of them. That device would be cleared and given
+    /// nothing while the tile said ACTIVE. A device saved with every channel off is not refused:
+    /// clearing it is what the profile asks for.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    private bool RefusedMatches(Profile profile, Dictionary<ProfileDevice, IStreamingDevice> matches)
+    {
+        if (matches.Count == 0)
+        {
+            ShowError(profile, "No connected devices match this profile.");
+            return true;
+        }
+
+        if (matches.Any(m => NamesChannels(m.Key) && ResolveChannels(m.Key, m.Value).Count == 0))
+        {
+            ShowError(profile, NoChannelsMatchedMessage);
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -462,10 +485,9 @@ public partial class ProfilesPaneViewModel : ObservableObject
             .Cast<IChannel>()
             .ToList();
 
-    /// <summary>Whether the profile switches on any channel at all, on any device.</summary>
+    /// <summary>Whether a profile entry switches on any channel at all.</summary>
     // Downstream-only: no upstream counterpart.
-    private static bool NamesChannels(Profile profile) =>
-        profile.Devices.Any(d => d.Channels.Any(c => c.IsChannelActive));
+    private static bool NamesChannels(ProfileDevice pd) => pd.Channels.Any(c => c.IsChannelActive);
     #endregion
 
     #region Confirm Overlay

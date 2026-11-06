@@ -277,4 +277,87 @@ public sealed class ProfileActivationTests : IDisposable
         Assert.Equal(["CH1"], SubscribedNames(other));
         Assert.Equal(ProfilesPaneViewModel.NoChannelsMatchedMessage, _pane.DrawerError);
     }
+
+    /// <summary>
+    /// Two matched devices, one of which has none of its saved channels: that device would be
+    /// cleared and given nothing under an ACTIVE tile. The whole activation is refused, and
+    /// neither device is touched (#529 audit).
+    /// </summary>
+    [Fact]
+    public async Task A_matched_device_with_none_of_its_channels_refuses_the_whole_profile()
+    {
+        var x = Connect("PROFILE-PER-X");
+        var y = Connect("PROFILE-PER-Y");
+        Enable(x, "AI0");
+        Enable(y, "AI1");
+        var profile = CaptureCurrentSettings("Per device");
+        Disable(x, "AI0");
+        Disable(y, "AI1");
+        Disconnect(y);
+
+        // Same serial, so it matches Y's entry, but its channels are named differently.
+        var renamed = Connect("PROFILE-PER-Y", channelPrefix: "CH");
+        Enable(renamed, "CH2");
+        Enable(x, "AI3");
+
+        await Activate(profile);
+
+        Assert.False(profile.IsProfileActive);
+        Assert.Equal(["AI3"], ActiveNames(x));
+        Assert.Equal(["CH2"], ActiveNames(renamed));
+        Assert.Equal(ProfilesPaneViewModel.NoChannelsMatchedMessage, _pane.DrawerError);
+    }
+
+    /// <summary>
+    /// #530: a device saved with every channel off is restored to all-off, even while the
+    /// profile's other device is disconnected.
+    /// </summary>
+    [Fact]
+    public async Task A_device_saved_all_off_is_restored_while_the_other_device_is_away()
+    {
+        var x = Connect("PROFILE-OFF-X");
+        var y = Connect("PROFILE-OFF-Y");
+        Enable(x, "AI0");
+        var profile = CaptureCurrentSettings("One device off");
+        Disable(x, "AI0");
+        Disconnect(x);
+        Enable(y, "AI2");
+
+        await Activate(profile);
+
+        Assert.True(profile.IsProfileActive);
+        Assert.Empty(ActiveNames(y));
+        Assert.Empty(SubscribedNames(y));
+        Assert.Equal(string.Empty, _pane.DrawerError);
+    }
+
+    /// <summary>
+    /// The SWITCH confirm is in-pane only, so logging can start from another tab while it is
+    /// open. Confirming then must still refuse: the active profile and its channels stay as they
+    /// were (#529 audit).
+    /// </summary>
+    [Fact]
+    public async Task Logging_started_while_the_switch_confirm_is_open_still_refuses()
+    {
+        var device = Connect("PROFILE-SW-1");
+        Enable(device, "AI0");
+        var first = CaptureCurrentSettings("First");
+        Disable(device, "AI0");
+        Enable(device, "AI1");
+        var second = CaptureCurrentSettings("Second");
+        Disable(device, "AI1");
+        await Activate(first);
+
+        var switching = Activate(second);
+        Assert.True(_pane.ConfirmOverlay.IsOpen);
+        LoggingManager.Instance.Active = true;
+        _pane.ConfirmOverlay.AffirmativeCommand.Execute(null);
+        await switching;
+
+        Assert.True(first.IsProfileActive);
+        Assert.False(second.IsProfileActive);
+        Assert.Equal(["AI0"], ActiveNames(device));
+        Assert.Equal(["AI0"], SubscribedNames(device));
+        Assert.Equal(ProfilesPaneViewModel.LoggingActiveNotice, _pane.Notice);
+    }
 }
