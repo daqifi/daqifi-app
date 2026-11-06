@@ -1,6 +1,4 @@
 using Avalonia;
-using Optris.Icons.Avalonia;
-using Optris.Icons.Avalonia.MaterialDesign;
 
 namespace Daqifi.Avalonia;
 
@@ -13,7 +11,7 @@ internal static class Program
 
     public static AppBuilder BuildAvaloniaApp()
     {
-        IconProvider.Current.Register<MaterialDesignIconProvider>();
+        Daqifi.Avalonia.Services.AppIcons.EnsureRegistered();
         return AppBuilder.Configure<App>()
             .UsePlatformDetect()
             .WithInterFont()

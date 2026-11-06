@@ -19,8 +19,6 @@ using Daqifi.Desktop.Device;
 using Daqifi.Desktop.Device.SerialDevice;
 using Daqifi.Desktop.View;
 using Daqifi.Desktop.ViewModels;
-using Optris.Icons.Avalonia;
-using Optris.Icons.Avalonia.MaterialDesign;
 
 // Parity-audit screenshot harness for the Avalonia port. Boots the REAL
 // Daqifi.Avalonia app headless (Skia backend, no display) via the app's own DI
@@ -171,7 +169,7 @@ internal static class AvaloniaCapture
             // unambiguously rather than against whatever cwd it inherits.
             Environment.SetEnvironmentVariable(
                 "DAQIFI_DATA_DIR", Path.Combine(_outDir, ".appdata"));
-            IconProvider.Current.Register<MaterialDesignIconProvider>();
+            Daqifi.Avalonia.Services.AppIcons.EnsureRegistered();
 
             BuildAvaloniaApp().SetupWithLifetime(desktop);
             Console.WriteLine("[OK]   App boot completed");
