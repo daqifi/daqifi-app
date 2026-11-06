@@ -176,6 +176,27 @@ public sealed class ProfileActivationTests : IDisposable
     }
 
     /// <summary>
+    /// A channel switched on while a profile is active is not the profile's, but turning the
+    /// profile off (or switching away from it) still switches it off. Otherwise it stays
+    /// subscribed with the board no longer sending it (#529 audit).
+    /// </summary>
+    [Fact]
+    public async Task Deactivating_a_profile_also_drops_channels_switched_on_outside_it()
+    {
+        var device = Connect("PROFILE-OFF-1");
+        Enable(device, "AI0", "AI1");
+        var profile = CaptureCurrentSettings("Off drops extras");
+        await Activate(profile);
+
+        Enable(device, "AI2");
+        await Activate(profile); // the same tile again: toggle off
+
+        Assert.False(profile.IsProfileActive);
+        Assert.Empty(ActiveNames(device));
+        Assert.Empty(SubscribedNames(device));
+    }
+
+    /// <summary>
     /// The same round trip through the file: the profile activated is the one read back from the
     /// profiles XML, which is what a profile saved in an earlier session is. Passes on the unfixed
     /// code too; it pins that the save and the load agree, which the issue asked to be checked.

@@ -401,25 +401,16 @@ public partial class ProfilesPaneViewModel : ObservableObject
 
     /// <summary>
     /// Apply the channel + frequency intent of a profile to its matched devices.
-    /// When <paramref name="activate"/> is true, clears whatever the device has on, then sets the
-    /// streaming frequency, adds the profile's active channels, and subscribes them. When false,
-    /// unsubscribes the profile's channels first, then removes all channels
-    /// from the matched devices. Flips <see cref="Profile.IsProfileActive"/> last.
+    /// Both directions first clear the device with <see cref="ClearDevice"/>. Activating then sets
+    /// the streaming frequency, adds the profile's active channels and subscribes them.
+    /// Flips <see cref="Profile.IsProfileActive"/> last.
     /// </summary>
     /// <remarks>
-    /// Order matters on deactivate: <see cref="AbstractStreamingDevice.RemoveAllChannels"/>
-    /// clears <c>IChannel.IsActive</c> on every channel, and
-    /// <see cref="LoggingManager.Unsubscribe"/> only removes channels whose
-    /// <c>IsActive</c> is still true. Calling Unsubscribe after RemoveAllChannels
-    /// would leave stale subscriptions behind.
-    /// <para>
     /// Activation clears first because a profile is the device's whole channel set, not an
     /// addition to it (#520). <see cref="AbstractStreamingDevice.AddChannels"/> writes the ADC
     /// enable as one whole mask built only from the channels it is given, so on its own it
     /// switched the board to exactly the profile's analog inputs while every channel the user had
-    /// on before stayed active and subscribed in the app: the Channels pane, the plot and the
-    /// logger all still showed channels the board had just been told to stop sending.
-    /// </para>
+    /// on before stayed active and subscribed in the app.
     /// </remarks>
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.ApplyProfileToDevices
     private void ApplyProfileToDevices(
@@ -429,32 +420,35 @@ public partial class ProfilesPaneViewModel : ObservableObject
     {
         foreach (var (pd, device) in matches)
         {
+            ClearDevice(device);
+            if (!activate) continue;
+
             var channels = ResolveChannels(pd, device);
-
-            if (activate)
-            {
-                // Same order as the deactivate branch below, for the same reason.
-                foreach (var ch in device.DataChannels.Where(c => c.IsActive).ToList())
-                    LoggingManager.Instance.Unsubscribe(ch);
-                device.RemoveAllChannels();
-
-                device.StreamingFrequency = pd.SamplingFrequency;
-                device.AddChannels(channels);
-                foreach (var ch in channels) LoggingManager.Instance.Subscribe(ch);
-            }
-            else
-            {
-                // Unsubscribe BEFORE RemoveAllChannels — Unsubscribe's lookup
-                // filters by IsActive, and RemoveAllChannels sets IsActive=false
-                // on every channel, which would make Unsubscribe a silent no-op.
-                foreach (var ch in channels) LoggingManager.Instance.Unsubscribe(ch);
-                device.RemoveAllChannels();
-            }
+            device.StreamingFrequency = pd.SamplingFrequency;
+            device.AddChannels(channels);
+            foreach (var ch in channels) LoggingManager.Instance.Subscribe(ch);
         }
 
         profile.IsProfileActive = activate;
         _logger.AddBreadcrumb("profile",
             $"Profile {(activate ? "activated" : "deactivated")}: {profile.Name}");
+    }
+
+    /// <summary>
+    /// Switch every channel on the device off, in the app and on the board. Every active channel,
+    /// not just the profile's: one the user switched on outside the profile would otherwise stay
+    /// subscribed with nothing behind it, and no later Unsubscribe could find it (#529 audit).
+    /// </summary>
+    /// <remarks>
+    /// Unsubscribe BEFORE RemoveAllChannels: Unsubscribe's lookup filters by IsActive, and
+    /// RemoveAllChannels sets IsActive=false on every channel, which would make it a silent no-op.
+    /// </remarks>
+    // Downstream-only: no upstream counterpart.
+    private static void ClearDevice(IStreamingDevice device)
+    {
+        foreach (var ch in device.DataChannels.Where(c => c.IsActive).ToList())
+            LoggingManager.Instance.Unsubscribe(ch);
+        device.RemoveAllChannels();
     }
 
     /// <summary>The connected device's channels that a profile entry switches on.</summary>
