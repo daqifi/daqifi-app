@@ -164,14 +164,34 @@ public sealed class SdCardImportNaNTests : IDisposable
     }
 
     /// <summary>
+    /// Firmware writes volts with a fixed precision (<c>2.0100</c>) but falls back to
+    /// <c>%f</c> for a non-finite value, which prints <c>nan</c> with no decimal point. That row
+    /// must import like the whole-number one above: the NaN is skipped, its neighbours are kept.
+    /// </summary>
+    [Fact]
+    public async Task A_volts_csv_carrying_nan_imports_through_the_file_entry_point()
+    {
+        var path = WriteCsv("log_20260901_120000_nanv.csv",
+            "1000,1.0000,1000,2.0000",
+            "2000,nan,2000,2.0100",
+            "3000,1.0200,3000,2.0200");
+
+        var result = await Importer().ImportFromFileAsync(path);
+
+        Assert.True(result.SessionPersisted);
+        Assert.Equal(5, result.SamplesImported);
+        Assert.Equal(5, SampleCountFor(result.Session.ID));
+        Assert.Empty(_log.Errors);
+    }
+
+    /// <summary>
     /// The other half of the measurement behind the guard: an infinity is NOT refused by the
     /// database, so — like #294's live-path guard — the importer keeps it rather than discarding a
     /// reading it could have stored.
     ///
     /// <para>Both infinities are spelled without a decimal point or exponent, like the row's
-    /// neighbours. Since Core 1.9.0 the CSV parser reads a value's unit from its lexical form and
-    /// refuses a row that mixes the volts form (<c>1e400</c>) with whole numbers, which is not a
-    /// row firmware writes.</para>
+    /// whole-number neighbours. Since Core 1.9.0 the CSV parser reads a value's unit from its
+    /// lexical form, and <c>1e400</c> reads as the volts form.</para>
     /// </summary>
     [Fact]
     public async Task Infinities_are_stored_not_dropped()
