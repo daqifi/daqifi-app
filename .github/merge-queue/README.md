@@ -7,8 +7,10 @@ the queued PRs in order — and merges only if that tentative result is green. I
 means you can queue a stack of PRs and walk away, rather than babysitting
 rebase-and-wait for each one.
 
-**Status: the repository side is wired, the GitHub side is blocked on plan.** See
-[Enabling it](#enabling-it).
+**Status: live.** The ruleset on `main` is active and every merge goes through the
+queue. See [How it is configured](#how-it-is-configured) for the settings actually in
+force, and [What it cost](#what-it-cost) for the one workflow change that depended on
+it.
 
 ## What is already done
 
@@ -29,6 +31,11 @@ preserving:
 - **`cancel-in-progress` is keyed on `pull_request` only.** A cancelled `merge_group`
   run reports as a *failed* required check, which ejects that PR from the queue and
   forces everything behind it to rebuild. Never broaden that condition to `true`.
+- **There is no `push: branches: [main]` trigger, and that is load-bearing on the
+  queue.** The `merge_group` run builds main-plus-one-PR squashed, which is exactly the
+  commit that lands, so a push-triggered run rebuilt an already-built tree. It was
+  removed. This is only safe while nothing can reach `main` outside the queue — see the
+  `bypass_actors` note below. If that ever changes, the trigger must come back.
 
 ## Checks that are safe to require
 
@@ -50,52 +57,47 @@ pull-request-time check. Requiring it would hang every queue entry until timeout
 same reasoning applies to any future check whose input is the PR itself rather than
 the resulting tree.
 
-## Enabling it
+## How it is configured
 
-GitHub exposes merge queue only through a branch ruleset or branch protection rule on
-`main`, and **neither is available on this repository today**:
+Settled in **Settings → Rules → Rulesets** on `main` (ruleset `main`, enforcement
+`active`). The settings in force, which are the ones the notes above reason about:
 
-```
-$ gh api repos/daqifi/daqifi-avalonia/rulesets
-Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)
-```
+| Setting | Value |
+| --- | --- |
+| Merge method | `SQUASH` |
+| Max entries to build concurrently | `2` |
+| Min / max entries to merge | `1` / `1` |
+| Min wait before merging | 5 minutes |
+| Grouping strategy | `ALLGREEN` |
+| Status-check timeout | 60 minutes |
+| Required checks | the six in the table above |
+| `bypass_actors` | **empty** |
 
-`daqifi` is on the **free** plan and this repository is **private**. Merge queues are
-available on public organization repositories, and on private repositories only under
-GitHub Enterprise Cloud — the Team plan does not include them for private repos. So
-there are two routes:
+Two of those rows are relied on elsewhere and should not be changed casually:
 
-1. **Make the repository public.** Unblocks merge queue and makes Actions minutes free
-   (relevant below). Worth noting that this repo is the private outlier among its own
-   dependencies — [`daqifi-desktop`](https://github.com/daqifi/daqifi-desktop), the WPF
-   app it ports, and [`daqifi-core`](https://github.com/daqifi/daqifi-core), the library
-   it wraps, are both already public. Still a product decision, not a CI one.
-2. **Move the org to GitHub Enterprise Cloud.** Note that GitHub **Team** would not
-   help: the availability line is "any public repository owned by an organization, or
-   ... private repositories owned by organizations using GitHub Enterprise Cloud".
+- **`max_entries_to_merge: 1`** keeps a queue entry equal to one PR. Batching merges a
+  group as one unit, so one bad PR fails the whole batch and everything re-forms. It is
+  also what makes the entry's build identical to the commit that lands, which is the
+  premise of dropping the `push` trigger.
+- **`bypass_actors: []`** is what makes `main` fully covered without a `push` trigger.
+  Adding a bypass actor — an admin, an app, a deploy key — reopens the hole that trigger
+  used to close. Add the trigger back in the same change, or do not add the actor.
 
-Once one of those is true, in **Settings → Rules → Rulesets** (or branch protection)
-for `main`:
+Alongside the ruleset, the repository also forbids `non_fast_forward` on `main` and
+requires a pull request (0 approvals, squash only).
 
-- Enable **Require merge queue**.
-- Add the six checks above under **Require status checks to pass**.
-- **Maximum pull requests to build concurrently**: start at **1–2**, not the default 5
-  — see the cost note.
-- **Merge method**: `Squash`, to match this repo's history.
-- **Maximum PRs to merge / batch size**: `1` while the queue is new. Batching merges a
-  group as one unit, so one bad PR fails the whole batch and everything re-forms;
-  batch only once green runs are the norm.
-- **Build timeout**: the full build is ~6–11 minutes wall clock, so the 60-minute
-  default is generous. Leave it.
+## What it cost
 
-Also consider turning on **Allow auto-merge** (`Settings → General`), currently off.
-With a queue, auto-merge is how a PR joins the queue on approval instead of waiting
-for someone to click.
+Before the queue existed, every merge produced three full runs of `build.yml`: the PR's
+own, then — once the queue arrived — the `merge_group` entry, then a `push` run on
+`main`. Measured over one week: 58 `pull_request`, 13 `merge_group`, 13 `push`. The last
+two are perfectly paired because they are the same tree.
 
-### Cost note
+That mattered because `build.yml` has two `macos-latest` jobs (`Desktop head on macOS`,
+`iOS head`) and macOS runners bill at **10×** on private repositories, so each redundant
+run was roughly 10 minutes of wall clock at 10× — about a third of this workflow's spend
+for no new information. Dropping the `push` trigger removed it.
 
-The queue rebuilds *per entry*, so N queued PRs cost roughly N full builds. `build.yml`
-has two `macos-latest` jobs (`Desktop head on macOS`, `iOS head`), and macOS runners
-bill at **10×** on private repositories. Concurrency 5 on a private repo can burn a
-free-plan month of Actions minutes quickly — hence the recommendation to start at 1–2.
-If the repository goes public instead, this stops mattering.
+The queue still rebuilds *per entry*, so N queued PRs cost roughly N full builds. That
+is why concurrency is 2 rather than the default 5; if the repository ever goes public,
+Actions minutes become free and this stops mattering.

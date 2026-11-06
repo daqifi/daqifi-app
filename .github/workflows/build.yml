@@ -24,8 +24,23 @@ name: Build
 # all. It is also opted out of the lock-file policy — see its csproj.
 
 on:
-  push:
-    branches: [main]
+  # No `push: branches: [main]`. It was removed once the merge queue went live,
+  # because by then it rebuilt a tree this workflow had ALREADY built: the ruleset on
+  # main carries merge_queue with max_entries_to_merge 1 and SQUASH, so the
+  # merge_group run below builds main-plus-that-one-PR — which is byte-for-byte the
+  # commit that then lands. Over one week that was 13 push runs against 13 merge_group
+  # runs, perfectly paired, each one re-spending ~10 minutes of macOS at this
+  # repository's 10x private-repo billing for no new information.
+  #
+  # What makes this safe is specifically that NOTHING can reach main except through
+  # that queue. The same ruleset requires a pull request, forbids non-fast-forward,
+  # and — the part that actually matters — has an EMPTY bypass_actors list, so there
+  # is no admin or app push that could land unbuilt. Check that before re-deriving
+  # this: if a bypass actor is ever added, or the queue is turned off, main stops
+  # being covered the moment this trigger is gone, and it must come back.
+  #
+  # The cost, stated plainly: commits on main no longer carry their own check status.
+  # The green tick lives on the queue entry that produced them instead.
   pull_request:
   # Required for the merge queue. A queue entry is built on a synthetic
   # `refs/heads/gh-readonly-queue/main/pr-N-<sha>` ref, and a required check with no
@@ -42,9 +57,9 @@ permissions:
   contents: read
 
 concurrency:
-  # Cancel superseded runs on a PR branch, but never on main and never in the merge
-  # queue. This condition must stay keyed on `pull_request` alone: a cancelled
-  # `merge_group` run reports as a FAILED required check, which ejects that pull
+  # Cancel superseded runs on a PR branch, but never in the merge queue and never on
+  # a manual dispatch. This condition must stay keyed on `pull_request` alone: a
+  # cancelled `merge_group` run reports as a FAILED required check, which ejects that pull
   # request from the queue and forces every entry queued behind it to rebuild. The
   # group is safe as-is because `github.ref` is already unique per queue entry, so
   # two queue runs can never collide in the first place.
@@ -61,8 +76,9 @@ jobs:
   # only on Dependabot's own pull requests, and check_core_drift.py only on a
   # weekly schedule. A change that broke either would sit undetected until the next
   # Dependabot PR or the next Monday — and both guards exist precisely because
-  # nobody was watching. This job runs every self-test on every push and PR, so a
-  # broken guard fails here instead of going quiet where it matters.
+  # nobody was watching. This job runs every self-test on every pull request and
+  # every merge-queue entry, so a broken guard fails here instead of going quiet
+  # where it matters.
   #
   # The other two are ALSO invoked in place, next to the step whose verdict they
   # gate. That duplication is deliberate: this job proves the guard works, the
@@ -102,9 +118,23 @@ jobs:
       # makes a floating SDK an input to locked mode that nobody controls. '10.0.x'
       # floated across a whole feature band (to 10.0.400, runtime 10.0.11) and broke
       # restore with NU1004 on a repo nobody had touched in 12 days. See #107.
+      #
+      # The cache is the global packages folder, keyed on every committed lock file.
+      # Nothing in this repo was cached before, so all four jobs re-downloaded the
+      # whole graph on every run — and the macos and ios jobs do it TWICE, because
+      # their "must equal a from-scratch derivation" step restores a second time with
+      # --force-evaluate.
+      #
+      # Keying on '**/packages.lock.json' rather than the csproj files is what makes
+      # this exact rather than approximate: locked mode already pins every resolved
+      # version to those files, so a key derived from them cannot serve a cache that
+      # disagrees with what restore is about to ask for. A lock-file change misses the
+      # cache and repopulates it, which is the correct behaviour.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
 
       # Fail loudly if the locked-mode gate is NOT actually armed. Without this the
       # whole workflow could go green while restores silently ran unlocked — the
@@ -480,9 +510,13 @@ jobs:
       - uses: actions/checkout@v4
 
       # Same pin as every other job — see the comment on the desktop job, and #107.
+      #
+      # Same package cache as the desktop job — see the comment there.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
 
       # No -r, for the reason the ios job gives at length and Directory.Build.props
       # gives at more: an explicit-RID restore REWRITES the lock file to hold only
@@ -910,9 +944,13 @@ jobs:
       # Same pin as the desktop job — see the comment there, and #107. This job is where
       # the drift actually bit: the Android head trims, so it carries the implicit
       # Microsoft.NET.ILLink.Tasks reference whose version the SDK's bundled runtime picks.
+      #
+      # Same package cache as the desktop job — see the comment there.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
 
       # Not preinstalled with the SDK; the Android SDK itself ships on the runner
       # image and is pointed at by ANDROID_HOME.
@@ -1019,9 +1057,13 @@ jobs:
       # Same pin as the other two jobs — see the comment on the desktop job, and #107.
       # It matters more here than anywhere: the SDK band also decides which iOS workload
       # is installed below, and therefore which Xcode this job has to select.
+      #
+      # Same package cache as the desktop job — see the comment there.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
 
       # Mirrors the android job's workload step. Not preinstalled with the SDK, and
       # setup-dotnet installs into its own prefix, so whatever the runner image ships
@@ -1161,10 +1203,52 @@ jobs:
       #
       # --no-restore is load-bearing, not a speed-up: it is what keeps the -r above out
       # of restore, and therefore out of the lock file.
+      #
+      # MtouchUseLlvm=false is a CI-only build-time knob, and it is the single
+      # biggest thing in this workflow. The SDK turns LLVM on for every Release
+      # mobile build (Xamarin.Shared.Sdk.props, 'MtouchUseLlvm == "" And
+      # Configuration == Release And SdkIsMobile'), and the comment sitting directly
+      # above that property says the value "is ignored when using the simulator, so
+      # it doesn't matter if we set it in all cases". That comment is WRONG for this
+      # build, and expensively so: a default simulator build writes
+      # aot-instances.dll.s.bc (61 MB), .s.opt.bc (58 MB) and .llvm.o (30 MB), and
+      # grinding that bitcode through LLVM is 312 of the step's 354 seconds. Do not
+      # re-derive this from the SDK comment; derive it from the files in
+      # obj/.../nativelibraries/aot-output/arm64.
+      #
+      # Measured, clean builds, same machine (rm -rf bin obj on all three projects,
+      # RID-less restore, then this exact command):
+      #     default (LLVM on)        162.7 s
+      #     -p:MtouchUseLlvm=false    43.7 s
+      #
+      # What this does NOT give up, which is the whole reason it is acceptable here:
+      # AOT still runs. The Mono backend still emits aot-instances.dll.o and
+      # System.Private.CoreLib.dll.o; only the LLVM optimisation pipeline is skipped.
+      # Both builds produce 148 warnings and 0 errors, a 136 MB .app, a 254 KB
+      # Assets.car and 6 CFBundleIcon* keys — so the asset-catalogue step below still
+      # asserts the same thing, and the three aot-only walls the csproj documents are
+      # frontend behaviour that LLVM never sees.
+      #
+      # What it DOES give up: LLVM's optimisation of native code this job never runs.
+      # The app binary is 32.7 MB instead of 35.5 MB. This job compiles a simulator
+      # build and throws it away, so that optimisation has no observer.
+      #
+      # Be honest about the cost, because it is the same shape as the one the csproj
+      # already records: CI's configuration now differs from the shipping one on a
+      # SECOND axis (codegen backend, on top of trimming). If an iOS bug ever turns
+      # out to be LLVM-specific, this flag is why CI did not see it — and the fix is
+      # a device build, not switching this back on, because the simulator head is not
+      # the shipping configuration either way.
+      #
+      # On the command line rather than in the csproj deliberately: a local or device
+      # build should keep LLVM. Unlike MtouchInterpreter (see the csproj's comment on
+      # why a -p: there behaves differently from a project property) nothing reads
+      # MtouchUseLlvm before Sdk.props, so a global property is simply honoured.
       - name: Build
         run: |
           dotnet build Daqifi.Avalonia.iOS/Daqifi.Avalonia.iOS.csproj \
-            -c Release -r iossimulator-arm64 --no-restore
+            -c Release -r iossimulator-arm64 --no-restore \
+            -p:MtouchUseLlvm=false
 
       # A second look, because this is the ONLY job that passes -r at all. The check
       # after restore cannot see a lock file rewritten by the build, and the whole point
