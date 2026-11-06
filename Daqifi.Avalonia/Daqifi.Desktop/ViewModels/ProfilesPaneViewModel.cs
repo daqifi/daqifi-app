@@ -49,6 +49,20 @@ public partial class ProfilesPaneViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(HasDrawerError))]
     private string _drawerError = string.Empty;
 
+    /// <summary>
+    /// One short line in the pane's status area saying why the last activation did nothing.
+    /// Empty the rest of the time. <see cref="HasNotice"/> recomputes from this.
+    /// </summary>
+    /// <remarks>
+    /// The drawer is the wrong place for the logging refusal: it cannot be opened while logging
+    /// (its edits are locked), so a click on a dimmed tile used to be answered with nothing at all
+    /// (#520).
+    /// </remarks>
+    // Downstream-only: no upstream counterpart.
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasNotice))]
+    private string _notice = string.Empty;
+
     /// <summary>Name of the currently active profile (null when none is active).</summary>
     [ObservableProperty] private string? _activeProfileName;
 
@@ -69,6 +83,18 @@ public partial class ProfilesPaneViewModel : ObservableObject
     /// </summary>
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.HasDrawerError
     public bool HasDrawerError => !string.IsNullOrEmpty(DrawerError);
+
+    /// <summary>True when <see cref="Notice"/> has something to say.</summary>
+    // Downstream-only: no upstream counterpart.
+    public bool HasNotice => !string.IsNullOrEmpty(Notice);
+
+    /// <summary>What the pane says when a profile is clicked while logging is on.</summary>
+    // Downstream-only: no upstream counterpart.
+    public const string LoggingActiveNotice = "Stop logging to change the active profile.";
+
+    /// <summary>What the drawer says when a matched device has none of the profile's channels.</summary>
+    // Downstream-only: no upstream counterpart.
+    public const string NoChannelsMatchedMessage = "None of this profile's channels exist on the connected devices.";
 
     /// <summary>Live view of the saved profiles backed by <see cref="LoggingManager"/>.</summary>
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.Profiles
@@ -166,7 +192,11 @@ public partial class ProfilesPaneViewModel : ObservableObject
     private void OnLoggingManagerPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(LoggingManager.Active))
+        {
             IsLoggingActive = LoggingManager.Instance.Active;
+            // The logging refusal stops being true the moment logging stops.
+            if (!IsLoggingActive) Notice = string.Empty;
+        }
     }
 
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.OnNewProfileNameChanged
@@ -266,13 +296,17 @@ public partial class ProfilesPaneViewModel : ObservableObject
     private async Task ActivateProfile(Profile? profile)
     {
         if (profile == null) return;
+        Notice = string.Empty;
 
         if (LoggingManager.Instance.Active)
         {
-            // Silent no-op: the status bar shows LOGGING · LOCKED; tiles are
-            // dimmed with a "no" cursor. Opening the drawer to show this error
-            // would contradict the gear button, which is silently blocked.
+            // Not by opening the drawer: it cannot be opened while logging, and opening it here
+            // would contradict the gear button. The status line says why instead. This used to be
+            // a breadcrumb and nothing else, so a click mid-session looked like a broken profile
+            // (#520).
             _logger.AddBreadcrumb("profile", "Blocked activate while logging active");
+            Notice = LoggingActiveNotice;
+            if (IsDrawerOpen) DrawerError = LoggingActiveNotice;
             return;
         }
 
@@ -292,6 +326,15 @@ public partial class ProfilesPaneViewModel : ObservableObject
         if (newMatches.Count == 0)
         {
             ShowError(profile, "No connected devices match this profile.");
+            return;
+        }
+
+        // A matched device that has none of the profile's channels (a different model, or names
+        // from another firmware) would be cleared and given nothing while the tile said ACTIVE.
+        // Refuse before anything is touched, including the profile that is active now.
+        if (NamesChannels(profile) && !newMatches.Any(m => ResolveChannels(m.Key, m.Value).Count > 0))
+        {
+            ShowError(profile, NoChannelsMatchedMessage);
             return;
         }
 
@@ -358,8 +401,8 @@ public partial class ProfilesPaneViewModel : ObservableObject
 
     /// <summary>
     /// Apply the channel + frequency intent of a profile to its matched devices.
-    /// When <paramref name="activate"/> is true, sets the streaming frequency,
-    /// adds the profile's active channels, and subscribes them. When false,
+    /// When <paramref name="activate"/> is true, clears whatever the device has on, then sets the
+    /// streaming frequency, adds the profile's active channels, and subscribes them. When false,
     /// unsubscribes the profile's channels first, then removes all channels
     /// from the matched devices. Flips <see cref="Profile.IsProfileActive"/> last.
     /// </summary>
@@ -369,6 +412,14 @@ public partial class ProfilesPaneViewModel : ObservableObject
     /// <see cref="LoggingManager.Unsubscribe"/> only removes channels whose
     /// <c>IsActive</c> is still true. Calling Unsubscribe after RemoveAllChannels
     /// would leave stale subscriptions behind.
+    /// <para>
+    /// Activation clears first because a profile is the device's whole channel set, not an
+    /// addition to it (#520). <see cref="AbstractStreamingDevice.AddChannels"/> writes the ADC
+    /// enable as one whole mask built only from the channels it is given, so on its own it
+    /// switched the board to exactly the profile's analog inputs while every channel the user had
+    /// on before stayed active and subscribed in the app: the Channels pane, the plot and the
+    /// logger all still showed channels the board had just been told to stop sending.
+    /// </para>
     /// </remarks>
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.ApplyProfileToDevices
     private void ApplyProfileToDevices(
@@ -378,16 +429,15 @@ public partial class ProfilesPaneViewModel : ObservableObject
     {
         foreach (var (pd, device) in matches)
         {
-            var channels = pd.Channels
-                .Where(c => c.IsChannelActive)
-                .Select(c => device.DataChannels.FirstOrDefault(x =>
-                    x.Name == c.Name.Trim() && x.TypeString == c.Type.Trim()))
-                .Where(c => c != null)
-                .Cast<IChannel>()
-                .ToList();
+            var channels = ResolveChannels(pd, device);
 
             if (activate)
             {
+                // Same order as the deactivate branch below, for the same reason.
+                foreach (var ch in device.DataChannels.Where(c => c.IsActive).ToList())
+                    LoggingManager.Instance.Unsubscribe(ch);
+                device.RemoveAllChannels();
+
                 device.StreamingFrequency = pd.SamplingFrequency;
                 device.AddChannels(channels);
                 foreach (var ch in channels) LoggingManager.Instance.Subscribe(ch);
@@ -406,6 +456,22 @@ public partial class ProfilesPaneViewModel : ObservableObject
         _logger.AddBreadcrumb("profile",
             $"Profile {(activate ? "activated" : "deactivated")}: {profile.Name}");
     }
+
+    /// <summary>The connected device's channels that a profile entry switches on.</summary>
+    // Downstream-only: extracted from ApplyProfileToDevices so activation can check it first.
+    private static List<IChannel> ResolveChannels(ProfileDevice pd, IStreamingDevice device) =>
+        pd.Channels
+            .Where(c => c.IsChannelActive)
+            .Select(c => device.DataChannels.FirstOrDefault(x =>
+                x.Name == c.Name.Trim() && x.TypeString == c.Type.Trim()))
+            .Where(c => c != null)
+            .Cast<IChannel>()
+            .ToList();
+
+    /// <summary>Whether the profile switches on any channel at all, on any device.</summary>
+    // Downstream-only: no upstream counterpart.
+    private static bool NamesChannels(Profile profile) =>
+        profile.Devices.Any(d => d.Channels.Any(c => c.IsChannelActive));
     #endregion
 
     #region Confirm Overlay

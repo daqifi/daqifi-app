@@ -373,6 +373,14 @@
                                        FontSize="9" FontWeight="Bold"
                                        Foreground="{DynamicResource StatusAmber}"/>
                         </Border>
+                        <!-- Downstream-only (#520): why the last tile click did nothing. -->
+                        <TextBlock Text="{Binding Notice}"
+                                   IsVisible="{Binding HasNotice}"
+                                   AutomationProperties.AutomationId="ProfileNotice"
+                                   FontSize="10" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource StatusAmber}"
+                                   VerticalAlignment="Center"
+                                   Margin="12,0,0,0"/>
                     </StackPanel>
                     <Button Grid.Column="1"
                             Theme="{StaticResource PillButton}"
