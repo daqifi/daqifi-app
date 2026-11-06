@@ -20,8 +20,6 @@ using Daqifi.Desktop.ViewModels;
 using EFCore.BulkExtensions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using Optris.Icons.Avalonia;
-using Optris.Icons.Avalonia.MaterialDesign;
 using OxyPlot;
 using OxyPlot.Axes;
 using OxyPlot.Series;
@@ -95,7 +93,7 @@ internal static class HeadlessBench
             File.WriteAllText(Path.Combine(_out, "results.jsonl"), "");
             Environment.SetEnvironmentVariable("DAQIFI_TEST_MODE", "1");
             Environment.SetEnvironmentVariable("DAQIFI_DATA_DIR", Path.Combine(_out, "appdata"));
-            IconProvider.Current.Register<MaterialDesignIconProvider>();
+            Daqifi.Avalonia.Services.AppIcons.EnsureRegistered();
         }
         catch (Exception ex)
         {

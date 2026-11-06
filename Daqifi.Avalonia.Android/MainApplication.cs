@@ -3,8 +3,6 @@ using Android.Runtime;
 using Avalonia;
 using Avalonia.Android;
 using Daqifi.Avalonia.Services;
-using Optris.Icons.Avalonia;
-using Optris.Icons.Avalonia.MaterialDesign;
 
 namespace Daqifi.Avalonia.Android;
 
@@ -68,7 +66,7 @@ public class MainApplication : AvaloniaAndroidApplication<App>
     {
         // Register the Material Design icon pack so `i:Icon` (the desktop nav rail's mdi-* glyphs,
         // reused by the mobile landscape shell) renders on Android too.
-        IconProvider.Current.Register<MaterialDesignIconProvider>();
+        Daqifi.Avalonia.Services.AppIcons.EnsureRegistered();
         return base.CustomizeAppBuilder(builder)
             .WithInterFont();
     }

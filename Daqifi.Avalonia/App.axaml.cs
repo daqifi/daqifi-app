@@ -13,6 +13,8 @@ public partial class App : Application
 {
     public override void Initialize()
     {
+        // Before any view loads: every window uses these icons, whichever host started it.
+        Services.AppIcons.EnsureRegistered();
         AvaloniaXamlLoader.Load(this);
     }
 
