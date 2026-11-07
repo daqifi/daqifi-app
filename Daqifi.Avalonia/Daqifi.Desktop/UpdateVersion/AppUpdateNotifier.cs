@@ -24,6 +24,9 @@ public enum UpdateBlocker
 
     /// <summary>Logged data is being imported from a file, or sessions are being deleted.</summary>
     LoggedDataBusy,
+
+    /// <summary>A profile is open for editing. Its changes are saved only when the editor closes.</summary>
+    ProfileBeingEdited,
 }
 
 /// <summary>
@@ -205,6 +208,7 @@ public sealed class AppUpdateNotifier
                 UpdateBlocker.OtherWindowOpen => "when DAQiFi's other windows are closed",
                 UpdateBlocker.SdCardTransfer => "when the SD card transfer finishes",
                 UpdateBlocker.LoggedDataBusy => "when the import or delete finishes",
+                UpdateBlocker.ProfileBeingEdited => "when the profile editor is closed",
                 _ => null,
             };
             if (own is not null) { return own; }

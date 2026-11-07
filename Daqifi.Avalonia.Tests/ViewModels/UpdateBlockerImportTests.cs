@@ -30,4 +30,33 @@ public class UpdateBlockerImportTests
         viewModel.IsImportingPreviousSessions = false;
         Assert.Equal(UpdateBlocker.None, viewModel.CurrentUpdateBlocker());
     }
+
+    /// <summary>
+    /// An open profile editor saves only when it closes, so the restart would lose the edit.
+    /// The update waits for it, and a pane that goes away with its editor open releases it.
+    /// </summary>
+    [Fact]
+    public void OpenProfileEditor_HoldsTheUpdate_UntilItClosesOrThePaneGoes()
+    {
+        var viewModel = NewViewModel();
+        var pane = new ProfilesPaneViewModel();
+        var other = new ProfilesPaneViewModel();
+        try
+        {
+            pane.IsDrawerOpen = true;
+            other.IsDrawerOpen = true;
+            Assert.Equal(UpdateBlocker.ProfileBeingEdited, viewModel.CurrentUpdateBlocker());
+
+            pane.IsDrawerOpen = false;
+            Assert.Equal(UpdateBlocker.ProfileBeingEdited, viewModel.CurrentUpdateBlocker());
+
+            other.Cleanup();
+            Assert.Equal(UpdateBlocker.None, viewModel.CurrentUpdateBlocker());
+        }
+        finally
+        {
+            pane.Cleanup();
+            other.Cleanup();
+        }
+    }
 }

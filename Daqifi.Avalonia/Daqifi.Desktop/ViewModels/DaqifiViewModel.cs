@@ -2427,6 +2427,13 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             return UpdateBlocker.LoggedDataBusy;
         }
 
+        // A profile editor is in the main window too. Closing it is what saves the edit, so the
+        // restart would discard it (#503 audit).
+        if (ProfilesPaneViewModel.IsAnyEditorOpen)
+        {
+            return UpdateBlocker.ProfileBeingEdited;
+        }
+
         // Anything else long-running (an export, a firmware or connection dialog) runs in a window
         // of its own. Listing each operation would always miss the next one, so any open window
         // besides the main one blocks the install.
