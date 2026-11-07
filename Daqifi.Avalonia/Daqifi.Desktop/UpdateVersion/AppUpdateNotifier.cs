@@ -51,6 +51,7 @@ public sealed class AppUpdateNotifier
     private readonly Action<Notifications?> _show;
     private readonly IAppLogger _logger;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+    private readonly UpdateAttemptMarker? _attempts;
     private CancellationTokenSource? _installing;
     private bool _checkFailureLogged;
 
@@ -60,13 +61,15 @@ public sealed class AppUpdateNotifier
     /// <param name="show">Shows the update's notification in place of the previous one; <c>null</c> removes it. May be called from any thread.</param>
     /// <param name="logger">Where failures are recorded.</param>
     /// <param name="delay">Waits between checks while the update waits; <see cref="Task.Delay(TimeSpan, CancellationToken)"/> unless a test supplies one.</param>
+    /// <param name="attempts">Where the version being installed is remembered across the restart, so a copy that comes back without it can say so.</param>
     public AppUpdateNotifier(
         IAppUpdateService service,
         Func<UpdateBlocker> blocker,
         Func<string, string, Task<bool>> confirm,
         Action<Notifications?> show,
         IAppLogger logger,
-        Func<TimeSpan, CancellationToken, Task>? delay = null)
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        UpdateAttemptMarker? attempts = null)
     {
         _service = service;
         _blocker = blocker;
@@ -74,6 +77,7 @@ public sealed class AppUpdateNotifier
         _show = show;
         _logger = logger;
         _delay = delay ?? Task.Delay;
+        _attempts = attempts;
     }
 
     /// <summary>
@@ -98,9 +102,18 @@ public sealed class AppUpdateNotifier
             return null;
         }
 
+        // Taken only after a check that worked: offline, the next check can still tell.
+        var attempted = _attempts?.Take();
         if (offer is null) { return null; }
 
-        var notification = Offer(offer, $"DAQiFi {offer.Version} is available.", "Install and restart");
+        // The same version still on offer means the last install did not happen. On an install for
+        // all users that is nearly always the administrator prompt: cancelled, or no one there who
+        // can approve it.
+        var notification = attempted != offer.Version
+            ? Offer(offer, $"DAQiFi {offer.Version} is available.", "Install and restart")
+            : Offer(offer, _service.ApplyNeedsElevation
+                ? $"DAQiFi {offer.Version} wasn't installed. An administrator must approve the update."
+                : $"DAQiFi {offer.Version} wasn't installed.", "Try again");
         _show(notification);
         return notification;
     }
@@ -167,6 +180,7 @@ public sealed class AppUpdateNotifier
         // is not seen here, and the updater closes it once the prompt is approved.
         try
         {
+            _attempts?.Remember(offer.Version);
             _service.ApplyAndRestart(offer);
         }
         catch (Exception ex)

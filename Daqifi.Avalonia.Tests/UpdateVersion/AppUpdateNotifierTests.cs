@@ -70,6 +70,8 @@ public class AppUpdateNotifierTests
 
         private AppUpdateNotifier? _notifier;
 
+        public UpdateAttemptMarker? Attempts { get; init; }
+
         public Harness() => BlockerSource = () => Blocker;
 
         public AppUpdateNotifier Notifier => _notifier ??= new(
@@ -85,7 +87,8 @@ public class AppUpdateNotifierTests
                 OnDelay?.Invoke(Delays);
                 if (Delays > 1000) { throw new InvalidOperationException("waited forever"); }
                 return token.IsCancellationRequested ? Task.FromCanceled(token) : Task.CompletedTask;
-            });
+            },
+            Attempts);
 
         public Notifications Last => Shown.Last() ?? throw new InvalidOperationException("removed");
         public List<string> Messages => Shown.Select(n => n?.Message ?? "").ToList();
@@ -477,6 +480,74 @@ public class AppUpdateNotifierTests
         Assert.Equal("Couldn't install the update.", h.Last.Message);
         Assert.Equal("Try again", h.Last.ActionText);
         Assert.Single(h.Logger.Errors);
+    }
+
+    private static UpdateAttemptMarker TempMarker() =>
+        new(Path.Combine(Path.GetTempPath(), $"daqifi-update-attempt-{Guid.NewGuid():N}", "update-attempt"));
+
+    /// <summary>
+    /// Installing restarts the app through the updater. When the administrator prompt is cancelled
+    /// the old version comes back as a new process, which used to offer the same update with no
+    /// word of why. It now says the update wasn't installed and what it needs.
+    /// </summary>
+    [Fact]
+    public async Task CancelledAllUsersInstall_SaysWhyOnTheNextStart()
+    {
+        var marker = TempMarker();
+        var before = new Harness { Attempts = marker };
+        before.Service.ApplyNeedsElevation = true;
+        await before.Notifier.InstallAsync(before.Service.Offer!);
+        Assert.Equal(1, before.Service.Applies);
+
+        // The copy that starts again: same version, so the same update is on offer.
+        var after = new Harness { Attempts = marker };
+        after.Service.ApplyNeedsElevation = true;
+        var shown = await after.Notifier.CheckAsync();
+
+        Assert.Equal("DAQiFi 3.4.0 wasn't installed. An administrator must approve the update.", shown!.Message);
+        Assert.Equal("Try again", shown.ActionText);
+
+        // Said once: the next start is back to the plain offer.
+        var later = new Harness { Attempts = marker };
+        Assert.Equal("DAQiFi 3.4.0 is available.", (await later.Notifier.CheckAsync())!.Message);
+    }
+
+    [Fact]
+    public async Task InstallThatWorked_ForgetsTheAttempt_Silently()
+    {
+        var marker = TempMarker();
+        marker.Remember("3.4.0");
+
+        var current = new Harness { Attempts = marker };
+        current.Service.Offer = null;
+        Assert.Null(await current.Notifier.CheckAsync());
+        Assert.Null(marker.Take());
+
+        marker.Remember("3.4.0");
+        var newer = new Harness { Attempts = marker };
+        newer.Service.Offer = new("3.5.0", "Notes");
+        Assert.Equal("DAQiFi 3.5.0 is available.", (await newer.Notifier.CheckAsync())!.Message);
+    }
+
+    /// <summary>Offline, the check says nothing, so the attempt is kept for one that can.</summary>
+    [Fact]
+    public async Task FailedCheck_KeepsTheAttempt()
+    {
+        var marker = TempMarker();
+        marker.Remember("3.4.0");
+        var offline = new Harness { Attempts = marker };
+        offline.Service.CheckFailure = new HttpRequestException("offline");
+
+        Assert.Null(await offline.Notifier.CheckAsync());
+        Assert.Equal("3.4.0", marker.Take());
+    }
+
+    [Fact]
+    public void Marker_ThatCannotBeWritten_NeverThrows()
+    {
+        var marker = new UpdateAttemptMarker(Path.Combine(Path.GetTempPath(), "\0bad", "update-attempt"));
+        marker.Remember("3.4.0");
+        Assert.Null(marker.Take());
     }
 
     [Theory]

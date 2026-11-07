@@ -2464,7 +2464,8 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             },
             // Download progress arrives on a background thread.
             notice => Dispatcher.UIThread.Post(() => ShowUpdateNotice(notice)),
-            _appLogger);
+            _appLogger,
+            attempts: new UpdateAttemptMarker(Path.Combine(Daqifi.Desktop.Common.AppDataPaths.DataDirectory, "update-attempt")));
 
         await notifier.CheckAsync();
     }
