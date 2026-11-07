@@ -16,6 +16,12 @@
           "Avalonia.X11": "12.1.5"
         }
       },
+      "Velopack": {
+        "type": "Direct",
+        "requested": "[1.3.39-g8d2844f, )",
+        "resolved": "1.3.39-g8d2844f",
+        "contentHash": "0RljDRJznUT4yaAybkb67Q+6/VEMa6oPFGDLwc8wKb/Vf0f5pVqLJlCIkRByJzqHEtmpLVyNjzhPyRV/jYvuqQ=="
+      },
       "Avalonia": {
         "type": "Transitive",
         "resolved": "12.1.5",
