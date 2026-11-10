@@ -512,6 +512,12 @@ captures once and verifies against the one for the current host, failing on a ch
 screen, a missing one, and one the baseline does not list (`shasum -c` only checks the
 names it was given, so the extra-file direction is checked separately).
 
+`dialog-firmware-close-refused` was added 2026-11-10 (macOS 26.5, Apple silicon, .NET SDK
+10.0.302) for #539. It is a new line, not a re-record: the other thirty-nine hashes are
+unchanged, `dialog-firmware-uploading` among them, although the scrim it shows gained a row
+for the notice. That row is `Auto` and the notice is hidden until a close is refused, so the
+scrim lays out as before. Five `--determinism` runs agreed on all forty screens.
+
 The five **portrait** mobile screens were re-recorded 2026-10-29 (macOS 26.5 / 25F71, Apple
 silicon, .NET SDK 10.0.302) for #361, which takes the theme's 11px-a-side button padding off
 the portrait bottom-nav buttons and carries their labels as `TextBlock`s that wrap and trim.
