@@ -24,7 +24,10 @@ namespace Daqifi.Avalonia.Tests;
 /// <para>
 /// Only classes that touch <c>ConnectionManager.Instance</c> belong here. Classes that construct
 /// their own <c>ConnectionManager</c> (such as <c>ConnectionManagerTeardownTests</c>) share no state
-/// and must stay outside it.
+/// and must stay outside it. The one exception is a class that shares a DIFFERENT process-wide
+/// static with a member: <c>MobileShellWiFiDiscoveryTests</c> is here because it and
+/// <c>MobileShellDiscoveryAfterConnectTests</c> both replace <c>NetworkDiscoveryScope.Current</c>, and
+/// xUnit can serialise two classes only by putting them in one collection.
 /// </para>
 /// </summary>
 [CollectionDefinition(Name, DisableParallelization = true)]

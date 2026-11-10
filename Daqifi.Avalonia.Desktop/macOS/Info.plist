@@ -11,7 +11,7 @@
     Keys are here only if they do something for THIS app. Notably absent, deliberately:
 
       NSBonjourServices          - discovery is a subnet-directed UDP broadcast sweep on
-                                   port 30303 (Services/NativeWiFiDiscovery.cs), not mDNS,
+                                   port 30303 (Core WiFiDeviceFinder), not mDNS,
                                    so there is no service type to declare.
       LSApplicationCategoryType  - App Store metadata only, and this bundle is not signed
                                    or submitted to anything (see #109).
