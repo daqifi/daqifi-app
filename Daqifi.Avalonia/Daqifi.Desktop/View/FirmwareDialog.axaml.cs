@@ -5,6 +5,7 @@
 
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Daqifi.Desktop.ViewModels;
 
 namespace Daqifi.Desktop.View;
 
