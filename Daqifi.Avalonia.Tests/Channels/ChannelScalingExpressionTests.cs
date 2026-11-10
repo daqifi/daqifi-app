@@ -219,31 +219,105 @@ public class ChannelScalingExpressionTests
         Assert.Equal(0.5, Push(channel, 1.0), precision: 10);
     }
 
-    // ---- The non-finite guard ---------------------------------------------------------------
+    // ---- A sample the expression cannot scale (#540) ----------------------------------------
+    //
+    // A valid expression can still have no finite answer for one input: Sqrt of a negative noise
+    // sample, Ln of zero, 1 / x at x = 0. NCalc returns NaN or Infinity for those WITHOUT
+    // throwing, and an expression can also throw for some inputs only. Neither value may reach
+    // the plot or the exported data. Before #540 the channel kept the RAW value for that sample
+    // and switched scaling off for the rest of the session, so one data file held scaled values
+    // followed by raw ones in the same column, with no mark at the change.
 
-    [Theory]
-    [InlineData("x / 0", 1.0)]
-    [InlineData("x / (x - x)", 1.0)]
-    public void A_non_finite_result_keeps_the_raw_value_and_switches_scaling_off(string expression, double raw)
+    /// <summary>
+    /// The values a logger would record: what <see cref="AbstractChannel.OnChannelUpdated"/> hands
+    /// on, which is the event <c>LoggingManager.HandleChannelUpdate</c> fans out to the database,
+    /// the plot and the summary.
+    /// </summary>
+    private static List<double> RecordedValuesOf(AbstractChannel channel)
     {
-        // A float divide-by-zero yields Infinity or NaN *without* throwing, so this is caught by
-        // the finiteness check rather than the catch block. Either way Infinity/NaN must never
-        // reach the plot or the exported data.
-        var channel = Scaled(expression);
-        Assert.True(channel.HasValidExpression);
-
-        Assert.Equal(raw, Push(channel, raw));
-        Assert.False(channel.HasValidExpression);
+        var recorded = new List<double>();
+        channel.OnChannelUpdated += (_, sample) => recorded.Add(sample.Value);
+        return recorded;
     }
 
     [Fact]
-    public void Scaling_stays_off_for_every_later_sample_once_it_has_been_switched_off()
+    public void A_sample_with_no_valid_result_is_not_recorded_and_scaling_stays_on()
     {
-        var channel = Scaled("x / 0");
-        Push(channel, 1.0);
+        // The exact case from the issue: Sqrt(x) over 4, -1, 9.
+        var channel = Scaled("Sqrt(x)");
+        var recorded = RecordedValuesOf(channel);
 
-        Assert.Equal(5.0, Push(channel, 5.0));
-        Assert.False(channel.HasValidExpression);
+        Push(channel, 4.0);
+        Push(channel, -1.0);
+        Push(channel, 9.0);
+
+        Assert.Equal([2.0, 3.0], recorded);
+        Assert.True(channel.HasValidExpression);
+    }
+
+    [Theory]
+    [InlineData("x / 0")]
+    [InlineData("x / (x - x)")]
+    [InlineData("Ln(x - x)")]
+    public void No_non_finite_value_and_no_raw_value_is_ever_recorded(string expression)
+    {
+        // Every one of these is non-finite for every input, so nothing at all is recorded: not
+        // the NaN or Infinity (which would poison the plot and the export), and not the raw value
+        // either (which would be a number in the wrong unit).
+        var channel = Scaled(expression);
+        var recorded = RecordedValuesOf(channel);
+
+        Push(channel, 1.0);
+        Push(channel, 5.0);
+
+        Assert.Empty(recorded);
+        Assert.True(channel.HasValidExpression);
+    }
+
+    [Fact]
+    public void An_expression_that_throws_for_every_sample_records_nothing()
+    {
+        // Validation evaluates with x = 1, where this returns a number, so it is accepted. For any
+        // x above 1 it returns a string, and Convert.ToDouble throws on it — the catch path, not
+        // the finiteness check.
+        var channel = Scaled("if(x > 1, 'not a number', x)");
+        Assert.True(channel.HasValidExpression);
+        var recorded = RecordedValuesOf(channel);
+
+        Push(channel, 2.0);
+        Push(channel, 3.0);
+
+        Assert.Empty(recorded);
+        Assert.True(channel.HasValidExpression);
+    }
+
+    [Fact]
+    public void A_dropped_sample_does_not_replace_the_last_good_sample()
+    {
+        // The live tile reads ActiveSample. A dropped sample must leave the last scaled reading in
+        // place — the same thing the ingest guard for a non-finite device reading does (#295) —
+        // rather than show the raw value in scaled units.
+        var channel = Scaled("Sqrt(x)");
+        var good = new DataSample { Value = 16.0 };
+        channel.ActiveSample = good;
+
+        channel.ActiveSample = new DataSample { Value = -1.0 };
+
+        Assert.Same(good, channel.ActiveSample);
+        Assert.Equal(4.0, channel.ActiveSample!.Value);
+    }
+
+    [Fact]
+    public void Scaling_continues_after_a_sample_with_no_valid_result()
+    {
+        var channel = Scaled("x / (x - 1)");
+
+        Push(channel, 1.0); // 1 / 0: Infinity, dropped
+
+        // Inputs whose scaled value differs from the raw one, so "scaling still runs" and
+        // "scaling switched off" cannot both pass (x = 2 would: 2 / (2 - 1) is 2).
+        Assert.Equal(1.5, Push(channel, 3.0));
+        Assert.Equal(1.25, Push(channel, 5.0));
     }
 
     // ---- The bounds on what reaches the parser (#311) ----------------------------------------
