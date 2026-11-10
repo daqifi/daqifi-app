@@ -299,8 +299,9 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     /// through its <c>DeviceDiscovered</c> event as each reply arrives, so the
     /// caller dedupes across passes.
     /// <para>
-    /// A pass that ends because its own window closed is a normal pass. Only
-    /// <paramref name="token"/> ends the loop, with <see cref="OperationCanceledException"/>.
+    /// A pass that ends because its own window closed is a normal pass, even when the finder
+    /// reports it as a cancellation. Only <paramref name="token"/> ends the loop, with
+    /// <see cref="OperationCanceledException"/>.
     /// </para>
     /// </remarks>
     internal static async Task RunDiscoveryPassesAsync(
@@ -316,10 +317,11 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
                 {
                     await finder.DiscoverAsync(pass.Token).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (!token.IsCancellationRequested)
+                catch (OperationCanceledException)
                 {
-                    // The pass window closed before the finder returned. That is a pass that
-                    // found nothing, not a stop.
+                    // The pass window closed before the finder returned: a pass that found
+                    // nothing, not a stop. A real stop is not lost here: the pause below and the
+                    // check at the top of the loop both throw on the cancelled token.
                 }
             }
 
