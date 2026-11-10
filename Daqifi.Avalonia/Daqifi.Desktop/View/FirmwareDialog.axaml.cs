@@ -20,6 +20,22 @@ public partial class FirmwareDialog : Window
         InitializeComponent();
     }
 
+    /// <summary>
+    /// Keeps the window open while an upload is in progress (issue #539). This covers every close
+    /// that Avalonia lets a window refuse: the title-bar button, the owner window closing, and an
+    /// application or OS shutdown request. A refused close of this window also refuses the close of
+    /// its owners. Only a forced shutdown ignores the refusal, and that ends the process.
+    /// </summary>
+    protected override void OnClosing(WindowClosingEventArgs e)
+    {
+        if (DataContext is FirmwareDialogViewModel viewModel && viewModel.RefuseCloseDuringUpload())
+        {
+            e.Cancel = true;
+        }
+
+        base.OnClosing(e);
+    }
+
     // @port: Daqifi.Desktop.View.FirmwareDialog.btnCancel_Click
     private void btnCancel_Click(object sender, RoutedEventArgs e)
     {

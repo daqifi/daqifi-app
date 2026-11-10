@@ -316,6 +316,7 @@ desktop and mobile phases, and captures one PNG per seeded state:
 | `dialog-export-configure` | the export dialog's configuration form |
 | `dialog-export-failed` | its result state with `ExportSucceeded` false |
 | `dialog-firmware-uploading` | the bootloader dialog's upload scrim and its Cancel button (#241) |
+| `dialog-firmware-close-refused` | the same dialog after `Close()` mid-upload: the window stays open and says why (#539) |
 
 ### Adding one
 
