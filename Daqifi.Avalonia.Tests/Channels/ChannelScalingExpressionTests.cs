@@ -320,6 +320,194 @@ public class ChannelScalingExpressionTests
         Assert.Equal(1.25, Push(channel, 5.0));
     }
 
+    /// <summary>
+    /// How many times <see cref="AbstractChannel.ScaleResultsRejected"/> fired for
+    /// <paramref name="channel"/> while <paramref name="act"/> ran. The event is static, so the
+    /// count is filtered to this channel instance: other tests running in parallel raise it too.
+    /// </summary>
+    private static int NotificationsRaisedFor(AbstractChannel channel, Action act)
+    {
+        var raised = 0;
+        void Handler(AbstractChannel source)
+        {
+            if (ReferenceEquals(source, channel)) { Interlocked.Increment(ref raised); }
+        }
+
+        AbstractChannel.ScaleResultsRejected += Handler;
+        try
+        {
+            act();
+        }
+        finally
+        {
+            AbstractChannel.ScaleResultsRejected -= Handler;
+        }
+
+        return raised;
+    }
+
+    [Fact]
+    public void Many_bad_samples_in_one_session_raise_one_notification()
+    {
+        var channel = Scaled("Sqrt(x)");
+
+        var raised = NotificationsRaisedFor(channel, () =>
+        {
+            for (var i = 0; i < 50; i++)
+            {
+                Push(channel, -1.0);
+                Push(channel, 4.0);
+            }
+        });
+
+        Assert.Equal(1, raised);
+        Assert.Equal(50, channel.RejectedScaleResultCount);
+    }
+
+    [Fact]
+    public void An_expression_that_throws_for_every_sample_raises_one_notification()
+    {
+        var channel = Scaled("if(x > 1, 'not a number', x)");
+
+        var raised = NotificationsRaisedFor(channel, () =>
+        {
+            Push(channel, 2.0);
+            Push(channel, 3.0);
+            Push(channel, 4.0);
+        });
+
+        Assert.Equal(1, raised);
+        Assert.Equal(3, channel.RejectedScaleResultCount);
+    }
+
+    [Fact]
+    public void A_good_sample_raises_no_notification_and_counts_nothing()
+    {
+        // The guard on the event: without this, "fires once" could be met by firing on the first
+        // sample of every session whatever its result.
+        var channel = Scaled("Sqrt(x)");
+
+        var raised = NotificationsRaisedFor(channel, () =>
+        {
+            Push(channel, 4.0);
+            Push(channel, 9.0);
+        });
+
+        Assert.Equal(0, raised);
+        Assert.Equal(0, channel.RejectedScaleResultCount);
+        Assert.False(channel.HasRejectedScaleResults);
+        Assert.Equal(string.Empty, channel.RejectedScaleResultsMessage);
+    }
+
+    [Fact]
+    public void A_new_session_counts_again_and_notifies_again()
+    {
+        // The device calls ResetRejectedScaleResults for every channel when streaming starts.
+        var channel = Scaled("Sqrt(x)");
+
+        var raised = NotificationsRaisedFor(channel, () =>
+        {
+            Push(channel, -1.0);
+            Push(channel, -1.0);
+            channel.ResetRejectedScaleResults();
+            Assert.Equal(0, channel.RejectedScaleResultCount);
+            Assert.False(channel.HasRejectedScaleResults);
+            Push(channel, -1.0);
+        });
+
+        Assert.Equal(2, raised);
+        Assert.Equal(1, channel.RejectedScaleResultCount);
+    }
+
+    [Fact]
+    public void A_new_expression_starts_a_new_count()
+    {
+        var channel = Scaled("Sqrt(x)");
+        Push(channel, -1.0);
+        Assert.True(channel.HasRejectedScaleResults);
+
+        channel.ScaleExpression = "x * 2";
+
+        Assert.False(channel.HasRejectedScaleResults);
+        Assert.Equal(0, channel.RejectedScaleResultCount);
+    }
+
+    [Fact]
+    public void Scaling_switched_off_drops_nothing_and_counts_nothing()
+    {
+        // With scaling off the raw value IS the right value, in raw units, so it is recorded.
+        var channel = new ScalingChannel { ScaleExpression = "Sqrt(x)" };
+        channel.IsScalingActive = false;
+        var recorded = RecordedValuesOf(channel);
+
+        Push(channel, -1.0);
+
+        Assert.Equal([-1.0], recorded);
+        Assert.False(channel.HasRejectedScaleResults);
+    }
+
+    [Fact]
+    public void The_drawer_says_how_many_samples_were_dropped_and_not_invalid_expression()
+    {
+        var channel = Scaled("Sqrt(x)");
+
+        Push(channel, -1.0);
+        Assert.Equal("NO VALID RESULT FOR 1 SAMPLE. THE APP DID NOT RECORD IT.", channel.RejectedScaleResultsMessage);
+
+        Push(channel, -2.0);
+        Push(channel, -3.0);
+        Assert.Equal("NO VALID RESULT FOR 3 SAMPLES. THE APP DID NOT RECORD THEM.", channel.RejectedScaleResultsMessage);
+
+        // INVALID EXPRESSION is shown only while HasValidExpression is false, and it stays true.
+        Assert.True(channel.HasValidExpression);
+        Assert.True(channel.HasRejectedScaleResults);
+    }
+
+    [Fact]
+    public void The_drawer_label_updates_as_samples_are_dropped()
+    {
+        // Bindings see the count only through change notification.
+        var channel = Scaled("Sqrt(x)");
+        var raised = new List<string?>();
+        channel.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        Push(channel, -1.0);
+        Push(channel, -1.0);
+
+        Assert.Equal(2, raised.Count(name => name == nameof(AbstractChannel.RejectedScaleResultsMessage)));
+        Assert.Equal(1, raised.Count(name => name == nameof(AbstractChannel.HasRejectedScaleResults)));
+    }
+
+    [Fact]
+    public void The_notification_names_the_channel()
+    {
+        var channel = Scaled("Sqrt(x)");
+
+        Assert.Equal(
+            "Channel AI0: the scale expression gave no valid result for some samples. " +
+            "The app did not record those samples.",
+            channel.RejectedScaleResultsNotification);
+    }
+
+    [Fact]
+    public void The_dropped_sample_label_is_bound_on_both_heads()
+    {
+        // The desktop view binds by reflection, so a renamed member would leave the label blank
+        // with a green build. Both heads bind SelectedChannel, typed IChannel, so the members must
+        // be on the interface too.
+        const string desktop = "Daqifi.Avalonia/Daqifi.Desktop/View/Prototype/ChannelsPanePrototype.axaml";
+        const string mobile = "Daqifi.Avalonia/Views/Mobile/ChannelsMobileView.axaml";
+
+        foreach (var view in new[] { desktop, mobile })
+        {
+            BindingFacts.AssertBinds(view, "Text=\"{Binding SelectedChannel.RejectedScaleResultsMessage}\"");
+            BindingFacts.AssertBinds(view, "SelectedChannel.HasRejectedScaleResults");
+        }
+
+        BindingFacts.AssertExposes(typeof(IChannel), nameof(IChannel.RejectedScaleResultsMessage));
+        BindingFacts.AssertExposes(typeof(IChannel), nameof(IChannel.HasRejectedScaleResults));
+    }
+
     // ---- The bounds on what reaches the parser (#311) ----------------------------------------
     //
     // NCalc's grammar backtracks exponentially over a run of unclosed '(' and recurses once per

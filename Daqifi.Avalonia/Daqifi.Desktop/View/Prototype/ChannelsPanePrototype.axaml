@@ -831,6 +831,23 @@
                                         </MultiBinding>
                                     </TextBlock.IsVisible>
                                 </TextBlock>
+                                <!-- The expression is valid but had no result for some samples,
+                                     which the app dropped (#540). Amber, not red: scaling still
+                                     runs. Last child of an Auto-height StackPanel and collapsed
+                                     when there is nothing to say, so it cannot move a sibling. -->
+                                <TextBlock Text="{Binding SelectedChannel.RejectedScaleResultsMessage}"
+                                           FontSize="10"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource StatusAmber}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,6,0,0">
+                                    <TextBlock.IsVisible>
+                                        <MultiBinding Converter="{StaticResource BoolAndToVis}">
+                                            <Binding Path="SelectedChannel.IsScalingActive"/>
+                                            <Binding Path="SelectedChannel.HasRejectedScaleResults"/>
+                                        </MultiBinding>
+                                    </TextBlock.IsVisible>
+                                </TextBlock>
                             </StackPanel>
 
                         </StackPanel>

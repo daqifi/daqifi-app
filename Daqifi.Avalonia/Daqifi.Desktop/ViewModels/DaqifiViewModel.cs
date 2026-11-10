@@ -931,6 +931,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // is simply empty with no explanation of where the sessions went.
                     ReportQuarantinedDatabase();
 
+                    // #540: a channel's scale expression had no valid result for a sample, and the
+                    // app dropped it. Said once per channel per session, here in the bell.
+                    AbstractChannel.ScaleResultsRejected += OnScaleResultsRejected;
+
                     // #353: data no longer follows elevation into %ProgramData%. If sessions are
                     // still there, offer to bring them over (checked in the background).
                     _ = OfferPreviousSessionImportAsync();
@@ -1709,6 +1713,40 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         NotificationList.Add(new Notifications
         {
             IsFirmwareUpdate = false,
+            Message = message
+        });
+        NotificationCount = NotificationList.Count;
+    }
+
+    /// <summary>
+    /// Raised from the streaming thread for the first sample of a session that a channel's scale
+    /// expression could not scale (#540). The list is an <c>ObservableCollection</c>, and Avalonia
+    /// does not marshal <c>CollectionChanged</c>, so the add goes to the UI thread.
+    /// </summary>
+    private void OnScaleResultsRejected(AbstractChannel channel) =>
+        Dispatcher.UIThread.Post(() => AddScaleResultsRejectedNotice(channel));
+
+    /// <summary>
+    /// Adds the "samples were not recorded" notice for <paramref name="channel"/>, unless the same
+    /// notice for the same device is already in the list: a second session with the same fault
+    /// does not stack a second copy of one sentence.
+    /// </summary>
+    internal void AddScaleResultsRejectedNotice(AbstractChannel channel)
+    {
+        // A device-owned notice, so the per-device pruning in RemoveNotification takes it away when
+        // the device disconnects. An empty serial is stored as null instead: the pruning would
+        // match an empty serial to no device and remove the notice on the same UpdateUi pass.
+        var serial = string.IsNullOrEmpty(channel.DeviceSerialNo) ? null : channel.DeviceSerialNo;
+        var message = channel.RejectedScaleResultsNotification;
+
+        if (NotificationList.Any(n => n.Message == message && n.DeviceSerialNo == serial))
+        {
+            return;
+        }
+
+        NotificationList.Add(new Notifications
+        {
+            DeviceSerialNo = serial,
             Message = message
         });
         NotificationCount = NotificationList.Count;
@@ -3297,6 +3335,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         // e.g. in non-window-init construction paths.)
         ConnectionManager.Instance.PropertyChanged -= UpdateUi;
         LoggingManager.Instance.PropertyChanged -= UpdateUi;
+        AbstractChannel.ScaleResultsRejected -= OnScaleResultsRejected;
         ConnectedDevices.CollectionChanged -= OnConnectedDevicesCollectionChanged;
         NotificationList.CollectionChanged -= OnNotificationListCollectionChanged;
 

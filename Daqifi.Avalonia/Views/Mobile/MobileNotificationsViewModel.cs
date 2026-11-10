@@ -55,6 +55,27 @@ public partial class MobileNotificationsViewModel : ObservableObject
         if (notification is not null) { OnUi(() => NotificationList.Insert(0, notification)); }
     }
 
+    /// <summary>
+    /// Producer API: add a notification unless one with the same message is already listed. For a
+    /// condition that can recur (each streaming session, say) but says the same thing each time.
+    /// The check runs on the UI thread with the insert, so two calls racing in from a background
+    /// thread cannot both pass it.
+    /// </summary>
+    public void AddOnce(Notifications notification)
+    {
+        if (notification is null) { return; }
+
+        OnUi(() =>
+        {
+            foreach (var listed in NotificationList)
+            {
+                if (listed.Message == notification.Message) { return; }
+            }
+
+            NotificationList.Insert(0, notification);
+        });
+    }
+
     /// <summary>Producer API: remove a notification if present.</summary>
     public void Remove(Notifications notification) => OnUi(() => NotificationList.Remove(notification));
 

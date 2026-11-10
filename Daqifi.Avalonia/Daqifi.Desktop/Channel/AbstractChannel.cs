@@ -230,6 +230,10 @@ public abstract partial class AbstractChannel : ObservableObject, IChannel
         {
             _scaledExpression = value;
 
+            // A new expression starts a new count: the samples the old one dropped say nothing
+            // about this one.
+            ResetRejectedScaleResults();
+
             if (string.IsNullOrWhiteSpace(_scaledExpression))
             {
                 Reject(InvalidExpressionMessage);
@@ -389,41 +393,160 @@ public abstract partial class AbstractChannel : ObservableObject, IChannel
         get => _activeSample;
         set
         {
-            _activeSample = value;
-            if (Expression != null && HasValidExpression && IsScalingActive && _activeSample != null)
+            // Read once: the user can replace or clear the expression on the UI thread while a
+            // sample is being scaled here, and a null read halfway through would be counted as a
+            // sample the expression could not scale.
+            var expression = Expression;
+            if (expression != null && HasValidExpression && IsScalingActive && value != null
+                && !TryScale(expression, value))
             {
-                try
-                {
-                    Expression.Parameters["x"] = _activeSample.Value;
-                    var scaledValue = Convert.ToDouble(Expression.Evaluate());
-
-                    if (double.IsFinite(scaledValue))
-                    {
-                        _activeSample.Value = scaledValue;
-                    }
-                    else
-                    {
-                        // A finite input can still yield a non-finite result WITHOUT throwing:
-                        // a float divide-by-zero gives +/-Infinity and 0.0/0.0 gives NaN. Keep
-                        // the raw value and disable scaling (mirroring the catch below) so
-                        // Infinity/NaN never reaches the live plot or exported data.
-                        AppLogger.Instance.Warning(
-                            $"Expression produced a non-finite result for channel {Name}; scaling disabled.");
-                        HasValidExpression = false;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    AppLogger.Instance.Warning($"Expression evaluation failed for channel {Name}: {ex.Message}");
-                    HasValidExpression = false;
-                }
+                // Dropped, not published: the previous sample stays the active one, and no logger
+                // sees this one. A gap in the data is true; the raw value in scaled units is not,
+                // and NaN or Infinity would poison the plot, the statistics and the export (#540).
+                return;
             }
 
+            _activeSample = value;
             if (_activeSample != null)
             {
                 NotifyChannelUpdated(this, _activeSample);
             }
             OnPropertyChanged();
+        }
+    }
+
+    /// <summary>
+    /// Rewrites <paramref name="sample"/> with <paramref name="expression"/>'s result. Returns false, and
+    /// leaves the sample alone, when the expression has no finite result for this input.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A valid expression can have no answer for one input: <c>Sqrt</c> of a negative noise
+    /// sample, <c>Ln</c> of zero, <c>1 / x</c> at zero. NCalc gives NaN or Infinity for those
+    /// without throwing, and an expression can also throw for some inputs only (a branch that
+    /// returns text, say). Both are a property of the SAMPLE, not of the expression.
+    /// </para>
+    /// <para>
+    /// So neither one touches <see cref="HasValidExpression"/> any more. It used to: the first
+    /// such sample set it false, and since only the <see cref="ScaleExpression"/> setter ever sets
+    /// it back, scaling stayed off for the rest of the session. One file then held scaled values
+    /// followed by raw ones in one column, with no mark at the change, and the drawer said
+    /// INVALID EXPRESSION about an expression that was valid (#540).
+    /// </para>
+    /// </remarks>
+    private bool TryScale(Expression expression, DataSample sample)
+    {
+        try
+        {
+            expression.Parameters["x"] = sample.Value;
+            var scaledValue = Convert.ToDouble(expression.Evaluate());
+
+            if (double.IsFinite(scaledValue))
+            {
+                sample.Value = scaledValue;
+                return true;
+            }
+
+            RecordRejectedScaleResult(
+                $"the scale expression gave {scaledValue.ToString("R", System.Globalization.CultureInfo.InvariantCulture)} " +
+                $"for the input {sample.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}");
+        }
+        catch (Exception ex)
+        {
+            RecordRejectedScaleResult($"the scale expression failed: {ex.Message}");
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Raised, from the thread the sample arrived on, for the FIRST sample of a session that the
+    /// channel's scale expression could not scale. Once per channel per session, however many
+    /// samples follow, so a subscriber can show one notification rather than one per sample.
+    /// </summary>
+    /// <remarks>
+    /// Static because it is a statement about the app as a whole that both shells' notification
+    /// lists need, and neither shell tracks channels: the desktop list lives on
+    /// <c>DaqifiViewModel</c> and the phone's on <c>MobileMainView</c>. Each subscribes once for its
+    /// lifetime and must marshal to the UI thread, because a notification list is an
+    /// <c>ObservableCollection</c> and Avalonia does not marshal <c>CollectionChanged</c>.
+    /// </remarks>
+    public static event Action<AbstractChannel>? ScaleResultsRejected;
+
+    private long _rejectedScaleResultCount;
+
+    /// <summary>
+    /// How many samples this session the scale expression gave no valid result for. None of them
+    /// were recorded. Cleared when streaming starts and when the expression changes.
+    /// </summary>
+    [NotMapped]
+    public long RejectedScaleResultCount => Interlocked.Read(ref _rejectedScaleResultCount);
+
+    /// <summary>Whether any sample this session was dropped because it could not be scaled.</summary>
+    [NotMapped]
+    public bool HasRejectedScaleResults => RejectedScaleResultCount > 0;
+
+    /// <summary>
+    /// What the amber label under the scaling box says while <see cref="HasRejectedScaleResults"/>
+    /// is true: how many samples were dropped. Empty otherwise.
+    /// </summary>
+    [NotMapped]
+    public string RejectedScaleResultsMessage => DescribeRejectedScaleResults(RejectedScaleResultCount);
+
+    /// <summary>The drawer's wording for <paramref name="count"/> dropped samples.</summary>
+    internal static string DescribeRejectedScaleResults(long count) => count switch
+    {
+        <= 0 => string.Empty,
+        1 => "NO VALID RESULT FOR 1 SAMPLE. THE APP DID NOT RECORD IT.",
+        _ => $"NO VALID RESULT FOR {count.ToString(System.Globalization.CultureInfo.InvariantCulture)} SAMPLES. " +
+             "THE APP DID NOT RECORD THEM."
+    };
+
+    /// <summary>The notification text for a channel whose expression dropped samples.</summary>
+    public string RejectedScaleResultsNotification =>
+        $"Channel {Name}: the scale expression gave no valid result for some samples. " +
+        "The app did not record those samples.";
+
+    /// <summary>
+    /// Starts a new count of dropped samples. Called when streaming starts, so that each session
+    /// gets its own count and its own notification, and when the expression changes.
+    /// </summary>
+    public void ResetRejectedScaleResults()
+    {
+        if (Interlocked.Exchange(ref _rejectedScaleResultCount, 0) == 0)
+        {
+            return;
+        }
+
+        OnPropertyChanged(nameof(RejectedScaleResultCount));
+        OnPropertyChanged(nameof(HasRejectedScaleResults));
+        OnPropertyChanged(nameof(RejectedScaleResultsMessage));
+    }
+
+    private void RecordRejectedScaleResult(string reason)
+    {
+        var occurrence = Interlocked.Increment(ref _rejectedScaleResultCount);
+
+        // The same two-band throttle as the device's own non-finite-reading report: the first ten
+        // in full, then powers of ten. A channel whose every sample fails at 1 kHz must not write
+        // a thousand log lines a second.
+        if (AbstractStreamingDevice.IsReportedDiscardOccurrence(occurrence))
+        {
+            AppLogger.Instance.Warning(
+                $"Dropped a sample on channel {Name}: {reason}. Scaling stays on. " +
+                $"{occurrence.ToString(System.Globalization.CultureInfo.InvariantCulture)} dropped on this channel " +
+                "so far this session.");
+        }
+
+        // One notification per bad sample, in place of the ActiveSample notification a good sample
+        // raises, so the bound label costs no more per sample than the live value already did.
+        // RejectedScaleResultCount is not bound anywhere, so it is not raised here.
+        OnPropertyChanged(nameof(RejectedScaleResultsMessage));
+
+        if (occurrence == 1)
+        {
+            OnPropertyChanged(nameof(HasRejectedScaleResults));
+            ScaleResultsRejected?.Invoke(this);
         }
     }
     #endregion
