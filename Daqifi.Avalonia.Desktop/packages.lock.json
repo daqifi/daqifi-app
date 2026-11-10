@@ -446,33 +446,33 @@
       },
       "NCalc.Core": {
         "type": "Transitive",
-        "resolved": "7.3.0",
-        "contentHash": "aweMvoJoRuNZHmOKIzXWMq2UrZfUEtrBp0sRx9JLtVTCqyOv0fhs78CS2frxiyvF7/OYPuit9za0pLnjy6Fwgw==",
+        "resolved": "7.4.0",
+        "contentHash": "0ouWl24zTFb2DZGHEE4G6i3Fp4h8zE3PVgED/qdzQeaq/xyd7vHL8aLMsUIlnaVXk9FpYCzRIexDGaA3q8rC7w==",
         "dependencies": {
           "ExtendedNumerics.BigDecimal": "3003.2.0.161",
           "Microsoft.Extensions.Logging.Abstractions": "10.0.14",
-          "NCalc.Parser": "7.3.0"
+          "NCalc.Parser": "7.4.0"
         }
       },
       "NCalc.Domain": {
         "type": "Transitive",
-        "resolved": "7.3.0",
-        "contentHash": "6tRbTXEW9omM06tGiy83NhQU2Fg7E81HCqgd4kgYvvqa/SxJRcet2cn1OTzWwCNzKa9aZ1E47ngb7ZHVM6N05Q=="
+        "resolved": "7.4.0",
+        "contentHash": "0pspke0UlzCXL4oIe02ZWZSDTxRKAn+oR+vhmhMPJlSZoPthqNczgU7DSVFATKEOhRQobOJ+u3HT3LqL/hMAPQ=="
       },
       "NCalc.Parser": {
         "type": "Transitive",
-        "resolved": "7.3.0",
-        "contentHash": "wcExFlunAadWnXZ8q5N9m93Eov+nZj/AYFBPuAcnvJAstwo7+jnfxjNxsRkrDVmbCjvsKKqPOdLwxXNkw2DHjQ==",
+        "resolved": "7.4.0",
+        "contentHash": "zonhYiOgb8P7qLuwGLoNfTLOeR+Jf3QGBivAc8KCWLNJYIKTAI1dXvz7lhVqeNQE2QDDp5r6YRGt0wX3W2+7yQ==",
         "dependencies": {
-          "NCalc.Domain": "7.3.0"
+          "NCalc.Domain": "7.4.0"
         }
       },
       "NCalcSync": {
         "type": "Transitive",
-        "resolved": "7.3.0",
-        "contentHash": "PvWmeiVvv2cVKh42E1PaHpqH0wIO4YcpO9tZkO0twY5Z+NWE8Qb6UXxn8Rz6H7t/CBUHcRPfQzh0x1zUiUyVdA==",
+        "resolved": "7.4.0",
+        "contentHash": "nTW0sUesJPvKGKAd4OOBeuknUFUYI4OSeAyHc13ExrRUtgAc4H1JBLrO43MyDYx+KqeP6ptW1NsQ8R4q2CQqDA==",
         "dependencies": {
-          "NCalc.Core": "7.3.0"
+          "NCalc.Core": "7.4.0"
         }
       },
       "NetTopologySuite": {
@@ -738,89 +738,89 @@
       },
       "Xaml.Behaviors.Animations": {
         "type": "Transitive",
-        "resolved": "12.0.7",
-        "contentHash": "4bZF2H+0Fno6iYXwIrpbQisi8JlFfBpPIezWytljHP87C0PA21bnugtmP7cfgPAI6JZn0A6Ae9+JK3POKN1+Pg==",
+        "resolved": "12.1.5",
+        "contentHash": "ATs6GNNCb2VJljFigRLSqDkDmxprWooxj24Y33b2GMjb2AnXEdNFpHvXq4PC5W0RcPonlQ0mDcfRqu6i8Ibjqg==",
         "dependencies": {
-          "Avalonia": "12.0.5"
+          "Avalonia": "12.1.5"
         }
       },
       "Xaml.Behaviors.Avalonia": {
         "type": "Transitive",
-        "resolved": "12.0.7",
-        "contentHash": "vSBI0io5gFhhH6J5b0oCvQfoBYUR86S86cIticuyWvEnm9miAkRcAHZs7QS1vcWeVFVnlVqDy90zOK/l4USr6Q==",
+        "resolved": "12.1.5",
+        "contentHash": "ebdLmiY8U5KJK/HzMEwmQ7W/AYMjZcRIaAW14pSqcfDIDpQI8iTJkzBCKOpRMRjht9U0L6pW7i6QjMqLzU8/EQ==",
         "dependencies": {
-          "Avalonia": "12.0.5",
-          "Xaml.Behaviors.Animations": "12.0.7",
-          "Xaml.Behaviors.Interactions": "12.0.7",
-          "Xaml.Behaviors.Interactions.Custom": "12.0.7",
-          "Xaml.Behaviors.Interactions.DragAndDrop": "12.0.7",
-          "Xaml.Behaviors.Interactions.Draggable": "12.0.7",
-          "Xaml.Behaviors.Interactions.Events": "12.0.7",
-          "Xaml.Behaviors.Interactions.Responsive": "12.0.7",
-          "Xaml.Behaviors.Interactivity": "12.0.7"
+          "Avalonia": "12.1.5",
+          "Xaml.Behaviors.Animations": "12.1.5",
+          "Xaml.Behaviors.Interactions": "12.1.5",
+          "Xaml.Behaviors.Interactions.Custom": "12.1.5",
+          "Xaml.Behaviors.Interactions.DragAndDrop": "12.1.5",
+          "Xaml.Behaviors.Interactions.Draggable": "12.1.5",
+          "Xaml.Behaviors.Interactions.Events": "12.1.5",
+          "Xaml.Behaviors.Interactions.Responsive": "12.1.5",
+          "Xaml.Behaviors.Interactivity": "12.1.5"
         }
       },
       "Xaml.Behaviors.Interactions": {
         "type": "Transitive",
-        "resolved": "12.0.7",
-        "contentHash": "o1PwBW7NUWLkktvuSmM52z2OBH1w1yo2dc+NetP8PLWC0/QsTVql/dE56B8IjPJzmpGb3Y9XSitTKh7R+EL2cA==",
+        "resolved": "12.1.5",
+        "contentHash": "/LZ+3R9xnm1DJOWfprUvWVyavIQ+o+kB7jP/0iBYiN3B/mNpy+4eIljP2uf/vOewqUCGIEU3zcKcWdue4Mq0Xg==",
         "dependencies": {
-          "Avalonia": "12.0.5",
-          "Xaml.Behaviors.Interactivity": "12.0.7"
+          "Avalonia": "12.1.5",
+          "Xaml.Behaviors.Interactivity": "12.1.5"
         }
       },
       "Xaml.Behaviors.Interactions.Custom": {
         "type": "Transitive",
-        "resolved": "12.0.7",
-        "contentHash": "RCmhJa8ps+ML1e5rXr91k6ETS4xAjmkHOM5XN2q6rI/Tbx74SEiAKzC4rzKZ+SX1/BLOlE47nMpMNuxrkkzk+A==",
+        "resolved": "12.1.5",
+        "contentHash": "mVMuBJMa9LwFJ2MhhEW1cHNLDc4saIllAzsGzusipyOYmLaKmr3b0Eau1gegY86V+aJQlolvZeTDZ27NzLTpvA==",
         "dependencies": {
-          "Avalonia": "12.0.5",
-          "Xaml.Behaviors.Animations": "12.0.7",
-          "Xaml.Behaviors.Interactivity": "12.0.7"
+          "Avalonia": "12.1.5",
+          "Xaml.Behaviors.Animations": "12.1.5",
+          "Xaml.Behaviors.Interactivity": "12.1.5"
         }
       },
       "Xaml.Behaviors.Interactions.DragAndDrop": {
         "type": "Transitive",
-        "resolved": "12.0.7",
-        "contentHash": "l0PsZ3U2Nwsap9srbuPTdkHk10ipjeNBI9eZELW6jNgO8+thV7BsW6mk/Z5D5Hh3Fq6YDrj3KKyJ6CD3ECtHDg==",
+        "resolved": "12.1.5",
+        "contentHash": "SPhTveu7Of52XiB8DKiu3SxJKcZVhFfJC1NrHIyONFqGvZKsNfRBMXYB0b7hT/0Rq7W9bvme7yV7mwQg5y2Rdg==",
         "dependencies": {
-          "Avalonia": "12.0.5",
-          "Xaml.Behaviors.Interactivity": "12.0.7"
+          "Avalonia": "12.1.5",
+          "Xaml.Behaviors.Interactivity": "12.1.5"
         }
       },
       "Xaml.Behaviors.Interactions.Draggable": {
         "type": "Transitive",
-        "resolved": "12.0.7",
-        "contentHash": "cm9h+vFKCTgpxCsi7Bp4KHEXVbQ4QH8WrrqE/81kN5U7roWVW+JVnGZ+k67HP2LOhyt+eIEQokLVMcipv9cFpw==",
+        "resolved": "12.1.5",
+        "contentHash": "7X7GR70zhSCxwUa3+o0kt//BCjhJOkZ6VCmG23cUnVNmJSmZ+kTKiZYY+B/lXHnT+KKUMAgMgcd2Nx+Beh7vMg==",
         "dependencies": {
-          "Avalonia": "12.0.5",
-          "Xaml.Behaviors.Interactivity": "12.0.7"
+          "Avalonia": "12.1.5",
+          "Xaml.Behaviors.Interactivity": "12.1.5"
         }
       },
       "Xaml.Behaviors.Interactions.Events": {
         "type": "Transitive",
-        "resolved": "12.0.7",
-        "contentHash": "0JwzoIOX21dj9geo+st+RSxl/7bU4Wb35P1YjKD4IeUw6mIf8EMQkB7PKGPy+hibeOnmSDTbLoNoCY0EdvTNgg==",
+        "resolved": "12.1.5",
+        "contentHash": "qUvqnEFTIMio3F7zbFADxipqfQ9Cgb+wBnZlu7EMWmtPjWwj0chLH1rzFv4i2CnqYM3bxjQxdNqJX/SYBOb52g==",
         "dependencies": {
-          "Avalonia": "12.0.5",
-          "Xaml.Behaviors.Interactivity": "12.0.7"
+          "Avalonia": "12.1.5",
+          "Xaml.Behaviors.Interactivity": "12.1.5"
         }
       },
       "Xaml.Behaviors.Interactions.Responsive": {
         "type": "Transitive",
-        "resolved": "12.0.7",
-        "contentHash": "9h9hncn2OcxYMbDUQSNzJs7SY6YVb6dDp2W3W64ns9Xqza3FpCZITGFeJKBZQEhqeS/vvUKbtpRIC6MrQSh3Yg==",
+        "resolved": "12.1.5",
+        "contentHash": "K1m0iKzKJW2owayejXyHXOVQOANDbnRn/HfK74avsKhKLCBpMSw56YnorLtfcShJ4TLq7xe5eNXM1ESJQFwPyQ==",
         "dependencies": {
-          "Avalonia": "12.0.5",
-          "Xaml.Behaviors.Interactivity": "12.0.7"
+          "Avalonia": "12.1.5",
+          "Xaml.Behaviors.Interactivity": "12.1.5"
         }
       },
       "Xaml.Behaviors.Interactivity": {
         "type": "Transitive",
-        "resolved": "12.0.7",
-        "contentHash": "PzWwozUtizvnNYuCJhlbl+EwuRpva0+qYWYlGkyNKMjyrTxujBWBBr1g6o1PtauVTLPCkX5+lGNK6JHImYDJAQ==",
+        "resolved": "12.1.5",
+        "contentHash": "7jgP5d04jrkfitJ6z8/+dnuhOZOBY7tpEJvMJxN9oxY4jBj5g0C8AiO99BHRoB076bQAeoLYZ+9m7C3dC9HqEA==",
         "dependencies": {
-          "Avalonia": "12.0.5"
+          "Avalonia": "12.1.5"
         }
       },
       "daqifi.avalonia": {
@@ -837,7 +837,7 @@
           "Microsoft.EntityFrameworkCore": "[10.0.14, )",
           "Microsoft.EntityFrameworkCore.Sqlite": "[10.0.14, )",
           "Microsoft.Extensions.Http": "[10.0.14, )",
-          "NCalcSync": "[7.3.0, )",
+          "NCalcSync": "[7.4.0, )",
           "NLog": "[6.2.2, )",
           "Newtonsoft.Json": "[13.0.4, )",
           "Optris.Icons.Avalonia.MaterialDesign": "[12.0.7, )",
@@ -848,7 +848,7 @@
           "System.Configuration.ConfigurationManager": "[10.0.14, )",
           "System.IO.Ports": "[10.0.14, )",
           "System.Management": "[10.0.14, )",
-          "Xaml.Behaviors.Avalonia": "[12.0.7, )"
+          "Xaml.Behaviors.Avalonia": "[12.1.5, )"
         }
       },
       "oxyplot.avalonia": {
