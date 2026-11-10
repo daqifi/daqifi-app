@@ -34,12 +34,19 @@ public partial class ProfilesPane : UserControl
         base.OnAttachedToVisualTree(e);
     }
 
+    // A different tab detaches the pane with the drawer possibly still open. Cleanup saves that
+    // edit; when the write fails the drawer is gone, so the reason goes to the app's
+    // notifications, which outlive the pane (#541).
     // @port: Daqifi.Desktop.View.ProfilesPane.OnUnloaded
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnDetachedFromVisualTree(e);
-        if (DataContext is ProfilesPaneViewModel vm)
-            vm.Cleanup();
+        if (DataContext is ProfilesPaneViewModel vm &&
+            vm.Cleanup() is { } unsaved &&
+            (e.RootVisual as StyledElement)?.DataContext is DaqifiViewModel shell)
+        {
+            shell.AddAppNotification(unsaved);
+        }
         DataContext = null;
     }
 }

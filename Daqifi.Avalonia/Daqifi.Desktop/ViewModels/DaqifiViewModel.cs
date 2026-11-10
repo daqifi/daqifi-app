@@ -1679,9 +1679,20 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             return;
         }
 
-        // DeviceSerialNo is deliberately left unset (null): this is an app-level condition with no
-        // owning device, and a null serial is what exempts it from RemoveNotification's per-device
-        // pruning. Link is left unset too — the flyout hides its "Click here" button when it is null.
+        AddAppNotification(message);
+    }
+
+    /// <summary>
+    /// Adds a standing notification that has no owning device: one sentence, no link, no action.
+    /// </summary>
+    /// <remarks>
+    /// DeviceSerialNo is deliberately left unset (null): a null serial is what exempts the
+    /// notification from <see cref="RemoveNotification"/>'s per-device pruning, so it survives the
+    /// next UpdateUi pass. Link is left unset too — the flyout hides its "Click here" button when
+    /// it is null.
+    /// </remarks>
+    internal void AddAppNotification(string message)
+    {
         NotificationList.Add(new Notifications
         {
             IsFirmwareUpdate = false,
@@ -1703,15 +1714,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             return;
         }
 
-        // Null DeviceSerialNo for the same reason as ReportHotplugDetectionUnavailable above: an
-        // app-level condition with no owning device, which is what exempts it from
-        // RemoveNotification's per-device pruning so it survives the next UpdateUi pass.
-        NotificationList.Add(new Notifications
-        {
-            IsFirmwareUpdate = false,
-            Message = message
-        });
-        NotificationCount = NotificationList.Count;
+        AddAppNotification(message);
     }
 
     /// <summary>
@@ -1914,18 +1917,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             _appLogger.Warning($"{title}: {message}");
         }
 
-        // Null DeviceSerialNo, as above: an app-level condition with no owning device, which exempts
-        // it from RemoveNotification's per-device pruning. A refusal can name several devices, so it
-        // has no single owner to prune it by either.
-        //
-        // The message alone, not the title with it: the notification list is a flat list of
-        // sentences, and every message passed here is written to stand on its own in it.
-        NotificationList.Add(new Notifications
-        {
-            IsFirmwareUpdate = false,
-            Message = message
-        });
-        NotificationCount = NotificationList.Count;
+        // A refusal can name several devices, so it has no single owner and is an app-level
+        // notification. The message alone, not the title with it: the notification list is a flat
+        // list of sentences, and every message passed here is written to stand on its own in it.
+        AddAppNotification(message);
 
         // Fire-and-forget for the same reason the disk-space gate in this same setter does it: the
         // toggle's two-way binding is mid-write, so there is nothing here that can await a modal.
