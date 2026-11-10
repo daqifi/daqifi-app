@@ -76,7 +76,7 @@
 		<!-- Same Material glyph set as MahApps.Metro.IconPacks.Material -->
 		<PackageReference Include="Optris.Icons.Avalonia.MaterialDesign" Version="12.0.7" />
 		<!-- Direct port of Microsoft.Xaml.Behaviors.Wpf -->
-		<PackageReference Include="Xaml.Behaviors.Avalonia" Version="12.0.7" />
+		<PackageReference Include="Xaml.Behaviors.Avalonia" Version="12.1.5" />
 
 		<!-- Platform-neutral stack carried over from upstream Daqifi.Desktop + Daqifi.Desktop.Common -->
 		<PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
@@ -90,7 +90,7 @@
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
 		</PackageReference>
 		<PackageReference Include="Microsoft.Extensions.Http" Version="10.0.14" />
-		<PackageReference Include="NCalcSync" Version="7.3.0" />
+		<PackageReference Include="NCalcSync" Version="7.4.0" />
 		<PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
 		<PackageReference Include="NLog" Version="6.2.2" />
 		<PackageReference Include="Sentry" Version="6.12.1" />
