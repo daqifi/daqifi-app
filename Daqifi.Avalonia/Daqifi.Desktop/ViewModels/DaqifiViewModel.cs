@@ -455,6 +455,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
             OnPropertyChanged(nameof(IsLogging));
             OnPropertyChanged(nameof(IsSdCardLoggingActive));
+            RefreshCanToggleLogging();
         }
     }
 
@@ -2209,8 +2210,24 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     {
         OnPropertyChanged(nameof(IsLogging));
         OnPropertyChanged(nameof(IsSdCardLoggingActive));
+        RefreshCanToggleLogging();
         UpdateSdLoggingTimer();
     }
+
+    /// <summary>
+    /// A running session can always be stopped from the toggle that started it, and with no
+    /// session running the toggle needs an active channel to start one.
+    /// </summary>
+    /// <remarks>
+    /// Without the <see cref="IsLogging"/> term the toggle could read ON and be disabled at once: a
+    /// device still logging to its SD card after a reconnect has no subscribed channel (#537). The
+    /// rule reads <see cref="IsLogging"/>, so it is evaluated again everywhere that announces a
+    /// change of it which <see cref="UpdateUi"/> does not see: the device's own SD state (here, via
+    /// <see cref="RaiseLoggingStateChanged"/>) and a refused stop in the setter. Without that, the
+    /// end of an SD-only run left the toggle enabled with no active channel.
+    /// </remarks>
+    private void RefreshCanToggleLogging()
+        => CanToggleLogging = IsLogging || ActiveChannels.Count > 0;
 
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.UpdateSdLoggingTimer
     private void UpdateSdLoggingTimer()
@@ -2359,10 +2376,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                 }
                 break;
         }
-        // A running session can always be stopped from the toggle that started it. Without the
-        // IsLogging term the toggle could read ON and be disabled at once — a device still logging
-        // to its SD card after a reconnect has no subscribed channel (#537).
-        CanToggleLogging = IsLogging || ActiveChannels.Count > 0;
+        RefreshCanToggleLogging();
         _ = _firmwareCoordinator.RefreshFirmwareUpdatesAsync();
         RemoveNotification();
     }
