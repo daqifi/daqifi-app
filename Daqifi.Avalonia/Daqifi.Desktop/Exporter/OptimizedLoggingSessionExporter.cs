@@ -54,7 +54,7 @@ public class OptimizedLoggingSessionExporter
     #region Private Fields
     private readonly AppLogger _appLogger = AppLogger.Instance;
     private readonly string _delimiter = DaqifiSettings.Instance.CsvDelimiter;
-    private readonly IDbContextFactory<LoggingContext> _loggingContext;
+    private readonly IDbContextFactory<LoggingContext>? _loggingContext;
     #endregion
 
     #region Constructors
