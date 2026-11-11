@@ -108,6 +108,16 @@ public interface IChannel
     /// </summary>
     string ScaleExpressionError { get; }
 
+    /// <summary>
+    /// Whether the scale expression had no valid result for any sample this session, so the app
+    /// dropped it (#540). Declared here for the same <c>SelectedChannel</c> reason as
+    /// <see cref="ScaleExpressionError"/>.
+    /// </summary>
+    bool HasRejectedScaleResults { get; }
+
+    /// <summary>How many samples were dropped that way, in the words the drawer shows.</summary>
+    string RejectedScaleResultsMessage { get; }
+
     // @port: Daqifi.Desktop.Channel.IChannel.ActiveSample
     DataSample? ActiveSample { get; set; }
 
@@ -117,6 +127,13 @@ public interface IChannel
 
     #region Events
     event OnChannelUpdatedHandler OnChannelUpdated;
+
+    /// <summary>
+    /// Raised for every sample that arrives, including one the scale expression drops and
+    /// <see cref="OnChannelUpdated"/> therefore never sees (#540). It says only that data arrived,
+    /// and carries no value, so nothing can record a dropped sample from it.
+    /// </summary>
+    event EventHandler? SampleReceived;
     #endregion
 
     // @port: Daqifi.Desktop.Channel.IChannel.NotifyChannelUpdated

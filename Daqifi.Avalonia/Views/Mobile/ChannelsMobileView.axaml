@@ -585,6 +585,15 @@
                            Foreground="{DynamicResource StatusRed}"
                            TextWrapping="Wrap"
                            IsVisible="{Binding !SelectedChannel.HasValidExpression}" />
+                <!-- Valid expression, no result for some samples, which the app dropped (#540).
+                     Inside this unspaced panel rather than the Spacing="8" one above, so a
+                     collapsed label adds no gap. -->
+                <TextBlock Text="{Binding SelectedChannel.RejectedScaleResultsMessage}"
+                           FontSize="{DynamicResource FontSizeSmall}"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource StatusAmber}"
+                           TextWrapping="Wrap"
+                           IsVisible="{Binding SelectedChannel.HasRejectedScaleResults}" />
               </StackPanel>
             </StackPanel>
 
