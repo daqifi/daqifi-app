@@ -24,8 +24,8 @@ public sealed class LoggingSessionSampleSource : ISampleSource
     #region Private Fields
     private readonly LoggingSession _session;
     private readonly IDbContextFactory<LoggingContext> _contextFactory;
-    private readonly ICollection<DataSample> _inMemorySamples;
-    private IReadOnlyList<ChannelDescriptor> _channelsCache;
+    private readonly ICollection<DataSample>? _inMemorySamples;
+    private IReadOnlyList<ChannelDescriptor>? _channelsCache;
     private int? _countCache;
     #endregion
 

@@ -5,6 +5,7 @@
 
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Xml;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Daqifi.Core.Logging.Export;
@@ -249,9 +250,9 @@ public partial class ProfilesPaneViewModel : ObservableObject
         }
         // On mobile the list stays live under the drawer, so EDIT on another profile replaces the
         // one being edited. Save that one first, and keep it open when the write fails (#541).
-        if (!ReferenceEquals(profile, SelectedProfile) && !SaveOpenEdit())
+        if (!ReferenceEquals(profile, SelectedProfile) && SaveOpenEdit() is { } unsaved)
         {
-            DrawerError = ProfileWriteFailureMessage("save your changes to this profile");
+            DrawerError = unsaved;
             return;
         }
         DrawerError = ProfileRecoveryNotice();
@@ -268,9 +269,9 @@ public partial class ProfilesPaneViewModel : ObservableObject
             _logger.AddBreadcrumb("profile", "Blocked opening new-profile drawer while logging active");
             return;
         }
-        if (!SaveOpenEdit())
+        if (SaveOpenEdit() is { } unsaved)
         {
-            DrawerError = ProfileWriteFailureMessage("save your changes to this profile");
+            DrawerError = unsaved;
             return;
         }
         DrawerError = ProfileRecoveryNotice();
@@ -299,9 +300,9 @@ public partial class ProfilesPaneViewModel : ObservableObject
         // A failed write must not close: doing so would discard the user's edit while showing
         // them a pane that says it was applied, which is the silent data loss #184 is about. The
         // drawer stays open with the reason, and the close button retries.
-        if (!SaveOpenEdit())
+        if (SaveOpenEdit() is { } unsaved)
         {
-            DrawerError = ProfileWriteFailureMessage("save your changes to this profile");
+            DrawerError = unsaved;
             return;
         }
 
@@ -311,21 +312,23 @@ public partial class ProfilesPaneViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Writes the profile open in the edit drawer to the file. <c>true</c> when there is nothing
-    /// to save or the write succeeded.
+    /// Writes the profile open in the edit drawer to the file. <c>null</c> when there is nothing
+    /// to save or the write succeeded; otherwise what the drawer says about why it did not.
     /// </summary>
     /// <remarks>
     /// The drawer binds straight to the <see cref="Profile"/> in memory, so every edit is applied
     /// the moment it is typed, and the list shows it as saved. Every way out of the drawer must
     /// therefore come through here, not only the close button: leaving the pane and opening a
-    /// different profile once skipped it, and the edit was gone at the next launch (#541).
+    /// different profile once skipped it, and the edit was gone at the next launch (#541). A blank
+    /// name used to count as "nothing to save", which closed the drawer on the edit without a
+    /// word; it is refused with the reason now, like a name the file cannot hold (#559).
     /// </remarks>
     // Downstream-only: extracted from CloseDrawer.
-    private bool SaveOpenEdit()
+    private string? SaveOpenEdit()
     {
-        if (IsNewProfile || SelectedProfile == null || string.IsNullOrWhiteSpace(SelectedProfile.Name))
-            return true;
-        return _writeProfile(SelectedProfile);
+        if (IsNewProfile || SelectedProfile == null) return null;
+        return ProfileNameProblem(SelectedProfile.Name)
+               ?? (_writeProfile(SelectedProfile) ? null : ProfileWriteFailureMessage("save your changes to this profile"));
     }
     #endregion
 
@@ -580,6 +583,11 @@ public partial class ProfilesPaneViewModel : ObservableObject
     private void SaveNewProfile()
     {
         if (!CanSaveNewProfile()) return;
+        if (ProfileNameProblem(NewProfileName) is { } nameProblem)
+        {
+            DrawerError = nameProblem;
+            return;
+        }
 
         var now = DateTime.Now;
         var profile = new Profile
@@ -640,6 +648,11 @@ public partial class ProfilesPaneViewModel : ObservableObject
         var name = string.IsNullOrWhiteSpace(NewProfileName)
             ? $"DAQiFi Profile {now:M/d/yyyy h:mm tt}"
             : NewProfileName.Trim();
+        if (ProfileNameProblem(name) is { } nameProblem)
+        {
+            DrawerError = nameProblem;
+            return;
+        }
         var profile = new Profile
         {
             Name = name,
@@ -698,6 +711,53 @@ public partial class ProfilesPaneViewModel : ObservableObject
         $"Could not save your changes to the profile '{profileName}' — the profiles file could not be written. " +
         "The changes are kept until the app closes: open the profile and close it to try again.";
 
+    /// <summary>What the drawer says when the name is blank (#559).</summary>
+    internal const string ProfileNameBlankMessage =
+        "Give the profile a name — a profile with no name cannot be saved.";
+
+    /// <summary>
+    /// What the drawer says when the name holds a character XML 1.0 does not permit, which
+    /// <c>XDocument.Save</c> refuses (#559). A paste is the usual way one gets into the box.
+    /// </summary>
+    internal const string ProfileNameCharacterMessage =
+        "The name contains a character that cannot be saved, for example a control character from a paste. " +
+        "Remove it, then try again.";
+
+    /// <summary>
+    /// What the app notification says when the pane closed on an edit whose name was refused. The
+    /// name is not repeated: it is blank, or it holds the character that is the problem.
+    /// </summary>
+    internal static string UnsavedNameMessage(string reason) =>
+        $"Could not save your changes to a profile. {reason} " +
+        "The changes are kept until the app closes: open the profile, correct the name and close it.";
+
+    /// <summary>
+    /// <c>null</c> when <paramref name="name"/> can be written to the profiles file; otherwise
+    /// what the drawer says about it.
+    /// </summary>
+    /// <remarks>
+    /// Refuse, not repair. A blank name has nothing to repair it from, and deleting a character
+    /// would change the name under the user's cursor in a box bound straight to the profile. So
+    /// both cases keep the drawer open with the reason, and the user decides the name.
+    /// <c>XmlConvert.VerifyXmlChars</c> reads surrogate pairs as one character, so an emoji passes;
+    /// a check per <c>char</c> with <c>IsXmlChar</c> would refuse it.
+    /// </remarks>
+    // Downstream-only: upstream closed the drawer without saving on a blank name, and let the
+    // XML writer throw on the rest.
+    private static string? ProfileNameProblem(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return ProfileNameBlankMessage;
+        try
+        {
+            XmlConvert.VerifyXmlChars(name);
+            return null;
+        }
+        catch (XmlException)
+        {
+            return ProfileNameCharacterMessage;
+        }
+    }
+
     /// <summary>
     /// The one-shot notice about a damaged profiles file, shown the first time the drawer opens
     /// after one was moved aside; empty the rest of the time, which is every other open.
@@ -735,7 +795,11 @@ public partial class ProfilesPaneViewModel : ObservableObject
     {
         // On desktop the pane is a tab's content, so a different tab detaches it with the drawer
         // still open. That used to drop the edit without a word (#541).
-        var unsaved = SaveOpenEdit() ? null : UnsavedEditMessage(SelectedProfile!.Name);
+        // A refused name is not repeated in the notification (#559): it is blank, or it holds the
+        // character that is the problem.
+        var unsaved = SaveOpenEdit() is not { } reason ? null
+            : ProfileNameProblem(SelectedProfile!.Name) is null ? UnsavedEditMessage(SelectedProfile.Name)
+            : UnsavedNameMessage(reason);
         if (unsaved != null) _logger.Warning(unsaved);
 
         LoggingManager.Instance.PropertyChanged -= OnLoggingManagerPropertyChanged;

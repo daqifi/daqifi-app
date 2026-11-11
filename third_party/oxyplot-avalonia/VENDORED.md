@@ -32,7 +32,7 @@ source pinned at a commit is the safer supply chain.
   reader. Restore it only alongside `GeneratePackageOnBuild`, and expect the
   lock-file split to come back with it.
 - `Directory.Build.props` (this directory, not upstream): pins
-  `AvaloniaVersion` to the app's exact version (currently **12.0.5**) and
+  `AvaloniaVersion` to the app's exact version (currently **12.1.6**) and
   `OxyPlotCoreVersion` to 2.2.0 — upstream reads both from
   `Source/Directory.Build.props` (11.0.0 / 2.1.2), which is not part of the
   vendored subtree. Also sets `RestorePackagesWithLockFile` (this subtree has
