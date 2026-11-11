@@ -1873,6 +1873,15 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         Interlocked.Exchange(ref _digitalProcessingFailureCount, 0);
         Interlocked.Exchange(ref _debugDataFailureCount, 0);
         _nonFiniteReadingCounts.Clear();
+
+        // Each session gets its own count of samples the scale expression dropped, and with it its
+        // own first-occurrence notification (#540). ToList: the channel list is replaced wholesale
+        // on a metadata refresh, so iterate a copy rather than the live list.
+        foreach (var channel in DataChannels.OfType<AbstractChannel>().ToList())
+        {
+            channel.ResetRejectedScaleResults();
+        }
+
         _checkForLeftoverFrames = _hasSeenDeviceTimestamp;
         _pendingFirstFrameValidation = !_hasSeenDeviceTimestamp;
         _heldFirstFrame = null;

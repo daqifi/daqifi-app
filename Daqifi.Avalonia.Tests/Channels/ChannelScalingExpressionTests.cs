@@ -219,31 +219,293 @@ public class ChannelScalingExpressionTests
         Assert.Equal(0.5, Push(channel, 1.0), precision: 10);
     }
 
-    // ---- The non-finite guard ---------------------------------------------------------------
+    // ---- A sample the expression cannot scale (#540) ----------------------------------------
+    //
+    // A valid expression can still have no finite answer for one input: Sqrt of a negative noise
+    // sample, Ln of zero, 1 / x at x = 0. NCalc returns NaN or Infinity for those WITHOUT
+    // throwing, and an expression can also throw for some inputs only. Neither value may reach
+    // the plot or the exported data. Before #540 the channel kept the RAW value for that sample
+    // and switched scaling off for the rest of the session, so one data file held scaled values
+    // followed by raw ones in the same column, with no mark at the change.
 
-    [Theory]
-    [InlineData("x / 0", 1.0)]
-    [InlineData("x / (x - x)", 1.0)]
-    public void A_non_finite_result_keeps_the_raw_value_and_switches_scaling_off(string expression, double raw)
+    /// <summary>
+    /// The values a logger would record: what <see cref="AbstractChannel.OnChannelUpdated"/> hands
+    /// on, which is the event <c>LoggingManager.HandleChannelUpdate</c> fans out to the database,
+    /// the plot and the summary.
+    /// </summary>
+    private static List<double> RecordedValuesOf(AbstractChannel channel)
     {
-        // A float divide-by-zero yields Infinity or NaN *without* throwing, so this is caught by
-        // the finiteness check rather than the catch block. Either way Infinity/NaN must never
-        // reach the plot or the exported data.
-        var channel = Scaled(expression);
-        Assert.True(channel.HasValidExpression);
-
-        Assert.Equal(raw, Push(channel, raw));
-        Assert.False(channel.HasValidExpression);
+        var recorded = new List<double>();
+        channel.OnChannelUpdated += (_, sample) => recorded.Add(sample.Value);
+        return recorded;
     }
 
     [Fact]
-    public void Scaling_stays_off_for_every_later_sample_once_it_has_been_switched_off()
+    public void A_sample_with_no_valid_result_is_not_recorded_and_scaling_stays_on()
     {
-        var channel = Scaled("x / 0");
-        Push(channel, 1.0);
+        // The exact case from the issue: Sqrt(x) over 4, -1, 9.
+        var channel = Scaled("Sqrt(x)");
+        var recorded = RecordedValuesOf(channel);
 
-        Assert.Equal(5.0, Push(channel, 5.0));
-        Assert.False(channel.HasValidExpression);
+        Push(channel, 4.0);
+        Push(channel, -1.0);
+        Push(channel, 9.0);
+
+        Assert.Equal([2.0, 3.0], recorded);
+        Assert.True(channel.HasValidExpression);
+    }
+
+    [Theory]
+    [InlineData("x / 0")]
+    [InlineData("x / (x - x)")]
+    [InlineData("Ln(x - x)")]
+    public void No_non_finite_value_and_no_raw_value_is_ever_recorded(string expression)
+    {
+        // Every one of these is non-finite for every input, so nothing at all is recorded: not
+        // the NaN or Infinity (which would poison the plot and the export), and not the raw value
+        // either (which would be a number in the wrong unit).
+        var channel = Scaled(expression);
+        var recorded = RecordedValuesOf(channel);
+
+        Push(channel, 1.0);
+        Push(channel, 5.0);
+
+        Assert.Empty(recorded);
+        Assert.True(channel.HasValidExpression);
+    }
+
+    [Fact]
+    public void An_expression_that_throws_for_every_sample_records_nothing()
+    {
+        // Validation evaluates with x = 1, where this returns a number, so it is accepted. For any
+        // x above 1 it returns a string, and Convert.ToDouble throws on it — the catch path, not
+        // the finiteness check.
+        var channel = Scaled("if(x > 1, 'not a number', x)");
+        Assert.True(channel.HasValidExpression);
+        var recorded = RecordedValuesOf(channel);
+
+        Push(channel, 2.0);
+        Push(channel, 3.0);
+
+        Assert.Empty(recorded);
+        Assert.True(channel.HasValidExpression);
+    }
+
+    [Fact]
+    public void A_dropped_sample_does_not_replace_the_last_good_sample()
+    {
+        // The live tile reads ActiveSample. A dropped sample must leave the last scaled reading in
+        // place — the same thing the ingest guard for a non-finite device reading does (#295) —
+        // rather than show the raw value in scaled units.
+        var channel = Scaled("Sqrt(x)");
+        var good = new DataSample { Value = 16.0 };
+        channel.ActiveSample = good;
+
+        channel.ActiveSample = new DataSample { Value = -1.0 };
+
+        Assert.Same(good, channel.ActiveSample);
+        Assert.Equal(4.0, channel.ActiveSample!.Value);
+    }
+
+    [Fact]
+    public void Scaling_continues_after_a_sample_with_no_valid_result()
+    {
+        var channel = Scaled("x / (x - 1)");
+
+        Push(channel, 1.0); // 1 / 0: Infinity, dropped
+
+        // Inputs whose scaled value differs from the raw one, so "scaling still runs" and
+        // "scaling switched off" cannot both pass (x = 2 would: 2 / (2 - 1) is 2).
+        Assert.Equal(1.5, Push(channel, 3.0));
+        Assert.Equal(1.25, Push(channel, 5.0));
+    }
+
+    /// <summary>
+    /// How many times <see cref="AbstractChannel.ScaleResultsRejected"/> fired for
+    /// <paramref name="channel"/> while <paramref name="act"/> ran. The event is static, so the
+    /// count is filtered to this channel instance: other tests running in parallel raise it too.
+    /// </summary>
+    private static int NotificationsRaisedFor(AbstractChannel channel, Action act)
+    {
+        var raised = 0;
+        void Handler(AbstractChannel source)
+        {
+            if (ReferenceEquals(source, channel)) { Interlocked.Increment(ref raised); }
+        }
+
+        AbstractChannel.ScaleResultsRejected += Handler;
+        try
+        {
+            act();
+        }
+        finally
+        {
+            AbstractChannel.ScaleResultsRejected -= Handler;
+        }
+
+        return raised;
+    }
+
+    [Fact]
+    public void Many_bad_samples_in_one_session_raise_one_notification()
+    {
+        var channel = Scaled("Sqrt(x)");
+
+        var raised = NotificationsRaisedFor(channel, () =>
+        {
+            for (var i = 0; i < 50; i++)
+            {
+                Push(channel, -1.0);
+                Push(channel, 4.0);
+            }
+        });
+
+        Assert.Equal(1, raised);
+        Assert.Equal(50, channel.RejectedScaleResultCount);
+    }
+
+    [Fact]
+    public void An_expression_that_throws_for_every_sample_raises_one_notification()
+    {
+        var channel = Scaled("if(x > 1, 'not a number', x)");
+
+        var raised = NotificationsRaisedFor(channel, () =>
+        {
+            Push(channel, 2.0);
+            Push(channel, 3.0);
+            Push(channel, 4.0);
+        });
+
+        Assert.Equal(1, raised);
+        Assert.Equal(3, channel.RejectedScaleResultCount);
+    }
+
+    [Fact]
+    public void A_good_sample_raises_no_notification_and_counts_nothing()
+    {
+        // The guard on the event: without this, "fires once" could be met by firing on the first
+        // sample of every session whatever its result.
+        var channel = Scaled("Sqrt(x)");
+
+        var raised = NotificationsRaisedFor(channel, () =>
+        {
+            Push(channel, 4.0);
+            Push(channel, 9.0);
+        });
+
+        Assert.Equal(0, raised);
+        Assert.Equal(0, channel.RejectedScaleResultCount);
+        Assert.False(channel.HasRejectedScaleResults);
+        Assert.Equal(string.Empty, channel.RejectedScaleResultsMessage);
+    }
+
+    [Fact]
+    public void A_new_session_counts_again_and_notifies_again()
+    {
+        // The device calls ResetRejectedScaleResults for every channel when streaming starts.
+        var channel = Scaled("Sqrt(x)");
+
+        var raised = NotificationsRaisedFor(channel, () =>
+        {
+            Push(channel, -1.0);
+            Push(channel, -1.0);
+            channel.ResetRejectedScaleResults();
+            Assert.Equal(0, channel.RejectedScaleResultCount);
+            Assert.False(channel.HasRejectedScaleResults);
+            Push(channel, -1.0);
+        });
+
+        Assert.Equal(2, raised);
+        Assert.Equal(1, channel.RejectedScaleResultCount);
+    }
+
+    [Fact]
+    public void A_new_expression_starts_a_new_count()
+    {
+        var channel = Scaled("Sqrt(x)");
+        Push(channel, -1.0);
+        Assert.True(channel.HasRejectedScaleResults);
+
+        channel.ScaleExpression = "x * 2";
+
+        Assert.False(channel.HasRejectedScaleResults);
+        Assert.Equal(0, channel.RejectedScaleResultCount);
+    }
+
+    [Fact]
+    public void Scaling_switched_off_drops_nothing_and_counts_nothing()
+    {
+        // With scaling off the raw value IS the right value, in raw units, so it is recorded.
+        var channel = new ScalingChannel { ScaleExpression = "Sqrt(x)" };
+        channel.IsScalingActive = false;
+        var recorded = RecordedValuesOf(channel);
+
+        Push(channel, -1.0);
+
+        Assert.Equal([-1.0], recorded);
+        Assert.False(channel.HasRejectedScaleResults);
+    }
+
+    [Fact]
+    public void The_drawer_says_how_many_samples_were_dropped_and_not_invalid_expression()
+    {
+        var channel = Scaled("Sqrt(x)");
+
+        Push(channel, -1.0);
+        Assert.Equal("NO VALID RESULT FOR 1 SAMPLE. THE APP DID NOT RECORD IT.", channel.RejectedScaleResultsMessage);
+
+        Push(channel, -2.0);
+        Push(channel, -3.0);
+        Assert.Equal("NO VALID RESULT FOR 3 SAMPLES. THE APP DID NOT RECORD THEM.", channel.RejectedScaleResultsMessage);
+
+        // INVALID EXPRESSION is shown only while HasValidExpression is false, and it stays true.
+        Assert.True(channel.HasValidExpression);
+        Assert.True(channel.HasRejectedScaleResults);
+    }
+
+    [Fact]
+    public void The_drawer_label_updates_as_samples_are_dropped()
+    {
+        // Bindings see the count only through change notification.
+        var channel = Scaled("Sqrt(x)");
+        var raised = new List<string?>();
+        channel.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        Push(channel, -1.0);
+        Push(channel, -1.0);
+
+        Assert.Equal(2, raised.Count(name => name == nameof(AbstractChannel.RejectedScaleResultsMessage)));
+        Assert.Equal(1, raised.Count(name => name == nameof(AbstractChannel.HasRejectedScaleResults)));
+    }
+
+    [Fact]
+    public void The_notification_names_the_channel()
+    {
+        var channel = Scaled("Sqrt(x)");
+
+        Assert.Equal(
+            "Channel AI0: the scale expression gave no valid result for some samples. " +
+            "The app did not record those samples.",
+            channel.RejectedScaleResultsNotification);
+    }
+
+    [Fact]
+    public void The_dropped_sample_label_is_bound_on_both_heads()
+    {
+        // The desktop view binds by reflection, so a renamed member would leave the label blank
+        // with a green build. Both heads bind SelectedChannel, typed IChannel, so the members must
+        // be on the interface too.
+        const string desktop = "Daqifi.Avalonia/Daqifi.Desktop/View/Prototype/ChannelsPanePrototype.axaml";
+        const string mobile = "Daqifi.Avalonia/Views/Mobile/ChannelsMobileView.axaml";
+
+        foreach (var view in new[] { desktop, mobile })
+        {
+            BindingFacts.AssertBinds(view, "Text=\"{Binding SelectedChannel.RejectedScaleResultsMessage}\"");
+            BindingFacts.AssertBinds(view, "SelectedChannel.HasRejectedScaleResults");
+        }
+
+        BindingFacts.AssertExposes(typeof(IChannel), nameof(IChannel.RejectedScaleResultsMessage));
+        BindingFacts.AssertExposes(typeof(IChannel), nameof(IChannel.HasRejectedScaleResults));
     }
 
     // ---- The bounds on what reaches the parser (#311) ----------------------------------------

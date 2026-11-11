@@ -98,6 +98,38 @@ public sealed class MobileShellSilentStreamWatchdogTests : IDisposable
     }
 
     /// <summary>
+    /// #540 review: a scale expression with no valid result for any input (<c>x / 0</c>, or
+    /// <c>Sqrt(x)</c> on a negative input) makes the channel drop every sample. The device is still
+    /// sending data, so the watchdog must still see it arrive. It used to count only the samples
+    /// the channel published to the loggers, saw none, and dropped a healthy connection after the
+    /// window. The dropped samples must still never reach a logger.
+    /// </summary>
+    [Fact]
+    public void A_stream_whose_every_sample_the_scale_expression_rejects_is_not_declared_dead()
+    {
+        StartStreaming();
+        var channel = (AbstractChannel)ActiveAnalogChannels().First();
+        channel.ScaleExpression = "x / 0";
+        channel.IsScalingActive = true;
+        Assert.True(channel.HasValidExpression, "Arrangement: the expression was not accepted.");
+        var logged = new List<double>();
+        channel.OnChannelUpdated += (_, sample) => logged.Add(sample.Value);
+
+        const int samples = WatchdogPolls * 3;
+        for (var i = 0; i < samples; i++)
+        {
+            channel.ActiveSample = new DataSample { Value = i + 1, TimestampTicks = i + 1 };
+            Poll(1);
+        }
+
+        Assert.True(_shell.IsConnected, $"A device that kept sending data was disconnected ({_shell.Status}).");
+        Assert.True(_shell.IsStreaming);
+        Assert.Equal(samples, _shell.TotalSamples);
+        Assert.Equal(samples, channel.RejectedScaleResultCount);
+        Assert.Empty(logged);
+    }
+
+    /// <summary>
     /// The defect. A status frame arriving mid-stream carries the device's own enabled mask, and
     /// Core 1.8.0 resyncs every analog channel's <c>IsEnabled</c> from it IN PLACE — so the app's
     /// wrappers, which read <c>IsActive</c> straight through to Core, all report inactive. The

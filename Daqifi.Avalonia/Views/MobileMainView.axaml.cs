@@ -5,6 +5,7 @@ using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Daqifi.Avalonia.Views.Mobile;
+using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.Logger;
 using Daqifi.Desktop.Models;
@@ -58,6 +59,30 @@ public partial class MobileMainView : UserControl
         SizeChanged += (_, _) => UpdateOrientation();
         UpdateOrientation();
     }
+
+    /// <summary>
+    /// The phone's half of #540: a channel's scale expression had no valid result for a sample, and
+    /// the app dropped it. Subscribed while the shell is on screen, so a view the capture harness
+    /// builds and throws away does not stay rooted by the static event.
+    /// </summary>
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        AbstractChannel.ScaleResultsRejected += OnScaleResultsRejected;
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        AbstractChannel.ScaleResultsRejected -= OnScaleResultsRejected;
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    /// <summary>
+    /// Raised from the streaming thread. <see cref="MobileNotificationsViewModel.AddOnce"/>
+    /// marshals to the UI thread and does not stack a second copy of the same sentence.
+    /// </summary>
+    private void OnScaleResultsRejected(AbstractChannel channel) =>
+        _notifications.AddOnce(new Notifications { Message = channel.RejectedScaleResultsNotification });
 
     /// <summary>Landscape → desktop-style left rail; portrait → bottom nav.</summary>
     private void UpdateOrientation()
