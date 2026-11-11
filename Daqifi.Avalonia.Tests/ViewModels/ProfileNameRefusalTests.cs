@@ -1,4 +1,5 @@
 using Daqifi.Core.Communication.Messages;
+using Daqifi.Desktop;
 using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Device;
 using Daqifi.Desktop.Logger;
