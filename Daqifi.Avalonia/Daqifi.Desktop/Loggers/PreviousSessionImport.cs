@@ -23,10 +23,10 @@ namespace Daqifi.Desktop.Logger;
 /// shared with another app, and is never moved, copied as a file, migrated or deleted.
 /// </para>
 /// <para>
-/// <b>Repeatable.</b> A session is identified by its <c>SessionStart</c> text and its first sample,
-/// which this import copies unchanged, and which a rename does not touch. The start alone is not
-/// enough: two SD card sessions can start in the same second (see <c>IsCopy</c>). Sessions already
-/// present (and complete) are skipped. Each new session is written as <see cref="SessionStatus.Importing"/> and marked
+/// <b>Repeatable.</b> Each copy records the ID of its old session (<c>PreviousSessionId</c>) and
+/// keeps its <c>SessionStart</c> text unchanged; a rename touches neither. A session that only looks
+/// like a copy (an SD card log from the same second, say) is never taken for one (see
+/// <c>IsCopy</c>). Sessions already present (and complete) are skipped. Each new session is written as <see cref="SessionStatus.Importing"/> and marked
 /// <see cref="SessionStatus.Complete"/> only once all its samples are in. If the process dies
 /// part-way, startup turns the leftover into <see cref="SessionStatus.ImportFailed"/> (see
 /// <c>LoggingManager.MarkAbandonedImportsFailed</c>), and the next import deletes that partial copy
@@ -248,9 +248,11 @@ public sealed class PreviousSessionImport
                 newId = Math.Max(idFloor, SessionIdAllocator.NextSessionId(connection, transaction)) + 1;
                 idFloor = newId + 1;
                 using var insert = Command(connection,
-                    "INSERT INTO main.Sessions (ID, SessionStart, Name, SampleCount, Status) VALUES ($id, $start, $name, $count, $status)",
+                    "INSERT INTO main.Sessions (ID, SessionStart, Name, SampleCount, Status, PreviousSessionId) " +
+                    "VALUES ($id, $start, $name, $count, $status, $old)",
                     transaction);
                 insert.Parameters.AddWithValue("$id", newId);
+                insert.Parameters.AddWithValue("$old", oldId);
                 insert.Parameters.AddWithValue("$start", start);
                 insert.Parameters.AddWithValue("$name", name);
                 insert.Parameters.AddWithValue("$count", (object?)count ?? DBNull.Value);
@@ -464,9 +466,10 @@ public sealed class PreviousSessionImport
     /// <see cref="SessionStatus.ImportFailed"/>), so they are redone. Rows still marked
     /// <see cref="SessionStatus.Importing"/> may belong to an import running in another copy of the
     /// app and are left alone. Startup turns them into failed ones only when no import holds
-    /// <see cref="ImportLease"/>, so a failed row here is never a live import's. A failed SD card
-    /// import of a different session from the same second is not a copy (<c>IsCopy</c>), so it and
-    /// its samples are kept.
+    /// <see cref="ImportLease"/>, so a failed row here is never a live import's. Only this import's
+    /// own copies are deleted (<c>IsCopy</c>), so a failed SD card import keeps its samples, and a
+    /// copy whose deletion stopped part-way is still found and finished. A copy whose old session
+    /// no longer has samples is kept: it could not be imported again, so it is the only copy left.
     /// </summary>
     /// <returns>The IDs deleted.</returns>
     private static List<int> RemoveFailedImports(SqliteConnection connection, string complete)
@@ -547,24 +550,18 @@ public sealed class PreviousSessionImport
     private const string HasSamples = "EXISTS (SELECT 1 FROM old.Samples s WHERE s.LoggingSessionID = o.ID)";
 
     /// <summary>
-    /// The condition that session <c>m</c> of this user's database is a copy of old session <c>o</c>.
+    /// The condition that session <c>m</c> of this user's database is this import's copy of old
+    /// session <c>o</c>.
     /// </summary>
     /// <remarks>
-    /// The start time alone is not enough (#511). An SD card session starts on a whole second (the
-    /// time in the log's file name), so two different card logs can share one, for example from two
-    /// devices started together. A copy also holds the old session's samples unchanged and in the
-    /// same order, so its first sample (lowest ID) is the old session's first sample. Two sessions
-    /// with the same start are different when those first samples differ in device, channel,
-    /// timestamp or value. A copy that has no sample yet (stopped before its first batch) is matched
-    /// on its start alone: it holds no data, so deleting it loses nothing, and skipping for it only
-    /// delays the session to the next import. Each first sample is one index lookup.
+    /// Each copy records the ID its old session has (<c>PreviousSessionId</c>), and nothing else
+    /// writes that column. The data alone cannot tell a copy apart (#511): an SD card session starts
+    /// on a whole second (the time in the log's file name), so two different card logs can share a
+    /// start and even a first sample, and a partial copy loses its first samples while its clean-up
+    /// runs. The start must match too, because the earlier version can give a deleted session's ID
+    /// to a new one.
     /// </remarks>
-    private const string IsCopy =
-        "m.SessionStart = o.SessionStart AND NOT EXISTS (SELECT 1 FROM main.Samples ms, old.Samples os " +
-        "WHERE ms.ID = (SELECT MIN(ID) FROM main.Samples WHERE LoggingSessionID = m.ID) " +
-        "AND os.ID = (SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) " +
-        "AND NOT (ms.DeviceSerialNo IS os.DeviceSerialNo AND ms.ChannelName IS os.ChannelName " +
-        "AND ms.TimestampTicks IS os.TimestampTicks AND ms.Value IS os.Value))";
+    private const string IsCopy = "m.PreviousSessionId = o.ID AND m.SessionStart = o.SessionStart";
 
     private static bool PreviousSchemaIsUsable(SqliteConnection connection) =>
         HasColumn(connection, "old", "Sessions", "ID")
