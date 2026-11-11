@@ -248,6 +248,79 @@ public sealed class PreviousSessionImportTests : IDisposable
         Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = 9"));
     }
 
+    // A session of this user's database that starts with exactly the old session's first sample
+    // (AddPreviousSession, sample 1) and then differs: two card logs from devices with no serial
+    // ("Unknown") that happened to start on the same reading.
+    private void AddCurrentSessionWithTheSameFirstSample(long id, SessionStatus status)
+    {
+        AddCurrentSession(id, status);
+        Execute(_current,
+            "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            $"VALUES ({id}, 9.5, 20, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);");
+    }
+
+    [Fact]
+    public async Task A_different_session_with_the_same_start_and_first_sample_does_not_block_the_import()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, SameSecond, "Card log", 1, 2);
+        AddCurrentSessionWithTheSameFirstSample(9, SessionStatus.Complete);
+
+        Assert.True(Import().HasSessionsToImport());
+        var imported = (await RunImport()).Imported;
+
+        Assert.Single(imported);
+        Assert.Equal(2L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = 9"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task A_failed_SD_import_with_the_same_start_and_first_sample_is_not_deleted()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, SameSecond, "Card log", 1, 2);
+        // An SD card import that failed part-way; it keeps its samples, because the card log is
+        // often cut short and cannot give them again.
+        AddCurrentSessionWithTheSameFirstSample(9, SessionStatus.ImportFailed);
+
+        var outcome = await RunImport();
+
+        Assert.Empty(outcome.Removed);
+        Assert.Single(outcome.Imported);
+        Assert.Equal(2L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = 9"));
+    }
+
+    [Fact]
+    public async Task A_cleanup_stopped_after_its_first_batch_is_finished_by_the_next_import()
+    {
+        CreatePreviousDatabase();
+        var span = PreviousSessionImport.BatchSpan;
+        AddBulkPreviousSession(1, SameSecond, 1, 2 * span + 10);
+
+        // An import stopped after two batches: a real partial copy, flagged failed.
+        using (var stop = new CancellationTokenSource())
+        {
+            var reports = 0;
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Import().ImportAsync(
+                new ImportOutcome(), new SynchronousProgress(_ => { if (++reports == 3) stop.Cancel(); }), stop.Token));
+        }
+
+        var partial = Scalar<long>(_current, "SELECT ID FROM Sessions WHERE Status = 2");
+        Assert.Equal(2 * span, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {partial}"));
+
+        // Its clean-up then stopped after the first batch of samples was deleted, as a closed app
+        // would leave it. This is the batch DeleteSessions commits first.
+        Execute(_current,
+            $"DELETE FROM Samples WHERE ID IN (SELECT ID FROM Samples WHERE LoggingSessionID = {partial} LIMIT {span})");
+
+        var outcome = await RunImport();
+
+        Assert.Equal([(int)partial], outcome.Removed);
+        Assert.Single(outcome.Imported);
+        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
+        Assert.Equal(2 * span + 10, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples"));
+    }
+
     [Fact]
     public async Task An_interrupted_session_is_deleted_and_imported_again_in_full()
     {
