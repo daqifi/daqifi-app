@@ -914,9 +914,8 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // Device Logs View Model
                     DeviceLogsViewModel = new DeviceLogsViewModel();
 
-                    //Xml profiles load
-                    LoggingManager.Instance.AddAndRemoveProfileXml(null, false);
-                    _ = new ObservableCollection<Profile>(LoggingManager.Instance.LoadProfilesFromXml());
+                    // The profiles file is read by LoggingManager.Instance as it is created, on
+                    // every head (#544) — not here, which only the desktop ever reached.
 
                     // Notifications
                     _versionNotification = new VersionNotification();
