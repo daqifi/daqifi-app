@@ -78,70 +78,121 @@ public class SerialDisplayTests
 
     #endregion
 
-    #region SameDevice — decimal and hex name one board
+    #region Matching — the source of a serial sets its format (review thread on DeviceSerials.cs)
 
     /// <summary>
-    /// The acceptance criterion in one line: what the screen now shows still names the board it was
-    /// read from. <see cref="DeviceSerials.SameDevice"/> defers to Core's <c>DeviceIdentity</c>, which
-    /// reconciles the two renderings; this exercises the pinned package, not a copy of its rule.
+    /// The defect the review found. A 16-digit hex serial that has only digits in it is also a
+    /// valid decimal number. Core's <c>DeviceIdentity</c> reads such a value as decimal first, so
+    /// the hex form of stored serial <c>1024</c> (<c>0000000000000400</c>) was read as <c>400</c>:
+    /// the correct board was rejected and board <c>400</c> was accepted. Core 1.9.1 has no way to
+    /// say which format a value is in, so the app decides from where the value came from.
     /// </summary>
-    [Theory]
-    [InlineData(BenchDecimal, BenchIdnHex)]
-    [InlineData(BenchIdnHex, BenchDecimal)]
-    [InlineData(BenchDecimal, "7e2815916200e898")]
-    [InlineData("9090642310508636305", "7E2873046200E891")]
-    public void The_decimal_and_hex_forms_of_one_serial_are_the_same_device(string left, string right)
+    /// <remarks>
+    /// <see cref="DeviceSerials.MatchesScpiSerial"/> reads the stored side as decimal and the SCPI
+    /// side as hex, always. These are the reviewer's two cases: the correct match and the incorrect
+    /// match, for the serial whose hex form has only digits.
+    /// </remarks>
+    [Fact]
+    public void An_all_digit_SCPI_serial_matches_the_stored_serial_it_was_made_from()
     {
-        Assert.True(DeviceSerials.SameDevice(left, right));
+        Assert.Equal("0000000000000400", DeviceSerials.ToDisplay("1024"));
+        Assert.True(DeviceSerials.MatchesScpiSerial("1024", "0000000000000400"));
     }
 
     [Fact]
-    public void The_display_form_of_the_bench_serial_matches_the_stored_form()
+    public void An_all_digit_SCPI_serial_does_not_match_the_board_its_digits_spell_in_decimal()
     {
-        Assert.True(DeviceSerials.SameDevice(BenchDecimal, DeviceSerials.ToDisplay(BenchDecimal)));
+        Assert.False(DeviceSerials.MatchesScpiSerial("400", "0000000000000400"));
     }
 
+    /// <summary>
+    /// The same ambiguity, for two STORED serials: the profile matcher, the drawer and the notice
+    /// de-duplication all compare one stored serial with another. A stored serial is decimal text
+    /// that the app wrote, so it is compared as text and never read as hex. The hex text of board
+    /// <c>1024</c>, copied into a saved profile, therefore selects no board by serial — and above
+    /// all not board <c>400</c>, which Core's decimal-first rule selected.
+    /// </summary>
     [Theory]
-    // Two real boards, in every pairing of the two renderings.
-    [InlineData(BenchDecimal, "9090642310508636305")]
-    [InlineData(BenchIdnHex, "7E2873046200E891")]
-    [InlineData(BenchDecimal, "7E2873046200E891")]
-    [InlineData(BenchIdnHex, "9090642310508636305")]
-    public void The_serials_of_two_different_boards_are_not_the_same_device(string left, string right)
+    [InlineData("400", "0000000000000400")]
+    [InlineData("0000000000000400", "400")]
+    [InlineData("1024", "0000000000000400")]
+    public void A_stored_serial_is_never_read_as_hex(string left, string right)
     {
         Assert.False(DeviceSerials.SameDevice(left, right));
     }
 
     /// <summary>
-    /// The missing-serial rule did not move with the re-point: Core's <c>DeviceIdentity</c> never
-    /// matches an identity with no serial, so <see cref="DeviceSerials.SameDevice"/> keeps the old
-    /// string rule for that case and two missing serials still compare equal, as <c>==</c> did.
+    /// The acceptance criterion of #493, now through the source-aware rule: what the screen shows
+    /// (the SCPI form) still names the board it was made from, for every kind of stored serial —
+    /// including the ones that have no hex form and are shown unchanged.
     /// </summary>
     [Theory]
+    [InlineData(BenchDecimal)]
+    [InlineData("9090642310508636305")]
+    [InlineData("1024")]
+    [InlineData("0")]
+    [InlineData("18446744073709551615")]
+    [InlineData("SN-0001")]
+    [InlineData("DAQiFi-Nq1-0004104")]
+    public void The_display_form_of_a_stored_serial_matches_that_stored_serial(string stored)
+    {
+        Assert.True(DeviceSerials.MatchesScpiSerial(stored, DeviceSerials.ToDisplay(stored)));
+    }
+
+    [Theory]
+    // The bench Nq1, as *IDN? reports it, in either case.
+    [InlineData(BenchDecimal, BenchIdnHex)]
+    [InlineData(BenchDecimal, "7e2815916200e898")]
+    // The example in issue #493.
+    [InlineData("9090642310508636305", "7E2873046200E891")]
+    public void The_IDN_serial_of_a_board_matches_its_stored_serial(string stored, string scpi)
+    {
+        Assert.True(DeviceSerials.MatchesScpiSerial(stored, scpi));
+    }
+
+    [Theory]
+    // Two real boards, crossed.
+    [InlineData(BenchDecimal, "7E2873046200E891")]
+    [InlineData("9090642310508636305", BenchIdnHex)]
+    // A SCPI serial is hex, so the decimal text of the same board is not its SCPI form.
+    [InlineData(BenchDecimal, BenchDecimal)]
+    // A missing serial names no board.
+    [InlineData(null, BenchIdnHex)]
+    [InlineData(BenchDecimal, null)]
+    [InlineData("", "")]
+    [InlineData(null, null)]
+    public void A_SCPI_serial_does_not_match_a_different_or_missing_stored_serial(string? stored, string? scpi)
+    {
+        Assert.False(DeviceSerials.MatchesScpiSerial(stored, scpi));
+    }
+
+    [Theory]
+    // Two real boards: stored serials of different boards are different text.
+    [InlineData(BenchDecimal, "9090642310508636305")]
+    [InlineData(BenchIdnHex, "7E2873046200E891")]
+    public void The_stored_serials_of_two_different_boards_are_not_the_same_device(string left, string right)
+    {
+        Assert.False(DeviceSerials.SameDevice(left, right));
+    }
+
+    /// <summary>
+    /// Two stored serials compare by the rule <c>main</c> had before #493: equal text, without
+    /// regard to case. That is exact for every serial the app stores, because each one is the
+    /// base-10 text of one <c>ulong</c>, which has exactly one spelling.
+    /// </summary>
+    [Theory]
+    [InlineData(BenchDecimal, BenchDecimal, true)]
+    [InlineData("sn-0001", "SN-0001", true)]
     [InlineData(null, null, true)]
     [InlineData("", "", true)]
     [InlineData(null, BenchDecimal, false)]
     [InlineData(BenchDecimal, null, false)]
     [InlineData("", BenchDecimal, false)]
     [InlineData(" ", "", false)]
-    public void A_missing_serial_keeps_the_old_string_rule(string? left, string? right, bool expected)
+    [InlineData("007", "7", false)]
+    public void Two_stored_serials_keep_the_rule_from_before_493(string? left, string? right, bool expected)
     {
         Assert.Equal(expected, DeviceSerials.SameDevice(left, right));
-    }
-
-    /// <summary>
-    /// A known edge of Core's rule, pinned so it is a decision and not a surprise. A 16-digit hex
-    /// serial made of digits only is also a valid decimal number, and Core reads it as decimal first.
-    /// So the hex form of a small serial, which is mostly leading zeros, does not match the decimal
-    /// form of the same serial. No real board is affected that we know of — the serials seen on the
-    /// bench all contain a hex letter — and no stored serial is ever hex, so this only matters for a
-    /// hex value that a person types in.
-    /// </summary>
-    [Fact]
-    public void An_all_digit_hex_form_is_read_as_decimal_by_Core()
-    {
-        Assert.Equal("0000000000000400", DeviceSerials.ToDisplay("1024"));
-        Assert.False(DeviceSerials.SameDevice("1024", "0000000000000400"));
     }
 
     #endregion

@@ -2916,7 +2916,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     public string WifiFlashUnavailableMessage => FirmwareUpdateCoordinator.WifiFlashUnavailableMessage;
 
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.AddWifiNotification
-    private void AddWifiNotification(IStreamingDevice device, string reportedVersion)
+    internal void AddWifiNotification(IStreamingDevice device, string reportedVersion)
     {
         var versionText = string.Equals(reportedVersion, "Unknown", StringComparison.OrdinalIgnoreCase)
             ? "could not be read"

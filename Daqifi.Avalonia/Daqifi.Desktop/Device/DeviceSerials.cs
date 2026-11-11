@@ -91,6 +91,9 @@ public static class DeviceSerials
         return DeviceIdentity.Create(left).Matches(DeviceIdentity.Create(right));
     }
 
+    // RED STUB (shepherd, temporary): the head's rule, to show the new tests fail for the right reason.
+    public static bool MatchesScpiSerial(string? stored, string? scpi) => SameDevice(stored, scpi);
+
     /// <summary>
     /// The serial as the user sees it: the 16-digit upper-case hex form that <c>*IDN?</c> reports
     /// (issue #493).
