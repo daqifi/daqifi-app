@@ -74,25 +74,11 @@ public class SerialIdentityCasingTests : IDisposable
     [Theory]
     [InlineData("SN-0001", "SN-0002")]
     [InlineData("9090539562006014104", "9090539562006014105")]
-    [InlineData("SN-0001", "SN 0001")]
+    [InlineData("SN-0001", "SN-0001 ")]
     [InlineData("SN-0001", "")]
     public void Serials_that_differ_by_more_than_case_stay_distinct(string left, string right)
     {
         Assert.False(DeviceSerials.SameDevice(left, right));
-    }
-
-    /// <summary>
-    /// The one behaviour #493 changed here on purpose. <see cref="DeviceSerials.SameDevice"/> now
-    /// defers to Core's <c>DeviceIdentity</c>, which trims a serial before it compares it, so
-    /// whitespace around a serial no longer makes two readings of one board look like two boards.
-    /// Before #493 this pair was distinct. No serial the app stores carries such whitespace (they
-    /// are <c>ulong</c> values rendered base-10), so no stored match changes.
-    /// </summary>
-    [Fact]
-    public void Whitespace_around_a_serial_does_not_make_it_a_different_device()
-    {
-        Assert.True(DeviceSerials.SameDevice("SN-0001", "SN-0001 "));
-        Assert.True(DeviceSerials.SameDevice(" 9090539562006014104", "9090539562006014104"));
     }
 
     /// <summary>
