@@ -61,7 +61,7 @@ The desktop head needs, from the OS:
 | `System.IO.Ports` — raw serial | `ConnectionManager.cs`, `SerialPortPollingDeviceWatcher.cs`, `FirmwareUpdateCoordinator.cs:706,818` | USB device connection, port enumeration, firmware flash at 9600 baud |
 | `System.Management` (WMI) | `Daqifi.Avalonia.csproj:106` | Windows device enumeration |
 | **Windows Firewall rule creation** | `Configuration/FirewallManager.cs` | Letting discovery traffic through; **requires administrator** |
-| Subnet-directed **UDP broadcast**, port 30303 | `Services/NativeWiFiDiscovery.cs` | Device discovery — not mDNS, so there is no service type to declare |
+| Subnet-directed **UDP broadcast**, port 30303 | Core `WiFiDeviceFinder` (`ConnectionDialogViewModel.cs`, `MobileShellViewModel.cs`) | Device discovery — not mDNS, so there is no service type to declare |
 | `Process.Start` of a native flash tool | firmware update path | PIC32 and WINC1500 flashing |
 | Elevation-dependent data directory | `App.cs:48`, `AppDataPaths` | Machine-wide when elevated, per-user otherwise |
 
