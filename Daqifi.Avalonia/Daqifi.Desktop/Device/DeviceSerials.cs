@@ -35,22 +35,35 @@ namespace Daqifi.Desktop.Device;
 /// </para>
 /// <para>
 /// Case is not the only axis a serial can vary on: one board's serial has a decimal rendering
-/// (what Core's protobuf paths put in <c>IStreamingDevice.DeviceSerialNo</c>, and so what every
-/// saved session and profile stores) and a hex rendering (what <c>*IDN?</c> and the capability
-/// document report, and — since #493 — what the app shows). The text alone cannot always tell
+/// (what Core's protobuf and discovery paths put in <c>IStreamingDevice.DeviceSerialNo</c>, and so
+/// what every connected device, saved profile and live-logged session holds) and a hex rendering
+/// (what <c>*IDN?</c>, the capability document and the header of an SD-card log report, and —
+/// since #493 — what the app shows). The text alone cannot always tell
 /// the two apart: a 16-digit hex serial made only of digits is also a valid decimal number, so
 /// <c>0000000000000400</c> (stored serial <c>1024</c>) also reads as decimal <c>400</c>. Core's
 /// <c>DeviceIdentity.Matches</c> resolves that by reading decimal first, which rejects board
 /// <c>1024</c> and accepts board <c>400</c>, and Core 1.9.1 has no way to say which format a value
 /// is in. So the format comes from where the value came from, never from its text, and
-/// <see cref="SameDevice"/> compares two stored serials and never reads hex. Nothing in the app
-/// accepts a serial in the hex form yet: matching one that a person copied off the screen, for
-/// example into the profiles file, needs a format the app can identify and is issue #553.
+/// <see cref="SameDevice"/> compares two stored serials and never reads hex. No input in the app
+/// accepts a serial that a person types or copies in the hex form yet: matching one copied off the
+/// screen, for example into the profiles file, needs a format the app can identify and is issue
+/// #553.
 /// </para>
 /// <para>
-/// The stored value stays decimal. It is part of the SQLite key for session device metadata and is
-/// what saved profiles hold, so changing it would orphan existing data. Only the rendering changes,
-/// through <see cref="ToDisplay"/> and <see cref="ToShortDisplay"/>, at the point a serial is shown.
+/// One kind of stored serial is not decimal. A session imported from an SD-card log keeps the
+/// serial from the file header, which the firmware writes with <c>"%016llX"</c> in both the CSV
+/// and the JSON format, and Core 1.9.1's SD parsers keep that text as it is. None of
+/// <see cref="SameDevice"/>'s callers compares such a serial, so matching is not affected, but
+/// <see cref="ToDisplay"/> cannot know where a value came from: it shows such a serial unchanged
+/// when it has a letter in it, and converts one made only of the digits 0–9 as if it were decimal,
+/// which shows a wrong serial for that session. For uniformly random serials that is about one
+/// board in 1,800, and the two Nq1 serials seen so far both have letters in them.
+/// </para>
+/// <para>
+/// This class does not change any stored value. The serial is part of the SQLite key for session
+/// device metadata and is what saved profiles hold, so changing it would orphan existing data.
+/// Only the rendering changes, through <see cref="ToDisplay"/> and <see cref="ToShortDisplay"/>, at
+/// the point a serial is shown.
 /// </para>
 /// </remarks>
 public static class DeviceSerials
@@ -96,10 +109,12 @@ public static class DeviceSerials
     /// (issue #493).
     /// </summary>
     /// <remarks>
-    /// Only a value that is a plain base-10 number — the form every stored serial has — is
-    /// converted. Anything else (a USB descriptor string, a placeholder such as "Unknown", a test
-    /// fixture) is returned unchanged, because it has no hex rendering to give. Null becomes the
-    /// empty string, so a binding shows a blank cell rather than nothing at all.
+    /// Only a value that is a plain base-10 number — the form of every serial Core reads from a
+    /// connected device — is converted. Anything else (a USB descriptor string, a placeholder such
+    /// as "Unknown", a test fixture, the hex serial of a session imported from an SD-card log) is
+    /// returned unchanged. Null becomes the empty string, so a binding shows a blank cell rather
+    /// than nothing at all. The text alone does not show its format, so an SD-card hex serial made
+    /// only of the digits 0–9 is converted as if it were decimal; the class remarks describe it.
     /// </remarks>
     /// <param name="serial">The stored serial, normally decimal.</param>
     /// <returns>The display form of <paramref name="serial"/>.</returns>

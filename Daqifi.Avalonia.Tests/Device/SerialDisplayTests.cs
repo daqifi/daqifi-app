@@ -47,7 +47,8 @@ public class SerialDisplayTests
     [InlineData("SN-0001")]
     [InlineData("Unknown")]
     [InlineData("DAQiFi-Nq1-0004104")]
-    // Already hex: shown as written, never converted a second time.
+    // Already hex with a letter in it, as the header of an SD-card log stores it: shown as written.
+    // A hex serial made only of digits cannot be told from decimal; see the DeviceSerials remarks.
     [InlineData(BenchIdnHex)]
     // Not a plain base-10 number: sign, padding, separators, and a value past 64 bits.
     [InlineData("-1")]
