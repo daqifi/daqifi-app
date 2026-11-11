@@ -37,7 +37,7 @@ public class MinimapInteractionController : IDisposable
     private double _dragStartDataX;
     private double _dragStartRectMin;
     private double _dragStartRectMax;
-    private Cursor _lastCursor;
+    private Cursor? _lastCursor;
 
     private const double EDGE_TOLERANCE_FRACTION = 0.02;
 
