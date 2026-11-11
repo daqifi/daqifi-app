@@ -491,10 +491,16 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// Returns the friendly name when set, then the serial number when populated,
     /// otherwise falls back to DisplayIdentifier.
     /// </summary>
+    /// <remarks>
+    /// The serial is shown in its display form (<see cref="DeviceSerials.ToDisplay"/>, the hex that
+    /// <c>*IDN?</c> reports, issue #493). The friendly name is shown exactly as the owner set it,
+    /// even when it is only digits, so the display rule is applied to the serial branch alone and
+    /// never to this property's result.
+    /// </remarks>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.DeviceDisplayName
     public string DeviceDisplayName =>
         !string.IsNullOrWhiteSpace(FriendlyName) ? FriendlyName :
-        !string.IsNullOrWhiteSpace(DeviceSerialNo) ? DeviceSerialNo : DisplayIdentifier;
+        !string.IsNullOrWhiteSpace(DeviceSerialNo) ? DeviceSerials.ToDisplay(DeviceSerialNo) : DisplayIdentifier;
 
     /// <summary>
     /// Gets the COM port identifier for USB devices. Override in derived classes.

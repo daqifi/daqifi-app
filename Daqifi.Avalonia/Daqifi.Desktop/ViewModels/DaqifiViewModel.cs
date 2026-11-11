@@ -2921,7 +2921,9 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         var versionText = string.Equals(reportedVersion, "Unknown", StringComparison.OrdinalIgnoreCase)
             ? "could not be read"
             : $"is out of date ({reportedVersion})";
-        var message = $"Device {device.DeviceSerialNo}: WiFi module firmware {versionText} " +
+        // The text shows the serial in its display form (#493); the notice keeps the stored serial
+        // below, because de-duplication and the per-device pruning compare that one.
+        var message = $"Device {DeviceSerials.ToDisplay(device.DeviceSerialNo)}: WiFi module firmware {versionText} " +
                       $"(minimum {FirmwareUpdateCoordinator.MinimumWifiFirmwareVersion}). Click below to update just the WiFi module.";
 
         var existingNotification = NotificationList.FirstOrDefault(n => n.IsWifiFirmwareUpdate
