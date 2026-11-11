@@ -5,6 +5,7 @@
 
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Xml;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Daqifi.Core.Logging.Export;
@@ -697,6 +698,53 @@ public partial class ProfilesPaneViewModel : ObservableObject
     internal static string UnsavedEditMessage(string profileName) =>
         $"Could not save your changes to the profile '{profileName}' — the profiles file could not be written. " +
         "The changes are kept until the app closes: open the profile and close it to try again.";
+
+    /// <summary>What the drawer says when the name is blank (#559).</summary>
+    internal const string ProfileNameBlankMessage =
+        "Give the profile a name — a profile with no name cannot be saved.";
+
+    /// <summary>
+    /// What the drawer says when the name holds a character XML 1.0 does not permit, which
+    /// <c>XDocument.Save</c> refuses (#559). A paste is the usual way one gets into the box.
+    /// </summary>
+    internal const string ProfileNameCharacterMessage =
+        "The name contains a character that cannot be saved, for example a control character from a paste. " +
+        "Remove it, then try again.";
+
+    /// <summary>
+    /// What the app notification says when the pane closed on an edit whose name was refused. The
+    /// name is not repeated: it is blank, or it holds the character that is the problem.
+    /// </summary>
+    internal static string UnsavedNameMessage(string reason) =>
+        $"Could not save your changes to a profile. {reason} " +
+        "The changes are kept until the app closes: open the profile, correct the name and close it.";
+
+    /// <summary>
+    /// <c>null</c> when <paramref name="name"/> can be written to the profiles file; otherwise
+    /// what the drawer says about it.
+    /// </summary>
+    /// <remarks>
+    /// Refuse, not repair. A blank name has nothing to repair it from, and deleting a character
+    /// would change the name under the user's cursor in a box bound straight to the profile. So
+    /// both cases keep the drawer open with the reason, and the user decides the name.
+    /// <c>XmlConvert.VerifyXmlChars</c> reads surrogate pairs as one character, so an emoji passes;
+    /// a check per <c>char</c> with <c>IsXmlChar</c> would refuse it.
+    /// </remarks>
+    // Downstream-only: upstream closed the drawer without saving on a blank name, and let the
+    // XML writer throw on the rest.
+    private static string? ProfileNameProblem(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return ProfileNameBlankMessage;
+        try
+        {
+            XmlConvert.VerifyXmlChars(name);
+            return null;
+        }
+        catch (XmlException)
+        {
+            return ProfileNameCharacterMessage;
+        }
+    }
 
     /// <summary>
     /// The one-shot notice about a damaged profiles file, shown the first time the drawer opens
