@@ -5,6 +5,7 @@ using Daqifi.Desktop;
 using Daqifi.Desktop.Logger;
 using Daqifi.Desktop.ViewModels;
 using Xunit;
+using DeviceMode = Daqifi.Desktop.Device.DeviceMode;
 using IStreamingDevice = Daqifi.Desktop.Device.IStreamingDevice;
 
 namespace Daqifi.Avalonia.Tests.ViewModels;
@@ -324,6 +325,81 @@ public sealed class DroppedDeviceSessionStopTests : IDisposable
         Assert.True(_viewModel.IsLogging);
         Assert.Empty(_viewModel.ActiveChannels);
         Assert.True(_viewModel.CanToggleLogging);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Review of #554: the other half of that rule. When the SD-only run stops, the toggle must go
+    // back to disabled — otherwise it reads OFF, enabled, with no active channel, and a click starts
+    // a session that has nothing to record. The device's own announcement and the setter's refused-
+    // stop bookkeeping both change IsLogging without passing through UpdateUi, which is where the
+    // rule was evaluated.
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A device that reconnects while it logs to its SD card, with no channel subscribed on this
+    /// desktop. <see cref="RecordingStreamingDevice.AnnouncesSdCardLogging"/> makes it announce its
+    /// SD state the way the real device does, which is the notification under test.
+    /// </summary>
+    private RecordingStreamingDevice AnSdOnlyRunAfterReconnect(string serial)
+    {
+        var device = new RecordingStreamingDevice(serial) { AnnouncesSdCardLogging = true };
+        device.SwitchMode(DeviceMode.LogToDevice);
+        device.StartSdCardLogging();
+        device.Commands.Clear();
+        ConnectionManager.Instance.RegisterConnectedDevice(device);
+        _registered.Add(device);
+        RaiseConnectedDevicesChanged();
+
+        Assert.True(_viewModel.IsLogging);
+        Assert.Empty(_viewModel.ActiveChannels);
+        Assert.True(_viewModel.CanToggleLogging);
+        return device;
+    }
+
+    /// <summary>The review's case: the user turns that run OFF from the toggle.</summary>
+    [Fact]
+    public void WhenTheUserStopsAnSdOnlyRun_TheToggleIsDisabledAgain()
+    {
+        var device = AnSdOnlyRunAfterReconnect("Nq1-SD-OFF");
+
+        _viewModel.IsLogging = false;
+
+        Assert.Contains("StopSdCardLogging", device.Commands);
+        Assert.False(_viewModel.IsLogging);
+        Assert.False(_viewModel.CanToggleLogging);
+    }
+
+    /// <summary>
+    /// The run ends without the toggle — another client sent the stop, or the device stopped by
+    /// itself. The device's announcement is then the only signal the app gets.
+    /// </summary>
+    [Fact]
+    public void WhenAnSdOnlyRunStopsOnTheDevice_TheToggleIsDisabledAgain()
+    {
+        var device = AnSdOnlyRunAfterReconnect("Nq1-SD-SELF");
+
+        device.StopSdCardLogging();
+
+        Assert.False(_viewModel.IsLogging);
+        Assert.False(_viewModel.CanToggleLogging);
+    }
+
+    /// <summary>
+    /// The device refuses the stop. Its flag still reads true, the setter drops that flag as stale
+    /// (<c>ForgetSdState</c>), and no device announcement follows — so the setter itself is the
+    /// only place that sees IsLogging change.
+    /// </summary>
+    [Fact]
+    public void WhenAnSdOnlyRunRefusesTheStop_TheToggleIsDisabledAgain()
+    {
+        var device = AnSdOnlyRunAfterReconnect("Nq1-SD-REFUSES");
+        device.Refusals["StopSdCardLogging"] = new InvalidOperationException("no answer");
+
+        _viewModel.IsLogging = false;
+
+        Assert.True(device.IsLoggingToSdCard);
+        Assert.False(_viewModel.IsLogging);
+        Assert.False(_viewModel.CanToggleLogging);
     }
 
     /// <summary>An <see cref="IFirmwareDownloadService"/> that reaches no network.</summary>
