@@ -3,6 +3,7 @@
 // DO NOT manually delete the `// @port:` markers — they link symbols back to
 // the correspondence map.
 
+using Daqifi.Desktop.Common;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.ViewModels;
 using System;
@@ -19,14 +20,26 @@ public partial class MainWindow : Window
 {
     private readonly AppLogger _appLogger = AppLogger.Instance;
 
+    /// <summary>
+    /// "DAQiFi v3.3.0-beta.39": the version a release was tagged with, prerelease label included,
+    /// so a beta tester can tell which beta they are on (#533). Build metadata (<c>+sha</c>) is
+    /// left out, as on the mobile screen. Falls back to the assembly version if none resolves.
+    /// </summary>
+    // Downstream-only: upstream showed Major.Minor.Build of the entry assembly.
+    internal static string WindowTitle(string? semantic, Version? assemblyVersion) =>
+        semantic is not null
+            ? $"DAQiFi v{semantic}"
+            : assemblyVersion is null
+                ? "DAQiFi"
+                : $"DAQiFi v{assemblyVersion.Major}.{assemblyVersion.Minor}.{assemblyVersion.Build}";
+
     public MainWindow()
     {
         try
         {
             InitializeComponent();
 
-            var version = Assembly.GetExecutingAssembly().GetName().Version;
-            Title = $"DAQiFi v{version.Major}.{version.Minor}.{version.Build}";
+            Title = WindowTitle(AppVersion.Semantic, Assembly.GetExecutingAssembly().GetName().Version);
 
             Closing += (sender, e) =>
             {

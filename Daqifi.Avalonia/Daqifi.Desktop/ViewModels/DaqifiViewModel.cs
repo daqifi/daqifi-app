@@ -1785,6 +1785,19 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     private bool _isImportingPreviousSessions;
 
     /// <summary>The offer (or a retry after a failure): a short line, Import, and Dismiss.</summary>
+    /// <summary>
+    /// The refusal with the size it needs, so a user knows whether freeing a little space is enough
+    /// (#532). Sizes in the same units as the log list and Windows Explorer.
+    /// </summary>
+    internal static string NotEnoughSpaceNotice(long bytesNeeded)
+    {
+        const double GB = 1024.0 * 1024 * 1024;
+        var size = bytesNeeded >= 10 * GB ? $"{bytesNeeded / GB:0} GB"
+            : bytesNeeded >= GB ? $"{bytesNeeded / GB:0.#} GB"
+            : $"{Math.Max(1, Math.Ceiling(bytesNeeded / (1024.0 * 1024))):0} MB";
+        return $"Not enough disk space to import: it needs about {size}.";
+    }
+
     private Notifications OfferedImportNotice(PreviousSessionImport import, string message) => new()
     {
         Message = message,
@@ -1893,7 +1906,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         catch (NotEnoughDiskSpaceException ex)
         {
             _appLogger.Warning(ex.Message);
-            ShowPreviousSessionNotice(OfferedImportNotice(import, "Not enough disk space to import."));
+            ShowPreviousSessionNotice(OfferedImportNotice(import, NotEnoughSpaceNotice(ex.BytesNeeded)));
         }
         catch (Exception ex)
         {
