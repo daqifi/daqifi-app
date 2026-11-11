@@ -75,6 +75,24 @@ public class ChannelTileActiveStateTests
     }
 
     /// <summary>
+    /// The active fill: an element inside the tile, painted with the channel's type colour at low
+    /// opacity, shown only while <c>IsActive</c>. Desktop paints a <c>Rectangle</c>'s <c>Fill</c>,
+    /// mobile a <c>Border</c>'s <c>Background</c>; either attribute counts.
+    /// </summary>
+    [Theory]
+    [InlineData(DesktopView)]
+    [InlineData(MobileView)]
+    public void The_tile_draws_a_type_colour_fill_only_while_active(string view)
+    {
+        var fill = Assert.Single(
+            Tile(view).Descendants(),
+            e => ((string?)e.Attribute("Fill") ?? (string?)e.Attribute("Background")) == "{Binding StripeBrush}"
+                 && (string?)e.Attribute("IsVisible") == "{Binding IsActive}");
+        Assert.Equal("0.15", (string?)fill.Attribute("Opacity"));
+        Assert.Equal("False", (string?)fill.Attribute("IsHitTestVisible"));
+    }
+
+    /// <summary>
     /// Both heads show the same word for the same state. The pill must sit under an element whose
     /// visibility follows <c>IsActive</c>; a pill shown on every tile would say nothing.
     /// </summary>
