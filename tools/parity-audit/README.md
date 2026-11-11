@@ -512,6 +512,15 @@ captures once and verifies against the one for the current host, failing on a ch
 screen, a missing one, and one the baseline does not list (`shasum -c` only checks the
 names it was given, so the extra-file direction is checked separately).
 
+`dialog-connect-usb-idle` and `dialog-connect-usb-error` were re-recorded 2026-11-10 (macOS 26.5,
+Apple silicon, .NET SDK 10.0.302) for #493, which shows a device serial in the 16-digit hex form
+`*IDN?` reports instead of the stored decimal. They are the only two screens in this manifest that
+render a serial: the seeded USB device's `1024` now reads `0000000000000400`. The other
+thirty-eight hashes are byte-for-byte unchanged, the five `devicelogs-*` screens among them — they
+name the seeded device by `DeviceDisplayName`, which #493 did not change. The pre-change capture
+reproduced the then-committed manifest on all forty screens, and five `--determinism` runs agreed
+on all forty after the change.
+
 `dialog-firmware-close-refused` was added 2026-11-10 (macOS 26.5, Apple silicon, .NET SDK
 10.0.302) for #539. It is a new line, not a re-record: the other thirty-nine hashes are
 unchanged, `dialog-firmware-uploading` among them, although the scrim it shows gained a row
