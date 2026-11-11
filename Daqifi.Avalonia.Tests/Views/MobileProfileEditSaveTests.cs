@@ -265,7 +265,8 @@ public sealed class MobileProfileEditSaveTests : IDisposable
 
     /// <summary>
     /// Returns the code-only body of a method, comments and string literals blanked, so a call
-    /// written in a comment cannot satisfy the guard. Fails loudly when the method is missing.
+    /// written in a comment cannot satisfy the guard. Fails loudly when the method is missing or
+    /// has an expression body.
     /// </summary>
     private static string BodyOf(string method)
     {
@@ -276,6 +277,11 @@ public sealed class MobileProfileEditSaveTests : IDisposable
 
         var open = source.IndexOf('{', declaration.Index + declaration.Length);
         Assert.True(open >= 0, $"{Shell}: {method} has no body.");
+        // An expression body has no brace of its own, so the next '{' belongs to the NEXT member,
+        // and the guard would silently read that member instead.
+        Assert.False(
+            source[(declaration.Index + declaration.Length)..open].Contains("=>", StringComparison.Ordinal),
+            $"{Shell}: {method} is expression-bodied; give it a block body so this guard reads it.");
 
         var depth = 0;
         for (var i = open; i < source.Length; i++)
