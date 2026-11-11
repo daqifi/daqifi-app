@@ -109,22 +109,28 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     // while the render poll re-arms from the UI thread.
     private readonly HashSet<IChannel> _countedChannels = new(ReferenceEqualityComparer.Instance);
     // One generation per stream, and one handler delegate closed over it. Unsubscribing cannot
-    // stop an OnChannelUpdated invocation that has already read the channel's delegate field, so
+    // stop a SampleReceived invocation that has already read the channel's delegate field, so
     // a callback from the previous stream can still be in flight while the next stream resets the
     // total to zero — and would then credit its sample to the new stream. Checking the generation
     // is how such a callback recognises that it is stale. Both fields are guarded by
     // _countedChannels; the generation is also read unlocked from the receive thread.
     private int _countingGeneration;
-    private OnChannelUpdatedHandler? _sampleHandler;
+    private EventHandler? _sampleHandler;
     private long _totalSamples;
 
     /// <summary>
     /// Samples acquired since streaming started, summed over every streamed channel.
     /// </summary>
     /// <remarks>
-    /// Counted at the source — <see cref="IChannel.OnChannelUpdated"/>, which fires once per
-    /// channel per parsed streaming frame on the Core receive thread, the same signal the
-    /// logging path consumes — so this is the number of samples the device actually delivered.
+    /// Counted at the source — <see cref="IChannel.SampleReceived"/>, which fires once per
+    /// channel per parsed streaming frame on the Core receive thread — so this is the number of
+    /// samples the device actually delivered.
+    /// <para>
+    /// That includes the samples a scale expression drops, which the logging path's
+    /// <see cref="IChannel.OnChannelUpdated"/> never sees. This count is also the watchdog's proof
+    /// that the connection is alive, and an expression with no valid result (<c>x / 0</c>) must
+    /// not make a device that is still sending data look dead (#540).
+    /// </para>
     /// <para>
     /// It used to be incremented inside <see cref="PollActiveSamples"/>, which can only ever
     /// observe the LATEST value per channel per render tick. That capped it at 20 samples per
@@ -670,7 +676,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             if (_sampleHandler == null) { return; }
             if (_countedChannels.Add(channel))
             {
-                channel.OnChannelUpdated += _sampleHandler;
+                channel.SampleReceived += _sampleHandler;
             }
         }
     }
@@ -692,7 +698,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             {
                 foreach (var channel in _countedChannels)
                 {
-                    channel.OnChannelUpdated -= handler;
+                    channel.SampleReceived -= handler;
                 }
             }
             _countedChannels.Clear();

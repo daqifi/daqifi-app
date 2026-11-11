@@ -127,6 +127,13 @@ public interface IChannel
 
     #region Events
     event OnChannelUpdatedHandler OnChannelUpdated;
+
+    /// <summary>
+    /// Raised for every sample that arrives, including one the scale expression drops and
+    /// <see cref="OnChannelUpdated"/> therefore never sees (#540). It says only that data arrived,
+    /// and carries no value, so nothing can record a dropped sample from it.
+    /// </summary>
+    event EventHandler? SampleReceived;
     #endregion
 
     // @port: Daqifi.Desktop.Channel.IChannel.NotifyChannelUpdated

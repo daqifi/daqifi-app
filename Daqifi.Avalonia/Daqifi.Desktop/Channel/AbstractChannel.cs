@@ -397,6 +397,14 @@ public abstract partial class AbstractChannel : ObservableObject, IChannel
             // sample is being scaled here, and a null read halfway through would be counted as a
             // sample the expression could not scale.
             var expression = Expression;
+
+            // Ahead of the scale check: a dropped sample is still data from the device, and the
+            // phone's watchdog counts these to decide whether the connection is alive (#540).
+            if (value != null)
+            {
+                SampleReceived?.Invoke(this, EventArgs.Empty);
+            }
+
             if (expression != null && HasValidExpression && IsScalingActive && value != null
                 && !TryScale(expression, value))
             {
@@ -606,6 +614,9 @@ public abstract partial class AbstractChannel : ObservableObject, IChannel
 
     #region Events/Handlers
     public event OnChannelUpdatedHandler OnChannelUpdated;
+
+    /// <inheritdoc />
+    public event EventHandler? SampleReceived;
 
     // @port: Daqifi.Desktop.Channel.AbstractChannel.NotifyChannelUpdated
     public void NotifyChannelUpdated(object sender, DataSample e)
