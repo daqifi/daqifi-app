@@ -42,10 +42,10 @@ namespace Daqifi.Desktop.Device;
 /// <c>0000000000000400</c> (stored serial <c>1024</c>) also reads as decimal <c>400</c>. Core's
 /// <c>DeviceIdentity.Matches</c> resolves that by reading decimal first, which rejects board
 /// <c>1024</c> and accepts board <c>400</c>, and Core 1.9.1 has no way to say which format a value
-/// is in. So the format comes from where the value came from, never from its text:
-/// <see cref="SameDevice"/> compares two stored serials and never reads hex, and
-/// <see cref="MatchesScpiSerial"/> compares a stored serial with one in the SCPI form and reads
-/// that one as hex only.
+/// is in. So the format comes from where the value came from, never from its text, and
+/// <see cref="SameDevice"/> compares two stored serials and never reads hex. Nothing in the app
+/// accepts a serial in the hex form yet: matching one that a person copied off the screen, for
+/// example into the profiles file, needs a format the app can identify and is issue #553.
 /// </para>
 /// <para>
 /// The stored value stays decimal. It is part of the SQLite key for session device metadata and is
@@ -58,8 +58,8 @@ public static class DeviceSerials
     /// <summary>
     /// Width of the hex serial the firmware prints in the third <c>*IDN?</c> field
     /// (<c>snprintf(gIdnSerial, ..., "%016llX", boardSerialNumber)</c>): the full 64-bit value,
-    /// zero-padded, upper case, no prefix. Printing the same width is what lets
-    /// <see cref="MatchesScpiSerial"/> compare the SCPI form as text.
+    /// zero-padded, upper case, no prefix. Printing the same width is what makes the shown serial
+    /// the same text as the <c>*IDN?</c> field.
     /// </summary>
     private const int HexWidth = 16;
 
@@ -77,7 +77,9 @@ public static class DeviceSerials
     /// notification's, a saved profile entry's — and each one is the base-10 text of one
     /// <c>ulong</c>, which has exactly one spelling. So equal text is the whole test, and neither
     /// side is ever read as hex: hex text in a stored field (for example a serial copied off the
-    /// screen into a profile) matches no board, rather than the board its digits spell in decimal.
+    /// screen into a profile) matches no board by serial, rather than the board its digits spell in
+    /// decimal. The profile matcher then falls back to the first device of the same model, as it
+    /// did before #493; matching the copied hex form to its own board is issue #553.
     /// </para>
     /// <para>
     /// Null-safe in both arguments — this is <see cref="string.Equals(string?, string?, StringComparison)"/>,
@@ -88,31 +90,6 @@ public static class DeviceSerials
     /// </remarks>
     public static bool SameDevice(string? left, string? right) =>
         string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// Whether a serial in the SCPI form — what <c>*IDN?</c> reports, and what the app shows —
-    /// names the device whose STORED serial is <paramref name="stored"/>.
-    /// </summary>
-    /// <remarks>
-    /// The stored side is read as decimal and the SCPI side as hex, always, because that is the
-    /// format each source produces. That is the same as asking whether the SCPI text is what
-    /// <see cref="ToDisplay"/> shows for the stored serial: the firmware and <see cref="ToDisplay"/>
-    /// both print the full 16 zero-padded digits, so equal text is equal value, and case is ignored
-    /// because hex digits are not reliably cased. A stored serial with no hex form is shown as
-    /// stored, so it matches that same text. A missing serial on either side names no device.
-    /// </remarks>
-    /// <param name="stored">The serial as the app stores it, normally decimal.</param>
-    /// <param name="scpi">The serial in the SCPI form, 16 hex digits.</param>
-    /// <returns><c>true</c> when both name the same device.</returns>
-    public static bool MatchesScpiSerial(string? stored, string? scpi)
-    {
-        if (string.IsNullOrWhiteSpace(stored) || string.IsNullOrWhiteSpace(scpi))
-        {
-            return false;
-        }
-
-        return string.Equals(ToDisplay(stored), scpi.Trim(), StringComparison.OrdinalIgnoreCase);
-    }
 
     /// <summary>
     /// The serial as the user sees it: the 16-digit upper-case hex form that <c>*IDN?</c> reports
