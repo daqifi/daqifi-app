@@ -69,6 +69,14 @@ public partial class FirmwareDialogViewModel : ObservableObject
     [NotifyCanExecuteChangedFor(nameof(UploadFirmwareCommand))]
     private bool _isFirmwareUploading;
 
+    /// <summary>
+    /// True after the user tried to close the window while an upload was in progress. The window
+    /// refuses that close (see <see cref="RefuseCloseDuringUpload"/>), and this shows the reason on
+    /// the upload scrim. Without it, the close button seems to do nothing (issue #539).
+    /// </summary>
+    [ObservableProperty]
+    private bool _closeRefusedDuringUpload;
+
     [ObservableProperty]
     private bool _isUploadComplete;
 
@@ -89,15 +97,18 @@ public partial class FirmwareDialogViewModel : ObservableObject
     /// <param name="hidDeviceName">HID device name for the bootloader session (used by the flasher adapter).</param>
     /// <param name="targetDevicePath">OS HID device path of the bootloader to flash; null falls back to first-match.</param>
     /// <param name="firmwareDownloadService">Optional override (the capture harness passes an offline stub); otherwise resolved from DI.</param>
+    /// <param name="firmwareUpdateService">Optional override (unit tests pass a flash that never completes); otherwise resolved from DI.</param>
     public FirmwareDialogViewModel(
         string? hidDeviceName,
         string? targetDevicePath = null,
-        IFirmwareDownloadService? firmwareDownloadService = null)
+        IFirmwareDownloadService? firmwareDownloadService = null,
+        IFirmwareUpdateService? firmwareUpdateService = null)
     {
         // Resolve from DI rather than newing up services/HttpClient here. Both are registered in
         // App.ConfigureServices and the provider is always present at runtime; the throw is a
         // fail-fast for a misconfigured container.
-        _firmwareUpdateService = App.ServiceProvider?.GetService<IFirmwareUpdateService>()
+        _firmwareUpdateService = firmwareUpdateService
+            ?? App.ServiceProvider?.GetService<IFirmwareUpdateService>()
             ?? throw new InvalidOperationException("IFirmwareUpdateService is not registered.");
 
         _firmwareDownloadService = firmwareDownloadService
@@ -230,6 +241,7 @@ public partial class FirmwareDialogViewModel : ObservableObject
         {
             HasErrorOccured = false;
             IsUploadComplete = false;
+            CloseRefusedDuringUpload = false;
             UploadFirmwareProgress = 0;
             IsFirmwareUploading = true;
             AppLogger.Instance.AddBreadcrumb("firmware", "Firmware update started");
@@ -338,6 +350,28 @@ public partial class FirmwareDialogViewModel : ObservableObject
     private bool CanCancelUploadFirmware()
     {
         return IsFirmwareUploading;
+    }
+
+    /// <summary>
+    /// Asked by the window before it closes. Returns true, and shows the reason, while an upload is in
+    /// progress — from the start of the download to the end of the write (issue #539).
+    /// <para>
+    /// A close during an upload used to remove the window and leave the upload running with no
+    /// progress, no cancel and no result. It also restarted serial and WiFi discovery in the connection
+    /// dialog, which pauses discovery only while this window is open, and a close during the download
+    /// let the write start with discovery running. The user cancels with the scrim's Cancel Upload
+    /// button instead, which keeps the window open until the upload has ended.
+    /// </para>
+    /// </summary>
+    internal bool RefuseCloseDuringUpload()
+    {
+        if (!IsFirmwareUploading)
+        {
+            return false;
+        }
+
+        CloseRefusedDuringUpload = true;
+        return true;
     }
 
     // @port: Daqifi.Desktop.ViewModels.FirmwareDialogViewModel.GetFirmwareDownloadDirectory

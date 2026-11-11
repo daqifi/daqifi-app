@@ -316,6 +316,7 @@ desktop and mobile phases, and captures one PNG per seeded state:
 | `dialog-export-configure` | the export dialog's configuration form |
 | `dialog-export-failed` | its result state with `ExportSucceeded` false |
 | `dialog-firmware-uploading` | the bootloader dialog's upload scrim and its Cancel button (#241) |
+| `dialog-firmware-close-refused` | the same dialog after `Close()` mid-upload: the window stays open and says why (#539) |
 
 ### Adding one
 
@@ -510,6 +511,12 @@ places that are checked against reality on every run. `./run.sh --check-baseline
 captures once and verifies against the one for the current host, failing on a changed
 screen, a missing one, and one the baseline does not list (`shasum -c` only checks the
 names it was given, so the extra-file direction is checked separately).
+
+`dialog-firmware-close-refused` was added 2026-11-10 (macOS 26.5, Apple silicon, .NET SDK
+10.0.302) for #539. It is a new line, not a re-record: the other thirty-nine hashes are
+unchanged, `dialog-firmware-uploading` among them, although the scrim it shows gained a row
+for the notice. That row is `Auto` and the notice is hidden until a close is refused, so the
+scrim lays out as before. Five `--determinism` runs agreed on all forty screens.
 
 The five **portrait** mobile screens were re-recorded 2026-10-29 (macOS 26.5 / 25F71, Apple
 silicon, .NET SDK 10.0.302) for #361, which takes the theme's 11px-a-side button padding off
