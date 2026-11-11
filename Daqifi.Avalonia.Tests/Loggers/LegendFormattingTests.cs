@@ -111,10 +111,15 @@ public class LegendFormattingTests
             plotModel: new PlotModel());
 
     [Theory]
-    // The example from the property's own doc comment.
-    [InlineData("1234104", "...4104")]
-    // Five characters is the shortest serial that truncates at all.
-    [InlineData("41041", "...1041")]
+    // A stored decimal serial is shown as the last four characters of its *IDN? hex form (#493):
+    // the bench Nq1 stores 9090539562006014104 and *IDN? reports 7E2815916200E898.
+    [InlineData("9090539562006014104", "...E898")]
+    // A short decimal is zero-padded to 16 hex digits first, so it truncates too.
+    [InlineData("1234104", "...D4B8")]
+    [InlineData("4104", "...1008")]
+    // A serial that is not a decimal number has no hex form and is truncated as written.
+    // Five characters is the shortest such serial that truncates at all.
+    [InlineData("A1041", "...1041")]
     [InlineData("DAQiFi-Nq1-0004104", "...4104")]
     public void A_serial_longer_than_four_characters_shows_only_its_last_four(string serial, string expected)
     {
@@ -123,10 +128,11 @@ public class LegendFormattingTests
 
     [Theory]
     // Exactly four is NOT truncated — the test that pins the boundary, since ">" rather than
-    // ">=" is the difference between "4104" and a leading ellipsis on every short serial.
-    [InlineData("4104")]
-    [InlineData("104")]
-    [InlineData("4")]
+    // ">=" is the difference between "A104" and a leading ellipsis on every short serial. Only a
+    // non-decimal serial can be this short: a decimal one is always rendered 16 hex digits wide.
+    [InlineData("A104")]
+    [InlineData("SN4")]
+    [InlineData("Q")]
     [InlineData("")]
     public void A_serial_of_four_characters_or_fewer_is_shown_whole(string serial)
     {
