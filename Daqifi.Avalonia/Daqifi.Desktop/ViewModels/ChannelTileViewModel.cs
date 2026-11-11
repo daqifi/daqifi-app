@@ -76,14 +76,6 @@ public sealed class ChannelTileViewModel : ObservableObject, IDisposable
         ? AnalogAccent
         : IsDigitalOutput ? DigitalOutAccent : DigitalInAccent;
 
-    /// <summary>Background color for the tile, depending on active state.</summary>
-    // @port: Daqifi.Desktop.ViewModels.ChannelTileViewModel.TileBackground
-    public Brush TileBackground => IsActive ? SurfaceActive : SurfaceRaised;
-
-    /// <summary>Border color for the tile — stripe color when active, dim otherwise.</summary>
-    // @port: Daqifi.Desktop.ViewModels.ChannelTileViewModel.TileBorderBrush
-    public Brush TileBorderBrush => IsActive ? StripeBrush : BorderDim;
-
     /// <summary>
     /// Formatted value line: the commanded duty for PWM-active channels (issue #664),
     /// the last commanded state for digital outputs (issue #663), the live streamed
@@ -153,8 +145,6 @@ public sealed class ChannelTileViewModel : ObservableObject, IDisposable
         if (e.PropertyName == nameof(IChannel.IsActive))
         {
             OnPropertyChanged(nameof(IsActive));
-            OnPropertyChanged(nameof(TileBackground));
-            OnPropertyChanged(nameof(TileBorderBrush));
             OnPropertyChanged(nameof(ShowValue));
             OnPropertyChanged(nameof(Value));
         }
@@ -173,7 +163,6 @@ public sealed class ChannelTileViewModel : ObservableObject, IDisposable
         {
             OnPropertyChanged(nameof(TypeLabel));
             OnPropertyChanged(nameof(StripeBrush));
-            OnPropertyChanged(nameof(TileBorderBrush));
             OnPropertyChanged(nameof(IsPwmActive));
             OnPropertyChanged(nameof(IsDigitalOutput));
             OnPropertyChanged(nameof(ShowDriveToggle));
@@ -204,9 +193,8 @@ public sealed class ChannelTileViewModel : ObservableObject, IDisposable
     }
 
     // @port: Daqifi.Desktop.ViewModels.ChannelTileViewModel.MakeBrush
-    private static readonly Brush SurfaceRaised = MakeBrush("#171A20");
-    private static readonly Brush SurfaceActive = MakeBrush("#1E2530");
-    private static readonly Brush BorderDim = MakeBrush("#2A2F38");
+    // Tile fill and border are not here: they are DesignTokens resources, set by the tile
+    // styles in ChannelsPanePrototype.axaml and ChannelsMobileView.axaml (issue #494).
     private static readonly Brush AnalogAccent = MakeBrush("#4A9EFF");
     private static readonly Brush DigitalInAccent = MakeBrush("#4ADE80");
     private static readonly Brush DigitalOutAccent = MakeBrush("#F59E0B");
