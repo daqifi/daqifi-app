@@ -210,10 +210,18 @@ internal sealed class RecordingStreamingDevice : IStreamingDevice
 
     public Task UpdateNetworkConfiguration() => Task.CompletedTask;
 
+    /// <summary>
+    /// What <see cref="DownloadSdCardFileAsync"/> does. Unset, the download is not supported. Issue
+    /// #548's tests set it to write a log file and then take the device's channels away before
+    /// returning, which is what a DISCONNECT during the download does.
+    /// </summary>
+    internal Func<string, CancellationToken, Task<SdCardDownloadResult>>? OnDownload { get; set; }
+
     public Task<SdCardDownloadResult> DownloadSdCardFileAsync(
         string fileName,
         IProgress<SdCardTransferProgress>? progress = null,
-        CancellationToken ct = default) => throw new NotSupportedException();
+        CancellationToken ct = default) =>
+        OnDownload?.Invoke(fileName, ct) ?? throw new NotSupportedException();
 
     public Task DeleteSdCardFileAsync(string fileName, CancellationToken ct = default)
         => throw new NotSupportedException();

@@ -116,6 +116,24 @@ public class SdCardSessionImporter : ISdCardSessionImporter
     {
         _logger.Information($"Starting import of '{fileName}' from device {device.DeviceSerialNo}");
 
+        // Read the device's configuration BEFORE the download, while the device is connected, and
+        // parse with that snapshot (#548). A DISCONNECT clears DataChannels at once, but Core lets
+        // a download that holds its operation lock run to the end — so read after the download,
+        // the configuration was gone and a complete file was parsed as raw counts, with no digital
+        // channels and a guessed clock, then saved as Complete.
+        var deviceConfig = BuildDeviceConfiguration(device);
+        if (deviceConfig == null)
+        {
+            // No analog channels: the device is disconnecting, or its channels were never read.
+            // A file parsed without a configuration keeps raw counts and loses its digital
+            // channels, so stop here rather than save a session that only looks imported. This
+            // type takes the classifier's "connection lost, reconnect and try again" arm, which
+            // is the remedy in both cases.
+            throw new Daqifi.Core.Device.DeviceNotConnectedException(
+                $"Device {device.DeviceSerialNo} reported no analog channels, so '{fileName}' cannot be " +
+                "converted to volts. The import was not started.");
+        }
+
         // Download to temp file, bounded by a stall watchdog. Core exposes no timeout on either
         // public DownloadSdCardFileAsync overload, so the desktop has to impose the bound itself or
         // a silent device leaves the import hanging forever (issue #754).
@@ -167,21 +185,17 @@ public class SdCardSessionImporter : ISdCardSessionImporter
 
             // Parse using the original device filename (not the temp path)
             // so the parser can extract the date from the log filename pattern.
-            // Build a ConfigurationOverride from the connected device's channels
-            // so the parser has calibration, resolution, and port range data for
+            // The ConfigurationOverride is the snapshot taken before the download: it
+            // gives the parser calibration, resolution, and port range data for
             // scaling raw ADC values to real voltage.
-            var deviceConfig = BuildDeviceConfiguration(device);
             var parseOptions = new SdCardParseOptions
             {
                 ConfigurationOverride = deviceConfig
             };
 
-            if (deviceConfig != null)
-            {
-                _logger.Information(
-                    $"Using device config override: Resolution={deviceConfig.Resolution}, " +
-                    $"AnalogPorts={deviceConfig.AnalogPortCount}, DigitalPorts={deviceConfig.DigitalPortCount}");
-            }
+            _logger.Information(
+                $"Using device config override: Resolution={deviceConfig.Resolution}, " +
+                $"AnalogPorts={deviceConfig.AnalogPortCount}, DigitalPorts={deviceConfig.DigitalPortCount}");
 
             await using var fileStream = new FileStream(
                 downloadResult.FilePath, FileMode.Open, FileAccess.Read,
