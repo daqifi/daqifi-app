@@ -191,6 +191,141 @@ public sealed class DroppedDeviceSessionStopTests : IDisposable
         Assert.Empty(device.Commands);
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Issue #537: the same stuck state, reached by the user's own DISCONNECT or REBOOT.
+    //
+    // DisconnectDevice and RebootDevice release the device's channels and then call
+    // ConnectionManager.Disconnect / Reboot, which raise ConnectedDevices only — never
+    // NotifyConnection. So the #525 stop above, which lived only in the NotifyConnection case, never
+    // ran: LOGGING ON stayed lit over a disabled toggle, LoggingManager.Active stayed true, and the
+    // disk-space monitor kept running with nothing connected.
+    // ---------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// What <c>ConnectionManager</c> raises after <c>Disconnect</c> and <c>Reboot</c>. Called
+    /// directly for the same reason as <see cref="DropDevice"/>: the view model only subscribes to
+    /// the manager when <c>App.IsStarted</c>.
+    /// </summary>
+    private void RaiseConnectedDevicesChanged()
+        => _viewModel.UpdateUi(
+            ConnectionManager.Instance,
+            new PropertyChangedEventArgs(nameof(ConnectionManager.ConnectedDevices)));
+
+    /// <summary>
+    /// The report itself, through the real command and the real <c>ConnectionManager.Disconnect</c>.
+    /// The session closes, and the toggle is left OFF rather than ON-and-disabled. It is also
+    /// disabled now, correctly: nothing is connected and no session is running, so there is nothing
+    /// to start and nothing to stop.
+    /// </summary>
+    [Fact]
+    public void WhenTheUserDisconnectsTheLastDevice_TheSessionIsClosed()
+    {
+        var device = AConnectedDevice("Nq1-DISCONNECT");
+
+        _viewModel.IsLogging = true;
+        Assert.True(LoggingManager.Instance.Active);
+
+        _viewModel.DisconnectDeviceCommand.Execute(device);
+        _registered.Remove(device);
+        RaiseConnectedDevicesChanged();
+
+        Assert.Empty(ConnectionManager.Instance.ConnectedDevices);
+        Assert.False(_viewModel.IsLogging);
+        Assert.False(LoggingManager.Instance.Active);
+        Assert.False(_viewModel.CanToggleLogging);
+    }
+
+    /// <summary>The same through REBOOT, which reaches the manager by its own method.</summary>
+    [Fact]
+    public void WhenTheUserRebootsTheLastDevice_TheSessionIsClosed()
+    {
+        var device = AConnectedDevice("Nq1-REBOOT");
+
+        _viewModel.IsLogging = true;
+        Assert.True(LoggingManager.Instance.Active);
+
+        _viewModel.RebootDeviceCommand.Execute(device);
+        _registered.Remove(device);
+        RaiseConnectedDevicesChanged();
+
+        Assert.Empty(ConnectionManager.Instance.ConnectedDevices);
+        Assert.False(_viewModel.IsLogging);
+        Assert.False(LoggingManager.Instance.Active);
+    }
+
+    /// <summary>
+    /// After the close, the user can start again: a device connects and the next start opens a new
+    /// session and commands that device. Before the fix the old session was still open, so the
+    /// reconnected device joined a run the user could not see the start of.
+    /// </summary>
+    [Fact]
+    public void AfterTheUserDisconnectsTheLastDevice_ANewSessionCanStartOnReconnect()
+    {
+        var first = AConnectedDevice("Nq1-AGAIN");
+        _viewModel.IsLogging = true;
+
+        _viewModel.DisconnectDeviceCommand.Execute(first);
+        _registered.Remove(first);
+        RaiseConnectedDevicesChanged();
+        Assert.False(_viewModel.IsLogging);
+
+        var reconnected = new RecordingStreamingDevice("Nq1-AGAIN");
+        ConnectionManager.Instance.RegisterConnectedDevice(reconnected);
+        _registered.Add(reconnected);
+        RaiseConnectedDevicesChanged();
+        Assert.Contains(reconnected, _viewModel.ConnectedDevices);
+
+        _viewModel.IsLogging = true;
+
+        Assert.True(_viewModel.IsLogging);
+        Assert.True(LoggingManager.Instance.Active);
+        Assert.NotEmpty(reconnected.Commands);
+    }
+
+    /// <summary>
+    /// The half that keeps the condition honest for the manual path too: the user disconnects one
+    /// of two devices, and the run belongs to the device that is still recording.
+    /// </summary>
+    [Fact]
+    public void WhenTheUserDisconnectsOneOfSeveralDevices_TheSessionKeepsRunning()
+    {
+        var leaving = AConnectedDevice("Nq1-LEAVES");
+        var staying = AConnectedDevice("Nq1-REMAINS");
+
+        _viewModel.IsLogging = true;
+        staying.Commands.Clear();
+
+        _viewModel.DisconnectDeviceCommand.Execute(leaving);
+        _registered.Remove(leaving);
+        RaiseConnectedDevicesChanged();
+
+        Assert.True(_viewModel.IsLogging);
+        Assert.True(LoggingManager.Instance.Active);
+        Assert.Empty(staying.Commands);
+    }
+
+    /// <summary>
+    /// The toggle can never be ON and disabled. A device that kept logging to its SD card across a
+    /// desktop reconnect makes <see cref="DaqifiViewModel.IsLogging"/> read true, but no channel is
+    /// subscribed, so <c>CanToggleLogging = ActiveChannels.Count > 0</c> disabled the very switch
+    /// that would stop it. A running session must always be stoppable from the toggle.
+    /// </summary>
+    [Fact]
+    public void WhileASessionIsRunningWithNoActiveChannel_TheToggleCanStillBeTurnedOff()
+    {
+        var device = new RecordingStreamingDevice("Nq1-SD");
+        device.StartSdCardLogging();
+        device.Commands.Clear();
+        ConnectionManager.Instance.RegisterConnectedDevice(device);
+        _registered.Add(device);
+
+        RaiseConnectedDevicesChanged();
+
+        Assert.True(_viewModel.IsLogging);
+        Assert.Empty(_viewModel.ActiveChannels);
+        Assert.True(_viewModel.CanToggleLogging);
+    }
+
     /// <summary>An <see cref="IFirmwareDownloadService"/> that reaches no network.</summary>
     private sealed class OfflineDownloadService : IFirmwareDownloadService
     {
