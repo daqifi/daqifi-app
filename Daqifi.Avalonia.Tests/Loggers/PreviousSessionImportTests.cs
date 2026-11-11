@@ -183,6 +183,71 @@ public sealed class PreviousSessionImportTests : IDisposable
         Assert.Empty((await RunImport()).Imported);
     }
 
+    // An SD card session's start comes from the log's file name, to the whole second (#511).
+    private const string SameSecond = "2026-09-01 12:00:00";
+
+    // A session of this user's database whose one sample is the old session's first sample
+    // (AddPreviousSession, sample 1), except for one column.
+    private void AddCurrentSession(long id, SessionStatus status, string column = "", string value = "")
+    {
+        string Pick(string name, string same) => name == column ? value : same;
+        Execute(_current,
+            $"INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES ({id}, '{SameSecond}', 'Other card log', {(int)status});" +
+            "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            $"VALUES ({id}, {Pick("Value", "1.5")}, {Pick("TimestampTicks", "10")}, 'Nq1', {Pick("ChannelName", "'AI0'")}, " +
+            $"{Pick("DeviceSerialNo", "'SN-TEST'")}, '#FF0000', 1);");
+    }
+
+    [Theory]
+    [InlineData("DeviceSerialNo", "'SN-OTHER'")] // the usual case: two devices started together
+    [InlineData("ChannelName", "'AI1'")]
+    [InlineData("TimestampTicks", "11")]
+    [InlineData("Value", "2.5")]
+    public async Task Two_different_sessions_that_started_in_the_same_second_are_both_kept(string column, string value)
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, SameSecond, "Card log", 1, 2);
+        AddCurrentSession(9, SessionStatus.Complete, column, value);
+
+        Assert.True(Import().HasSessionsToImport());
+        var imported = (await RunImport()).Imported;
+
+        Assert.Single(imported);
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Sessions WHERE SessionStart = '{SameSecond}' AND Status = 0"));
+        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = 9"));
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {imported[0]}"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task A_partial_import_of_a_different_session_from_the_same_second_is_not_deleted()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, SameSecond, "Card log", 1, 2);
+        // Another card log's import that failed part-way, from another device.
+        AddCurrentSession(9, SessionStatus.ImportFailed, "DeviceSerialNo", "'SN-OTHER'");
+
+        var outcome = await RunImport();
+
+        Assert.Empty(outcome.Removed);
+        Assert.Single(outcome.Imported);
+        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = 9"));
+    }
+
+    [Fact]
+    public async Task An_old_session_without_samples_never_claims_a_partial_import_as_its_copy()
+    {
+        CreatePreviousDatabase();
+        // Never imported (it has no samples), so no partial copy of it can exist.
+        AddPreviousSession(1, SameSecond, "Empty");
+        AddCurrentSession(9, SessionStatus.ImportFailed);
+
+        var outcome = await RunImport();
+
+        Assert.Empty(outcome.Removed);
+        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = 9"));
+    }
+
     [Fact]
     public async Task An_interrupted_session_is_deleted_and_imported_again_in_full()
     {
