@@ -515,11 +515,19 @@ names it was given, so the extra-file direction is checked separately).
 `dialog-connect-usb-idle` and `dialog-connect-usb-error` were re-recorded 2026-11-10 (macOS 26.5,
 Apple silicon, .NET SDK 10.0.302) for #493, which shows a device serial in the 16-digit hex form
 `*IDN?` reports instead of the stored decimal. They are the only two screens in this manifest that
-render a serial: the seeded USB device's `1024` now reads `0000000000000400`. The other
-thirty-eight hashes are byte-for-byte unchanged, the five `devicelogs-*` screens among them — they
-name the seeded device by `DeviceDisplayName`, which #493 did not change. The pre-change capture
+render a serial: the seeded USB device's `1024` now reads `0000000000000400`. The pre-change capture
 reproduced the then-committed manifest on all forty screens, and five `--determinism` runs agreed
 on all forty after the change.
+
+`devicelogs-2-no-files`, `devicelogs-3-no-sd-card`, `devicelogs-4-device-busy` and
+`devicelogs-5-sd-card-error` were re-recorded 2026-11-11 (macOS 26.5, Apple silicon, .NET SDK
+10.0.302) for the same issue, after review. Their DEVICE selector names the seeded device by
+`DeviceDisplayName`, which falls back to the serial when a device has no friendly name, and that
+fallback now uses the hex form: `1024` reads `0000000000000400`. `devicelogs-1-no-device` has no
+device and is unchanged. Measured on a tree with `main` merged in: the pre-change capture matched
+the manifest on all forty screens, the post-change `--check-baseline` failed on exactly these four
+of forty, and five `--determinism` runs agreed on all forty after the change. The four hashes come
+from determinism run 1.
 
 `dialog-firmware-close-refused` was added 2026-11-10 (macOS 26.5, Apple silicon, .NET SDK
 10.0.302) for #539. It is a new line, not a re-record: the other thirty-nine hashes are
