@@ -295,9 +295,10 @@ public sealed class ProfileNameRefusalTests : IDisposable
     }
 
     /// <summary>
-    /// The messages reach the user only through the drawer's error box, on both heads. Neither view
-    /// declares compiled bindings for it, so a rename would leave the box blank with every build
-    /// green.
+    /// The messages reach the user only through the drawer's error box, on both heads. Both views
+    /// compile their bindings, so renaming <c>DrawerError</c> or <c>HasDrawerError</c> is already a
+    /// build error (AVLN2000, measured on each view). What no build can see is the binding taken
+    /// off the box: the pane would set the message and nobody would see it. This row pins that.
     /// </summary>
     [Theory]
     [InlineData("Daqifi.Avalonia/Daqifi.Desktop/View/ProfilesPane.axaml")]
@@ -306,7 +307,5 @@ public sealed class ProfileNameRefusalTests : IDisposable
     {
         BindingFacts.AssertBinds(view, "Text=\"{Binding DrawerError}\"");
         BindingFacts.AssertBinds(view, "IsVisible=\"{Binding HasDrawerError}\"");
-        BindingFacts.AssertExposes(typeof(ProfilesPaneViewModel), nameof(ProfilesPaneViewModel.DrawerError));
-        BindingFacts.AssertExposes(typeof(ProfilesPaneViewModel), nameof(ProfilesPaneViewModel.HasDrawerError));
     }
 }
