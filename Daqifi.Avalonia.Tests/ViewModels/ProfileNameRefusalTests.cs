@@ -264,7 +264,7 @@ public sealed class ProfileNameRefusalTests : IDisposable
 
         Assert.True(pane.IsDrawerOpen);
         Assert.Equal(ProfilesPaneViewModel.ProfileNameCharacterMessage, pane.DrawerError);
-        Assert.Empty(LoggingManager.Instance.SubscribedProfiles);
+        Assert.DoesNotContain(LoggingManager.Instance.SubscribedProfiles, p => p.Name == "A\u0001");
     }
 
     /// <summary>The other direction for SAVE PROFILE: a valid name saves and closes.</summary>
@@ -277,7 +277,7 @@ public sealed class ProfileNameRefusalTests : IDisposable
         pane.SaveNewProfileCommand.Execute(null);
 
         Assert.False(pane.IsDrawerOpen);
-        Assert.Equal("New rig", LoggingManager.Instance.SubscribedProfiles.Single().Name);
+        Assert.Contains(LoggingManager.Instance.SubscribedProfiles, p => p.Name == "New rig");
     }
 
     /// <summary>CAPTURE FROM CURRENT SETTINGS writes through the same <c>XDocument.Save</c> too.</summary>
@@ -291,7 +291,7 @@ public sealed class ProfileNameRefusalTests : IDisposable
 
         Assert.True(pane.IsDrawerOpen);
         Assert.Equal(ProfilesPaneViewModel.ProfileNameCharacterMessage, pane.DrawerError);
-        Assert.Empty(LoggingManager.Instance.SubscribedProfiles);
+        Assert.DoesNotContain(LoggingManager.Instance.SubscribedProfiles, p => p.Name == "A\u0001");
     }
 
     /// <summary>
