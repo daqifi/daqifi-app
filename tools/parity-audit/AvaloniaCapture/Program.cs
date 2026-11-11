@@ -100,6 +100,7 @@ internal static class AvaloniaCapture
         "dialog-export-configure",
         "dialog-export-failed",
         "dialog-firmware-uploading",
+        "dialog-firmware-close-refused",
     ];
 
     // Names actually written, recorded by Capture only after the file is confirmed non-empty.
@@ -1073,6 +1074,44 @@ internal static class AvaloniaCapture
             },
             Inspect = w => RequireRenderedText(
                 w, "dialog-firmware-uploading", "FirmwareCancelUpload", "Cancel Upload"),
+        };
+
+        // The same dialog after the user tried to close it mid-upload (issue #539). A close used to
+        // remove the window and leave the upload running with nothing on screen; the window must now
+        // refuse the close and say why. Prepare does the close, so this screen is also the only gate on
+        // FirmwareDialog.OnClosing itself: if the window goes away, there is nothing to capture and the
+        // run fails. The refused window stays open until the harness shuts the app down, which forces
+        // every window closed.
+        yield return new DialogScreen
+        {
+            Name = "dialog-firmware-close-refused",
+            Size = FirmwareDialogSize,
+            Build = () =>
+            {
+                // Seeded exactly like dialog-firmware-uploading, for the same reasons.
+                var vm = new FirmwareDialogViewModel(
+                    hidDeviceName: "DAQiFi Bootloader",
+                    firmwareDownloadService: new OfflineFirmwareDownloadService())
+                {
+                    UploadFirmwareProgress = 42,
+                    IsFirmwareUploading = true,
+                };
+                return new FirmwareDialog { DataContext = vm };
+            },
+            Prepare = w =>
+            {
+                w.Close();
+                Pump();
+                if (w.IsVisible) { return true; }
+
+                _failed = true;
+                Console.WriteLine("[FAIL] dialog-firmware-close-refused: Close() during an upload " +
+                                  "removed the window; it must refuse the close (issue #539)");
+                return false;
+            },
+            Inspect = w => RequireRenderedText(
+                w, "dialog-firmware-close-refused", "FirmwareCloseRefusedNotice",
+                "An upload is in progress. Cancel the upload or wait until it completes."),
         };
     }
 

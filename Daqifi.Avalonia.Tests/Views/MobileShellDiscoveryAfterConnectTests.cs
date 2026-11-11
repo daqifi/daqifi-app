@@ -3,6 +3,7 @@ using Daqifi.Avalonia.Tests.Device;
 using Daqifi.Avalonia.Views;
 using Daqifi.Core.Communication.Messages;
 using Daqifi.Core.Device;
+using Daqifi.Core.Device.Discovery;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using CoreStreamingDevice = Daqifi.Core.Device.DaqifiStreamingDevice;
@@ -16,12 +17,13 @@ namespace Daqifi.Avalonia.Tests.Views;
 /// broadcast filtering off for the whole connected session on a battery-powered phone.
 /// </summary>
 /// <remarks>
-/// These tests drive the real <c>ScanCommand</c>, so a real sweep starts and really does broadcast
-/// on UDP 30303 for a moment before the connect cancels it; what they replace is only the platform
-/// discovery scope, with <see cref="CountingDiscoveryScope"/> standing in for Android's multicast
-/// lock. That substitution is the point: the scope is the thing the issue measured with
-/// <c>dumpsys wifi</c>, and counting entries against disposals is the same balance check at the
-/// view-model level.
+/// These tests drive the real <c>ScanCommand</c>, so a real sweep starts and runs its pass loop until
+/// the connect cancels it. They replace the platform discovery scope, with
+/// <see cref="CountingDiscoveryScope"/> standing in for Android's multicast lock — the thing the
+/// issue measured with <c>dumpsys wifi</c>, so counting entries against disposals is the same
+/// balance check at the view-model level — and the WiFi finder, with <see cref="ListeningFinder"/>,
+/// which binds no socket. Core's real finder binds UDP 30303 on every NIC and would sweep a
+/// developer's attached board.
 /// <para>
 /// In the <c>ConnectionManager</c> singleton collection because the shell's adopt step registers
 /// the device with <c>ConnectionManager.Instance</c>, and its teardown unregisters it.
@@ -49,6 +51,7 @@ public sealed class MobileShellDiscoveryAfterConnectTests : IDisposable
     public MobileShellDiscoveryAfterConnectTests()
     {
         NetworkDiscoveryScope.Current = _scope;
+        _shell.CreateWifiFinder = static () => new ListeningFinder();
 
         _core = new CoreStreamingDevice("core", _transport, NullLogger.Instance);
         _core.Connect();
@@ -160,6 +163,21 @@ public sealed class MobileShellDiscoveryAfterConnectTests : IDisposable
         }
 
         return condition();
+    }
+
+    /// <summary>
+    /// A WiFi finder that binds no socket and hears nothing: each pass listens until its window
+    /// closes, like Core's real pass on a network with no board.
+    /// </summary>
+    private sealed class ListeningFinder : WiFiDeviceFinder
+    {
+        public override async Task<IEnumerable<IDeviceInfo>> DiscoverAsync(
+            CancellationToken cancellationToken = default)
+        {
+            try { await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false); }
+            catch (OperationCanceledException) { /* the window closed */ }
+            return [];
+        }
     }
 
     /// <summary>

@@ -18,6 +18,10 @@ using BreadcrumbLevel = Daqifi.Desktop.Common.Loggers.BreadcrumbLevel;
 // Aliased rather than importing Daqifi.Core.Device wholesale: that namespace also declares a
 // DaqifiStreamingDevice, which would be ambiguous with the ported one this file connects with.
 using CoreDeviceFactory = Daqifi.Core.Device.DaqifiDeviceFactory;
+// Aliased for the same reason: Daqifi.Core.Device.Discovery declares a ConnectionType that would
+// be ambiguous with Daqifi.Desktop.Device's.
+using IDeviceInfo = Daqifi.Core.Device.Discovery.IDeviceInfo;
+using WiFiDeviceFinder = Daqifi.Core.Device.Discovery.WiFiDeviceFinder;
 
 namespace Daqifi.Avalonia.Views;
 
@@ -51,6 +55,26 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     private bool _monitoredAtLastPoll;
 
     public ObservableCollection<MobileDeviceItem> Devices { get; } = [];
+
+    /// <summary>
+    /// How the discovery sweep makes its finder, how long one pass listens for replies, and how
+    /// long the sweep waits before it broadcasts again. See <see cref="RunDiscoveryPassesAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// Fields, not constants, only so the tests can script the finder and run the loop at a test
+    /// cadence; nothing in the app assigns them. The same seam as the connect dialog's
+    /// <c>_createWifiFinder</c>: a real <see cref="WiFiDeviceFinder"/> binds UDP 30303 on every NIC,
+    /// and a test must not sweep a developer's attached board.
+    /// </remarks>
+    internal Func<WiFiDeviceFinder> CreateWifiFinder = static () => new WiFiDeviceFinder();
+    internal TimeSpan WifiPassWindow = TimeSpan.FromSeconds(3);
+    internal TimeSpan WifiPassPause = TimeSpan.FromMilliseconds(1500);
+
+    /// <summary>
+    /// Marshals a discovery result onto the UI thread. A seam only because the test project runs no
+    /// Avalonia dispatcher, so a posted job never runs there; nothing in the app assigns it.
+    /// </summary>
+    internal Action<Action> PostToUiThread = static action => Dispatcher.UIThread.Post(action);
 
     public MobileShellViewModel()
     {
@@ -209,25 +233,26 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         var cts = new CancellationTokenSource();
         _cts = cts;
         var token = cts.Token;
+        var createFinder = CreateWifiFinder;
+        var window = WifiPassWindow;
+        var pause = WifiPassPause;
         _scanTask = Task.Run(async () =>
         {
             // Hold the platform discovery scope for the whole sweep — on
             // Android this is the WifiManager MulticastLock that lets the
-            // UDP replies through the WiFi power-save filter.
+            // UDP replies through the WiFi power-save filter. Core's finder
+            // needs it exactly as much as the old local sweep did.
             using var scope = NetworkDiscoveryScope.Enter();
             try
             {
-                while (!token.IsCancellationRequested)
-                {
-                    await NativeWiFiDiscovery.DiscoverAsync(
-                        TimeSpan.FromSeconds(3), OnDeviceFound, token);
-                    await Task.Delay(1500, token);
-                }
+                using var finder = createFinder();
+                finder.DeviceDiscovered += (_, e) => OnDeviceFound(e.DeviceInfo);
+                await RunDiscoveryPassesAsync(finder, window, pause, token);
             }
             catch (OperationCanceledException) { /* stop requested */ }
             catch (Exception ex)
             {
-                Dispatcher.UIThread.Post(() =>
+                PostToUiThread(() =>
                 {
                     Status = $"Scan failed: {ex.Message}";
                     // The sweep is over and the scope already released by the time this runs,
@@ -268,11 +293,54 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         AppLogger.Instance.AddBreadcrumb("discovery", $"Discovery stopped — {Devices.Count} device(s) found");
     }
 
-    private void OnDeviceFound(DiscoveredDevice device)
+    /// <summary>
+    /// Run Core's WiFi finder pass after pass until <paramref name="token"/> is cancelled: listen
+    /// for <paramref name="window"/>, wait <paramref name="pause"/>, broadcast again.
+    /// </summary>
+    /// <remarks>
+    /// The repetition is the point, not a leftover. On a Galaxy A16 (#516), ONE
+    /// <c>DiscoverAsync</c> window found the bench board in only 4 of 8 scans, while a sweep that
+    /// kept broadcasting found it almost every time. A pass that misses costs the user one more
+    /// pass, not a "no devices" result. Each pass is its own window: the finder reports a device
+    /// through its <c>DeviceDiscovered</c> event as each reply arrives, so the
+    /// caller dedupes across passes.
+    /// <para>
+    /// A pass that ends because its own window closed is a normal pass, even when the finder
+    /// reports it as a cancellation. Only <paramref name="token"/> ends the loop, with
+    /// <see cref="OperationCanceledException"/>.
+    /// </para>
+    /// </remarks>
+    internal static async Task RunDiscoveryPassesAsync(
+        WiFiDeviceFinder finder, TimeSpan window, TimeSpan pause, CancellationToken token)
     {
-        Dispatcher.UIThread.Post(() =>
+        while (true)
         {
-            var key = device.Ip.ToString();
+            token.ThrowIfCancellationRequested();
+            using (var pass = CancellationTokenSource.CreateLinkedTokenSource(token))
+            {
+                pass.CancelAfter(window);
+                try
+                {
+                    await finder.DiscoverAsync(pass.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // The pass window closed before the finder returned: a pass that found
+                    // nothing, not a stop. A real stop is not lost here: the pause below and the
+                    // check at the top of the loop both throw on the cancelled token.
+                }
+            }
+
+            await Task.Delay(pause, token).ConfigureAwait(false);
+        }
+    }
+
+    private void OnDeviceFound(IDeviceInfo device)
+    {
+        if (device.IPAddress == null) { return; }
+        PostToUiThread(() =>
+        {
+            var key = device.IPAddress.ToString();
             if (Devices.Any(d => d.Key == key)) { return; }
             Devices.Add(new MobileDeviceItem(this, device, key));
             Status = $"{Devices.Count} device(s) found — tap one to connect.";
@@ -339,7 +407,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     internal Task ConnectAsync(MobileDeviceItem item) =>
         ConnectCoreAsync(
             $"{item.Name} ({item.Ip})",
-            () => new DaqifiStreamingDevice(item.Device.Ip, item.Device.Port, item.Name));
+            () => new DaqifiStreamingDevice(item.Device));
 
     private async Task ConnectCoreAsync(string label, Func<DaqifiStreamingDevice> factory)
     {
@@ -905,17 +973,21 @@ public partial class MobileDeviceItem : ObservableObject
 {
     private readonly MobileShellViewModel _owner;
 
-    public MobileDeviceItem(MobileShellViewModel owner, DiscoveredDevice device, string key)
+    public MobileDeviceItem(MobileShellViewModel owner, IDeviceInfo device, string key)
     {
         _owner = owner;
         Device = device;
         Key = key;
     }
 
-    public DiscoveredDevice Device { get; }
+    /// <summary>
+    /// What the device said about itself in its discovery reply: host name, serial number,
+    /// firmware revision and the data port it ADVERTISES, which the connect uses.
+    /// </summary>
+    public IDeviceInfo Device { get; }
     public string Key { get; }
-    public string Name => Device.Name ?? "DAQiFi Device";
-    public string Ip => Device.Ip.ToString();
+    public string Name => string.IsNullOrWhiteSpace(Device.Name) ? "DAQiFi Device" : Device.Name;
+    public string Ip => Device.IPAddress?.ToString() ?? "";
     public string Detail => $"{Ip}:{Device.Port}  •  tap to connect";
 
     [RelayCommand]
