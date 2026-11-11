@@ -1,11 +1,14 @@
 // Avalonia-only: no upstream counterpart, so no @port marker.
 
 using System;
+using System.Globalization;
+using Daqifi.Core.Device;
 
 namespace Daqifi.Desktop.Device;
 
 /// <summary>
-/// The one rule for "do these two serial numbers name the same device?" (issue #339).
+/// The one rule for "do these two serial numbers name the same device?" (issue #339), and the one
+/// rule for how a serial number is shown to the user (issue #493).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -32,25 +35,93 @@ namespace Daqifi.Desktop.Device;
 /// so callers keep their own null/blank guards and this never introduces one.
 /// </para>
 /// <para>
-/// Case is not the only axis a serial can vary on: Core's <c>DeviceIdentity.Matches</c> also
-/// reconciles the decimal and hex renderings of one board's identity, which is why
-/// <c>ConnectionManager.CheckForDuplicateDevice</c> uses it instead. Every serial that reaches this
-/// helper today is base-10 text copied straight off the connected device, so the two agree; the
-/// first change that puts a non-decimal serial into <c>IStreamingDevice.DeviceSerialNo</c> should
-/// re-point this one method at <c>DeviceIdentity</c> rather than add a third convention.
+/// Case is not the only axis a serial can vary on: one board's serial has a decimal rendering
+/// (what Core's protobuf paths put in <c>IStreamingDevice.DeviceSerialNo</c>, and so what every
+/// saved session and profile stores) and a hex rendering (what <c>*IDN?</c> and the capability
+/// document report, and — since #493 — what the app shows). <see cref="SameDevice"/> therefore
+/// defers to Core's <c>DeviceIdentity.Matches</c>, which reconciles the two, so a hex serial copied
+/// off the screen still names the board it was copied from.
+/// </para>
+/// <para>
+/// The stored value stays decimal. It is part of the SQLite key for session device metadata and is
+/// what saved profiles hold, so changing it would orphan existing data. Only the rendering changes,
+/// through <see cref="ToDisplay"/> and <see cref="ToShortDisplay"/>, at the point a serial is shown.
 /// </para>
 /// </remarks>
 public static class DeviceSerials
 {
     /// <summary>
+    /// Width of the hex serial the firmware prints in the third <c>*IDN?</c> field
+    /// (<c>snprintf(gIdnSerial, ..., "%016llX", boardSerialNumber)</c>): the full 64-bit value,
+    /// zero-padded, upper case, no prefix. Core's <c>DeviceIdentity</c> uses the same width to
+    /// recognise the hex form, so a value shown here parses back as the same board.
+    /// </summary>
+    private const int HexWidth = 16;
+
+    /// <summary>
+    /// The number of trailing characters the short form keeps.
+    /// </summary>
+    private const int ShortLength = 4;
+
+    /// <summary>
     /// Whether two serial numbers name the same device.
     /// </summary>
     /// <remarks>
-    /// Null-safe in both arguments — this is <see cref="string.Equals(string?, string?, StringComparison)"/>,
-    /// the static overload, so neither side is dereferenced and two nulls compare equal exactly as
+    /// <para>
+    /// When both serials are present this is Core's <c>DeviceIdentity.Matches</c> on the serial
+    /// alone: two values that parse as the same 64-bit number are equal whether either is written
+    /// in decimal or as the 16-digit hex form, and any other value is compared ordinally without
+    /// regard to case, as before.
+    /// </para>
+    /// <para>
+    /// A missing (null, empty or blank) serial keeps the old string rule, because
+    /// <c>DeviceIdentity</c> treats a missing serial as "no discriminator" and never matches it —
+    /// not even against another missing one. Two nulls therefore still compare equal exactly as
     /// <c>==</c> did. Callers that must not treat a missing serial as an identity guard for that
     /// themselves, as they did before.
+    /// </para>
     /// </remarks>
-    public static bool SameDevice(string? left, string? right) =>
-        string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+    public static bool SameDevice(string? left, string? right)
+    {
+        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+        {
+            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return DeviceIdentity.Create(left).Matches(DeviceIdentity.Create(right));
+    }
+
+    /// <summary>
+    /// The serial as the user sees it: the 16-digit upper-case hex form that <c>*IDN?</c> reports
+    /// (issue #493).
+    /// </summary>
+    /// <remarks>
+    /// Only a value that is a plain base-10 number — the form every stored serial has — is
+    /// converted. Anything else (a USB descriptor string, a placeholder such as "Unknown", a test
+    /// fixture) is returned unchanged, because it has no hex rendering to give. Null becomes the
+    /// empty string, so a binding shows a blank cell rather than nothing at all.
+    /// </remarks>
+    /// <param name="serial">The stored serial, normally decimal.</param>
+    /// <returns>The display form of <paramref name="serial"/>.</returns>
+    public static string ToDisplay(string? serial)
+    {
+        if (ulong.TryParse(serial, NumberStyles.None, CultureInfo.InvariantCulture, out var value))
+        {
+            return value.ToString("X" + HexWidth, CultureInfo.InvariantCulture);
+        }
+
+        return serial ?? string.Empty;
+    }
+
+    /// <summary>
+    /// The last four characters of <see cref="ToDisplay"/>, behind an ellipsis — the compact form
+    /// the legends and plot tooltips use. A display form of four characters or fewer is shown whole.
+    /// </summary>
+    /// <param name="serial">The stored serial, normally decimal.</param>
+    /// <returns>The short display form of <paramref name="serial"/>.</returns>
+    public static string ToShortDisplay(string? serial)
+    {
+        var display = ToDisplay(serial);
+        return display.Length > ShortLength ? "..." + display[^ShortLength..] : display;
+    }
 }

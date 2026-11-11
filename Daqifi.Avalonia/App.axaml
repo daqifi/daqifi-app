@@ -56,6 +56,9 @@
             <converters:BrushColorMatchConverter x:Key="BrushColorMatch"/>
             <converters:OxyColorToBrushConverter x:Key="OxyColorToBrushConverter"/>
             <converters:NotNullToVisibilityConverter x:Key="NotNullToVis"/>
+            <!-- Stored serials stay decimal (session key, profile identity); every serial
+                 binding shows the *IDN? hex form through this (#493). -->
+            <converters:SerialDisplayConverter x:Key="SerialDisplay"/>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

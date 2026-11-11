@@ -5,6 +5,7 @@
 
 using CommunityToolkit.Mvvm.ComponentModel;
 using Daqifi.Desktop.Channel;
+using Daqifi.Desktop.Device;
 using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Daqifi.Desktop.Logger;
@@ -137,9 +138,7 @@ public class LoggingSession : ObservableObject
             {
                 var formatted = DeviceLegendGroup.FormatFrequency(entry.SamplingFrequencyHz);
                 if (string.IsNullOrEmpty(formatted)) { continue; }
-                var serialTail = !string.IsNullOrEmpty(entry.DeviceSerialNo) && entry.DeviceSerialNo.Length > 4
-                    ? "..." + entry.DeviceSerialNo[^4..]
-                    : entry.DeviceSerialNo ?? string.Empty;
+                var serialTail = DeviceSerials.ToShortDisplay(entry.DeviceSerialNo);
                 parts.Add($"{serialTail}: {formatted}");
             }
             return string.Join(" · ", parts);

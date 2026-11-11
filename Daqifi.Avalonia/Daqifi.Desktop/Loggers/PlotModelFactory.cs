@@ -3,6 +3,7 @@
 // DO NOT manually delete the `// @port:` markers — they link symbols back to
 // the correspondence map.
 
+using Daqifi.Desktop.Device;
 using Daqifi.Desktop.Helpers;
 using OxyPlot;
 using OxyPlot.Annotations;
@@ -154,9 +155,7 @@ public sealed class PlotModelFactory
         PlotModel plotModel,
         DatabaseLogger? databaseLogger)
     {
-        var serialSuffix = deviceSerialNo?.Length > 4
-            ? $"...{deviceSerialNo[^4..]}"
-            : deviceSerialNo;
+        var serialSuffix = DeviceSerials.ToShortDisplay(deviceSerialNo);
 
         var newLineSeries = new LineSeries
         {
