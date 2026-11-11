@@ -23,9 +23,10 @@ namespace Daqifi.Desktop.Logger;
 /// shared with another app, and is never moved, copied as a file, migrated or deleted.
 /// </para>
 /// <para>
-/// <b>Repeatable.</b> A session is identified by its <c>SessionStart</c> text, which this import
-/// copies unchanged, and which a rename does not touch. Sessions already present (and complete)
-/// are skipped. Each new session is written as <see cref="SessionStatus.Importing"/> and marked
+/// <b>Repeatable.</b> A session is identified by its <c>SessionStart</c> text and its first sample,
+/// which this import copies unchanged, and which a rename does not touch. The start alone is not
+/// enough: two SD card sessions can start in the same second (see <c>IsCopy</c>). Sessions already
+/// present (and complete) are skipped. Each new session is written as <see cref="SessionStatus.Importing"/> and marked
 /// <see cref="SessionStatus.Complete"/> only once all its samples are in. If the process dies
 /// part-way, startup turns the leftover into <see cref="SessionStatus.ImportFailed"/> (see
 /// <c>LoggingManager.MarkAbandonedImportsFailed</c>), and the next import deletes that partial copy
@@ -138,7 +139,7 @@ public sealed class PreviousSessionImport
 
             return Scalar<long>(connection,
                 $"SELECT COUNT(*) FROM old.Sessions o WHERE {PreviousIsComplete(connection)} AND {HasSamples} " +
-                "AND NOT EXISTS (SELECT 1 FROM main.Sessions m WHERE m.SessionStart = o.SessionStart AND m.Status = 0)") > 0;
+                $"AND NOT EXISTS (SELECT 1 FROM main.Sessions m WHERE m.Status = 0 AND {IsCopy})") > 0;
         }
         catch
         {
@@ -204,7 +205,7 @@ public sealed class PreviousSessionImport
                    "(SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID), " +
                    "(SELECT MAX(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) " +
                    $"FROM old.Sessions o WHERE {complete} AND {HasSamples} " +
-                   "AND NOT EXISTS (SELECT 1 FROM main.Sessions m WHERE m.SessionStart = o.SessionStart) ORDER BY o.ID"))
+                   $"AND NOT EXISTS (SELECT 1 FROM main.Sessions m WHERE {IsCopy}) ORDER BY o.ID"))
         using (var reader = read.ExecuteReader())
         {
             while (reader.Read())
@@ -463,7 +464,9 @@ public sealed class PreviousSessionImport
     /// <see cref="SessionStatus.ImportFailed"/>), so they are redone. Rows still marked
     /// <see cref="SessionStatus.Importing"/> may belong to an import running in another copy of the
     /// app and are left alone. Startup turns them into failed ones only when no import holds
-    /// <see cref="ImportLease"/>, so a failed row here is never a live import's.
+    /// <see cref="ImportLease"/>, so a failed row here is never a live import's. A failed SD card
+    /// import of a different session from the same second is not a copy (<c>IsCopy</c>), so it and
+    /// its samples are kept.
     /// </summary>
     /// <returns>The IDs deleted.</returns>
     private static List<int> RemoveFailedImports(SqliteConnection connection, string complete)
@@ -471,7 +474,7 @@ public sealed class PreviousSessionImport
         var ids = new List<int>();
         using (var find = Command(connection,
                    $"SELECT m.ID FROM main.Sessions m WHERE m.Status = {(int)SessionStatus.ImportFailed} AND EXISTS " +
-                   $"(SELECT 1 FROM old.Sessions o WHERE o.SessionStart = m.SessionStart AND {complete})"))
+                   $"(SELECT 1 FROM old.Sessions o WHERE {complete} AND {HasSamples} AND {IsCopy})"))
         using (var reader = find.ExecuteReader())
         {
             while (reader.Read())
@@ -542,6 +545,26 @@ public sealed class PreviousSessionImport
     /// offering one would only bring it back to be deleted.
     /// </summary>
     private const string HasSamples = "EXISTS (SELECT 1 FROM old.Samples s WHERE s.LoggingSessionID = o.ID)";
+
+    /// <summary>
+    /// The condition that session <c>m</c> of this user's database is a copy of old session <c>o</c>.
+    /// </summary>
+    /// <remarks>
+    /// The start time alone is not enough (#511). An SD card session starts on a whole second (the
+    /// time in the log's file name), so two different card logs can share one, for example from two
+    /// devices started together. A copy also holds the old session's samples unchanged and in the
+    /// same order, so its first sample (lowest ID) is the old session's first sample. Two sessions
+    /// with the same start are different when those first samples differ in device, channel,
+    /// timestamp or value. A copy that has no sample yet (stopped before its first batch) is matched
+    /// on its start alone: it holds no data, so deleting it loses nothing, and skipping for it only
+    /// delays the session to the next import. Each first sample is one index lookup.
+    /// </remarks>
+    private const string IsCopy =
+        "m.SessionStart = o.SessionStart AND NOT EXISTS (SELECT 1 FROM main.Samples ms, old.Samples os " +
+        "WHERE ms.ID = (SELECT MIN(ID) FROM main.Samples WHERE LoggingSessionID = m.ID) " +
+        "AND os.ID = (SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) " +
+        "AND NOT (ms.DeviceSerialNo IS os.DeviceSerialNo AND ms.ChannelName IS os.ChannelName " +
+        "AND ms.TimestampTicks IS os.TimestampTicks AND ms.Value IS os.Value))";
 
     private static bool PreviousSchemaIsUsable(SqliteConnection connection) =>
         HasColumn(connection, "old", "Sessions", "ID")

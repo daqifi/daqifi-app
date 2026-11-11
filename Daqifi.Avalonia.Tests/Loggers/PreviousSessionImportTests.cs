@@ -588,7 +588,8 @@ public sealed class PreviousSessionImportTests : IDisposable
             "INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2);" +
             "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
             $"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < {rows}) " +
-            "SELECT 7, x, x, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1 FROM c;");
+            // Starts as the old session does (sample 1: 1.5 at tick 10), as a real partial copy does.
+            "SELECT 7, x + 0.5, x * 10, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1 FROM c;");
 
         var outcome = await RunImport();
 
