@@ -61,8 +61,8 @@ public partial class ProfilesMobileView : UserControl
         var drawerOpen = _vm?.IsDrawerOpen == true;
 
         // Both the landscape bottom bar and the portrait header carry a "+ ADD PROFILE" that
-        // re-fires OpenNewDrawer — which silently discards the in-progress form (or abandons a
-        // pending EDIT without persisting it). On desktop the drawer is a full-pane overlay that
+        // re-fires OpenNewDrawer — which silently discards an in-progress new-profile form (a
+        // pending EDIT is saved first since #541, but is still swapped out). On desktop the drawer is a full-pane overlay that
         // covers the whole pane, so re-firing is physically unreachable. Reproduce that here by
         // hiding BOTH the bottom bar and the header whenever the drawer is open: the fixed Row-0
         // header would otherwise stay pinned on-screen the entire time the drawer is open, and a

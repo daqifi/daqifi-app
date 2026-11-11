@@ -26,6 +26,9 @@ public partial class ProfilesPaneViewModel : ObservableObject
 {
     #region Private Fields
     private readonly AppLogger _logger = AppLogger.Instance;
+
+    /// <summary>Writes an edited profile to the file; <c>true</c> when it reached disk.</summary>
+    private readonly Func<Profile, bool> _writeProfile;
     #endregion
 
     #region Observable Properties
@@ -149,8 +152,18 @@ public partial class ProfilesPaneViewModel : ObservableObject
     /// collection events, and seeds the initial <see cref="HasProfiles"/> /
     /// <see cref="ActiveProfileName"/> state.
     /// </summary>
-    public ProfilesPaneViewModel()
+    public ProfilesPaneViewModel() : this(profile => LoggingManager.Instance.UpdateProfileInXml(profile))
     {
+    }
+
+    /// <summary>
+    /// Test seam: <paramref name="writeProfile"/> stands in for
+    /// <see cref="LoggingManager.UpdateProfileInXml"/>, so a test can make an edit's write fail
+    /// without breaking the profiles file every other test shares.
+    /// </summary>
+    internal ProfilesPaneViewModel(Func<Profile, bool> writeProfile)
+    {
+        _writeProfile = writeProfile;
         OpenEditDrawerCommand = new RelayCommand<Profile>(OpenEditDrawer);
         OpenNewDrawerCommand = new RelayCommand(OpenNewDrawer);
         CloseDrawerCommand = new RelayCommand(CloseDrawer);
@@ -234,6 +247,13 @@ public partial class ProfilesPaneViewModel : ObservableObject
             _logger.AddBreadcrumb("profile", "Blocked opening profile drawer while logging active");
             return;
         }
+        // On mobile the list stays live under the drawer, so EDIT on another profile replaces the
+        // one being edited. Save that one first, and keep it open when the write fails (#541).
+        if (!ReferenceEquals(profile, SelectedProfile) && !SaveOpenEdit())
+        {
+            DrawerError = ProfileWriteFailureMessage("save your changes to this profile");
+            return;
+        }
         DrawerError = ProfileRecoveryNotice();
         SelectedProfile = profile;
         IsNewProfile = false;
@@ -246,6 +266,11 @@ public partial class ProfilesPaneViewModel : ObservableObject
         if (LoggingManager.Instance.Active)
         {
             _logger.AddBreadcrumb("profile", "Blocked opening new-profile drawer while logging active");
+            return;
+        }
+        if (!SaveOpenEdit())
+        {
+            DrawerError = ProfileWriteFailureMessage("save your changes to this profile");
             return;
         }
         DrawerError = ProfileRecoveryNotice();
@@ -271,23 +296,36 @@ public partial class ProfilesPaneViewModel : ObservableObject
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.CloseDrawer
     private void CloseDrawer()
     {
-        if (!IsNewProfile && SelectedProfile != null &&
-            !string.IsNullOrWhiteSpace(SelectedProfile.Name))
+        // A failed write must not close: doing so would discard the user's edit while showing
+        // them a pane that says it was applied, which is the silent data loss #184 is about. The
+        // drawer stays open with the reason, and the close button retries.
+        if (!SaveOpenEdit())
         {
-            // Closing IS how an edit is saved, so a failed write must not close: doing so would
-            // discard the user's edit while showing them a pane that says it was applied, which is
-            // the silent data loss #184 is about. The drawer stays open with the reason, and the
-            // close button retries.
-            if (!LoggingManager.Instance.UpdateProfileInXml(SelectedProfile))
-            {
-                DrawerError = ProfileWriteFailureMessage("save your changes to this profile");
-                return;
-            }
+            DrawerError = ProfileWriteFailureMessage("save your changes to this profile");
+            return;
         }
 
         IsDrawerOpen = false;
         DrawerError = string.Empty;
         SelectedProfile = null;
+    }
+
+    /// <summary>
+    /// Writes the profile open in the edit drawer to the file. <c>true</c> when there is nothing
+    /// to save or the write succeeded.
+    /// </summary>
+    /// <remarks>
+    /// The drawer binds straight to the <see cref="Profile"/> in memory, so every edit is applied
+    /// the moment it is typed, and the list shows it as saved. Every way out of the drawer must
+    /// therefore come through here, not only the close button: leaving the pane and opening a
+    /// different profile once skipped it, and the edit was gone at the next launch (#541).
+    /// </remarks>
+    // Downstream-only: extracted from CloseDrawer.
+    private bool SaveOpenEdit()
+    {
+        if (IsNewProfile || SelectedProfile == null || string.IsNullOrWhiteSpace(SelectedProfile.Name))
+            return true;
+        return _writeProfile(SelectedProfile);
     }
     #endregion
 
@@ -653,6 +691,14 @@ public partial class ProfilesPaneViewModel : ObservableObject
         "Check that you have permission to write it and that the disk is not full, then try again.";
 
     /// <summary>
+    /// What the app notification says when the pane closed on an edit it could not write. The
+    /// edit is still in memory, so opening the profile shows it and closing the drawer retries.
+    /// </summary>
+    internal static string UnsavedEditMessage(string profileName) =>
+        $"Could not save your changes to the profile '{profileName}' — the profiles file could not be written. " +
+        "The changes are kept until the app closes: open the profile and close it to try again.";
+
+    /// <summary>
     /// The one-shot notice about a damaged profiles file, shown the first time the drawer opens
     /// after one was moved aside; empty the rest of the time, which is every other open.
     /// </summary>
@@ -674,12 +720,24 @@ public partial class ProfilesPaneViewModel : ObservableObject
 
     #region Cleanup
     /// <summary>
-    /// Detaches every event handler the view model subscribed to and releases
-    /// any pending confirm-dialog awaiter. Call when the hosting view unloads.
+    /// Saves an edit left open in the drawer, detaches every event handler the view model
+    /// subscribed to and releases any pending confirm-dialog awaiter. Call when the hosting view
+    /// unloads.
     /// </summary>
+    /// <returns>
+    /// A sentence for an app notification when the open edit could not be saved, naming the
+    /// profile; <c>null</c> otherwise. The drawer is going away, so it cannot keep the edit open
+    /// and say why, as <see cref="CloseDrawer"/> does; the caller must show it somewhere that
+    /// stays.
+    /// </returns>
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.Cleanup
-    public void Cleanup()
+    public string? Cleanup()
     {
+        // On desktop the pane is a tab's content, so a different tab detaches it with the drawer
+        // still open. That used to drop the edit without a word (#541).
+        var unsaved = SaveOpenEdit() ? null : UnsavedEditMessage(SelectedProfile!.Name);
+        if (unsaved != null) _logger.Warning(unsaved);
+
         LoggingManager.Instance.PropertyChanged -= OnLoggingManagerPropertyChanged;
         Profiles.CollectionChanged -= OnProfilesCollectionChanged;
         foreach (var p in Profiles) p.PropertyChanged -= OnProfilePropertyChanged;
@@ -687,6 +745,7 @@ public partial class ProfilesPaneViewModel : ObservableObject
             item.PropertyChanged -= OnNewDeviceItemPropertyChanged;
         // Release any awaiter on an unresolved confirm dialog.
         ConfirmOverlay.Cancel();
+        return unsaved;
     }
     #endregion
 }
