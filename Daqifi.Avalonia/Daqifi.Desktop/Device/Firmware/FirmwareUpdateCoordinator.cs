@@ -324,6 +324,8 @@ public class FirmwareUpdateCoordinator
                 await UpdateWifiModuleAsync(serialStreamingDevice, cancellationToken);
             }
 
+            await RecheckFirmwareAfterWriteAsync(serialStreamingDevice, coreDevice);
+
             _host.IsUploadComplete = true;
             _appLogger.AddBreadcrumb("firmware", "Firmware update completed");
             _host.ShowFirmwareUpdateSucceeded();
@@ -359,6 +361,43 @@ public class FirmwareUpdateCoordinator
             // explicitly re-selects a file. (The auto path never writes this property.)
             _host.FirmwareFilePath = string.Empty;
         }
+    }
+
+    /// <summary>
+    /// Re-runs the outdated-firmware check once a write has succeeded, so the notification and
+    /// <see cref="Daqifi.Desktop.Device.IStreamingDevice.IsFirmwareOutdated"/> describe the firmware
+    /// the device now runs before the success dialog tells the user the update is done (issue #566).
+    /// <para>
+    /// <see cref="RefreshFirmwareUpdatesAsync"/> is otherwise reached only from the end of the
+    /// shell's <c>UpdateUi</c>, which runs on a connection-manager or logging-manager property
+    /// change. The device stays in the connected list for the whole update by design, so nothing
+    /// raises one when the update completes: a successful update left "has Outdated Firmware"
+    /// standing beside a tile that already showed the new version.
+    /// </para>
+    /// <para>
+    /// The wrapper's version is first taken from Core's metadata. Core re-reads the device's status
+    /// when it wakes the board after the reset, so its metadata carries the version the device
+    /// booted with. The wrapper normally hears that through <c>ChannelsPopulated</c>, but the check
+    /// must not depend on that event having run first, or it reads the version from before the
+    /// restart and keeps the notification it exists to remove. An empty value (the board never
+    /// answered after the reset) leaves the wrapper as it was rather than erasing the version.
+    /// </para>
+    /// <para>
+    /// The check is the full one, not "remove the notification": a manual <c>.hex</c> can install
+    /// an OLDER image, and the notification must then stay, or come back.
+    /// </para>
+    /// </summary>
+    private async Task RecheckFirmwareAfterWriteAsync(
+        SerialStreamingDevice serialStreamingDevice,
+        Daqifi.Core.Device.DaqifiDevice coreDevice)
+    {
+        var restartedVersion = coreDevice.Metadata.FirmwareVersion;
+        if (!string.IsNullOrWhiteSpace(restartedVersion))
+        {
+            serialStreamingDevice.DeviceVersion = restartedVersion;
+        }
+
+        await RefreshFirmwareUpdatesAsync();
     }
 
     /// <summary>
