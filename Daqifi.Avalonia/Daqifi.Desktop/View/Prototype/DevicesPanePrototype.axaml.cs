@@ -5,6 +5,7 @@
 
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Threading;
 using Daqifi.Desktop.ViewModels;
 
 namespace Daqifi.Desktop.View.Prototype;
@@ -23,6 +24,37 @@ public partial class DevicesPanePrototype : UserControl
     public DevicesPanePrototype()
     {
         InitializeComponent();
+        FirmwareRunPanel.PropertyChanged += OnFirmwareRunPanelPropertyChanged;
+    }
+
+    /// <summary>
+    /// Scrolls the firmware status line and CANCEL UPDATE into view when an update starts
+    /// (issue #570). They are the last items of the FIRMWARE section and are visible only during an
+    /// update, so they appear below the visible area of a drawer that is scrolled to the end — and
+    /// the cancel button is the only safe control to stop an update.
+    /// </summary>
+    /// <remarks>
+    /// Posted at <see cref="DispatcherPriority.Loaded"/>, below layout: the panel has no size until
+    /// the layout pass that follows the visibility change, and bringing a zero-size rectangle into
+    /// view moves nothing. Only the hidden-to-visible change acts, so the scroll position is the
+    /// user's again for the rest of the update.
+    /// </remarks>
+    private void OnFirmwareRunPanelPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+    {
+        if (e.Property != IsVisibleProperty || e.NewValue is not true)
+        {
+            return;
+        }
+
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                if (FirmwareRunPanel.IsEffectivelyVisible)
+                {
+                    FirmwareRunPanel.BringIntoView();
+                }
+            },
+            DispatcherPriority.Loaded);
     }
 
     // Upstream swaps the VM in on Loaded. Avalonia raises Loaded at DispatcherPriority.Loaded,

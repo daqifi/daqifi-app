@@ -157,7 +157,44 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         SetLoggingModeCommand = new RelayCommand<string>(SetLoggingMode);
 
         ConnectionManager.Instance.PropertyChanged += OnConnectionManagerPropertyChanged;
+        ConnectionManager.Instance.FirmwareUpdateInProgressChanged += OnFirmwareUpdateInProgressChanged;
         Rebuild();
+    }
+
+    /// <summary>
+    /// Shows the UPDATING state on the tile of the device being updated (issue #570).
+    /// </summary>
+    /// <remarks>
+    /// The event comes from the <c>DeviceBeingUpdated</c> setter, which the firmware run can reach
+    /// from a continuation thread, so this hops to the UI thread before it touches a tile — the
+    /// same hop <see cref="OnConnectionManagerPropertyChanged"/> makes.
+    /// </remarks>
+    private void OnFirmwareUpdateInProgressChanged(object? sender, EventArgs e)
+    {
+        if (_dispatcher.CheckAccess())
+        {
+            ApplyFirmwareUpdateState();
+        }
+        else
+        {
+            _dispatcher.Post(ApplyFirmwareUpdateState);
+        }
+    }
+
+    /// <summary>
+    /// Marks the tile whose device is <c>ConnectionManager.DeviceBeingUpdated</c> as updating, and
+    /// every other tile as not. Read fresh each time, so a posted call that runs late applies the
+    /// current state rather than the one that queued it.
+    /// </summary>
+    internal void ApplyFirmwareUpdateState()
+    {
+        if (_disposed) return;
+
+        var updating = ConnectionManager.Instance.DeviceBeingUpdated;
+        foreach (var tile in Devices)
+        {
+            tile.IsUpdatingFirmware = updating != null && ReferenceEquals(tile.Device, updating);
+        }
     }
 
     // @port: Daqifi.Desktop.ViewModels.DevicesPaneViewModel.OnSelectedTileChanged
@@ -244,6 +281,10 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         }
 
         HasConnectedDevice = Devices.Count > 0;
+
+        // The device list changes during an update (the device reconnects after the flash), and a
+        // fresh tile must not lose the UPDATING state.
+        ApplyFirmwareUpdateState();
 
         // Preserve drawer state across a rebuild if the device is still there;
         // otherwise close the drawer so it doesn't point at a removed device.
@@ -338,6 +379,7 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         _disposed = true;
 
         ConnectionManager.Instance.PropertyChanged -= OnConnectionManagerPropertyChanged;
+        ConnectionManager.Instance.FirmwareUpdateInProgressChanged -= OnFirmwareUpdateInProgressChanged;
         Unfollow(SelectedDevice);
 
         foreach (var tile in Devices) tile.Dispose();

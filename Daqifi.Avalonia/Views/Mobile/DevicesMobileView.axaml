@@ -103,13 +103,22 @@
                   <Border Grid.Column="0" Background="{Binding StripeBrush}"
                           CornerRadius="12,0,0,12" />
                   <StackPanel Grid.Column="1" Margin="14,12" Spacing="8">
-                    <!-- Name (mono) + connection status badge (stripe-colored) -->
-                    <Grid ColumnDefinitions="*,Auto">
+                    <!-- Name (mono) + UPDATING pill (issue #570; visible only while a firmware
+                         update runs on this device) + connection status badge (stripe-colored) -->
+                    <Grid ColumnDefinitions="*,Auto,Auto">
                       <TextBlock Grid.Column="0" Text="{Binding Name}" Classes="mono"
                                  FontSize="{DynamicResource FontSizeSubtitle}" FontWeight="Medium"
                                  Foreground="{DynamicResource TextPrimary}"
                                  TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                      <Border Grid.Column="1" VerticalAlignment="Center"
+                      <Border Grid.Column="1" VerticalAlignment="Center" Margin="0,0,6,0"
+                              Background="{DynamicResource SurfaceActive}"
+                              BorderBrush="{DynamicResource StatusAmber}" BorderThickness="1"
+                              CornerRadius="4" Padding="7,2"
+                              IsVisible="{Binding IsUpdatingFirmware}">
+                        <TextBlock Text="UPDATING" FontSize="{DynamicResource FontSizeSmall}"
+                                   FontWeight="SemiBold" Foreground="{DynamicResource StatusAmber}" />
+                      </Border>
+                      <Border Grid.Column="2" VerticalAlignment="Center"
                               Background="{DynamicResource SurfaceActive}"
                               BorderBrush="{Binding StripeBrush}" BorderThickness="1"
                               CornerRadius="4" Padding="7,2">
