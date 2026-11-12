@@ -87,7 +87,7 @@ public partial class DevicesPanePrototype : UserControl
             if (section == null) return;
             // A rectangle one viewport tall from the label down, so the label lands at the top of
             // the view and not at its bottom edge with the controls under it out of sight.
-            var viewer = Avalonia.VisualTree.VisualExtensions.FindAncestorOfType<ScrollViewer>(section);
+            var viewer = global::Avalonia.VisualTree.VisualExtensions.FindAncestorOfType<ScrollViewer>(section);
             var viewportHeight = viewer?.Viewport.Height ?? 0;
             section.BringIntoView(new Rect(0, 0, section.Bounds.Width, Math.Max(section.Bounds.Height, viewportHeight)));
         }, DispatcherPriority.Loaded);
