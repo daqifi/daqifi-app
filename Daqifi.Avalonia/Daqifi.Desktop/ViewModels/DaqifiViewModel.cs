@@ -557,6 +557,86 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         }
     }
 
+    #region Firmware update availability (issue #569)
+    /// <summary>The <see cref="SelectedIndex"/> of the Devices tab in <c>MainWindow.axaml</c>.</summary>
+    internal const int DevicesTabIndex = 3;
+
+    private string _latestFirmwareVersion = string.Empty;
+    private Uri? _latestFirmwareReleaseNotesUri;
+    private string? _pendingFirmwareSectionSerial;
+
+    /// <summary>
+    /// The newest published firmware version, or an empty string until a check has succeeded.
+    /// The Devices drawer shows it beside the installed version.
+    /// </summary>
+    /// <remarks>
+    /// Announced after every check, also when the value did not change: the check sets each
+    /// device's <c>IsFirmwareOutdated</c> before this is written, and that flag does not notify, so
+    /// this announcement is what tells the drawer to read the flags again.
+    /// </remarks>
+    // Downstream-only: no upstream counterpart.
+    public string LatestFirmwareVersion => _latestFirmwareVersion;
+
+    /// <summary>The release-notes page of <see cref="LatestFirmwareVersion"/>, or <c>null</c> when it is not known.</summary>
+    // Downstream-only: no upstream counterpart.
+    public Uri? LatestFirmwareReleaseNotesUri => _latestFirmwareReleaseNotesUri;
+
+    /// <summary>
+    /// Raised when <see cref="ShowFirmwareSection"/> asks for a device's FIRMWARE section. A
+    /// Devices pane that is on screen takes the request with <see cref="TakeFirmwareSectionRequest"/>;
+    /// a pane built after the request takes it when it is built.
+    /// </summary>
+    internal event EventHandler? FirmwareSectionRequested;
+
+    /// <summary>
+    /// Records the newest release and announces it. <paramref name="tag"/> is the GitHub release tag
+    /// (for example <c>v3.9.0</c>); the release-notes link is made from it.
+    /// </summary>
+    internal void SetLatestFirmwareRelease(string version, string tag)
+    {
+        _latestFirmwareVersion = version ?? string.Empty;
+        _latestFirmwareReleaseNotesUri = string.IsNullOrWhiteSpace(_latestFirmwareVersion) || string.IsNullOrWhiteSpace(tag)
+            ? null
+            : new Uri($"https://github.com/daqifi/daqifi-nyquist-firmware/releases/tag/{Uri.EscapeDataString(tag)}");
+        OnPropertyChanged(nameof(LatestFirmwareReleaseNotesUri));
+        OnPropertyChanged(nameof(LatestFirmwareVersion));
+    }
+
+    /// <summary>
+    /// Runs the coordinator's version check, then publishes what it found. The coordinator logs and
+    /// swallows its own failures, so this never throws.
+    /// </summary>
+    private async Task RefreshFirmwareUpdatesAsync()
+    {
+        await _firmwareCoordinator.RefreshFirmwareUpdatesAsync();
+        SetLatestFirmwareRelease(_firmwareCoordinator.LatestFirmwareVersion, _firmwareCoordinator.LatestFirmwareTag);
+    }
+
+    /// <summary>
+    /// Opens the Devices tab and asks the Devices pane to open <paramref name="device"/>'s drawer at
+    /// its FIRMWARE section. The tab change also closes the notifications flyout.
+    /// </summary>
+    /// <remarks>
+    /// The request carries the serial, not the device object: a device that reconnected since the
+    /// notification was made is a new wrapper with the same serial.
+    /// </remarks>
+    // Downstream-only: no upstream counterpart.
+    public void ShowFirmwareSection(IStreamingDevice device)
+    {
+        _pendingFirmwareSectionSerial = device.DeviceSerialNo;
+        SelectedIndex = DevicesTabIndex;
+        FirmwareSectionRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Returns the serial of the pending FIRMWARE-section request and clears it, or <c>null</c> when none is pending.</summary>
+    internal string? TakeFirmwareSectionRequest()
+    {
+        var serial = _pendingFirmwareSectionSerial;
+        _pendingFirmwareSectionSerial = null;
+        return serial;
+    }
+    #endregion
+
     /// <summary>
     /// The device the header RATE chip describes and the Devices drawer's FREQUENCY slider writes
     /// to: the one the drawer was last opened on, or — before any drawer has been opened — the
@@ -2377,7 +2457,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                 break;
         }
         RefreshCanToggleLogging();
-        _ = _firmwareCoordinator.RefreshFirmwareUpdatesAsync();
+        _ = RefreshFirmwareUpdatesAsync();
         RemoveNotification();
     }
 

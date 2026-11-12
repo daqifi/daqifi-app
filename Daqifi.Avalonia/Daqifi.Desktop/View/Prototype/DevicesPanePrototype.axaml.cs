@@ -5,6 +5,8 @@
 
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Daqifi.Desktop.ViewModels;
 
 namespace Daqifi.Desktop.View.Prototype;
@@ -40,12 +42,45 @@ public partial class DevicesPanePrototype : UserControl
             DataContext = new DevicesPaneViewModel(shell);
         }
         base.OnAttachedToVisualTree(e);
+
+        if (DataContext is DevicesPaneViewModel pane)
+        {
+            pane.FirmwareSectionShown += OnFirmwareSectionShown;
+            // A request taken while the view model was being built, before this subscription.
+            if (pane.TakeFirmwareScrollRequest()) ScrollToFirmwareSection();
+        }
+    }
+
+    private void OnFirmwareSectionShown(object? sender, EventArgs e)
+    {
+        if ((sender as DevicesPaneViewModel)?.TakeFirmwareScrollRequest() == true) ScrollToFirmwareSection();
+    }
+
+    /// <summary>
+    /// Scrolls the drawer so the FIRMWARE section starts at the top of its view (issue #569). The
+    /// drawer has only now become visible, so this waits for the layout pass that measures it.
+    /// </summary>
+    private void ScrollToFirmwareSection()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            var section = this.FindControl<TextBlock>("FirmwareSection");
+            if (section == null) return;
+            // A rectangle one viewport tall from the label down, so the label lands at the top of
+            // the view and not at its bottom edge with the controls under it out of sight.
+            var viewportHeight = section.FindAncestorOfType<ScrollViewer>()?.Viewport.Height ?? 0;
+            section.BringIntoView(new Rect(0, 0, section.Bounds.Width, Math.Max(section.Bounds.Height, viewportHeight)));
+        }, DispatcherPriority.Loaded);
     }
 
     // @port: Daqifi.Desktop.View.Prototype.DevicesPanePrototype.OnUnloaded
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnDetachedFromVisualTree(e);
+        if (DataContext is DevicesPaneViewModel pane)
+        {
+            pane.FirmwareSectionShown -= OnFirmwareSectionShown;
+        }
         if (DataContext is IDisposable disposable)
         {
             disposable.Dispose();

@@ -5,6 +5,7 @@
 
 using System.IO;
 using System.IO.Ports;
+using CommunityToolkit.Mvvm.Input;
 using Daqifi.Core.Firmware;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.Device.SerialDevice;
@@ -54,6 +55,7 @@ public class FirmwareUpdateCoordinator
     /// </summary>
     private CancellationTokenSource? _firmwareUploadCts;
     private string _latestFirmwareVersion = string.Empty;
+    private string _latestFirmwareTag = string.Empty;
 
     /// <summary>
     /// The retry budget the app spends asking a WiFi module what firmware it carries. Shared with
@@ -195,6 +197,14 @@ public class FirmwareUpdateCoordinator
     /// </summary>
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.LatestFirmwareVersion
     public string LatestFirmwareVersion => _latestFirmwareVersion;
+
+    /// <summary>
+    /// The release tag of <see cref="LatestFirmwareVersion"/> (for example <c>v3.9.0</c>), or an
+    /// empty string if no check has succeeded yet. The drawer makes the release-notes link from it
+    /// (issue #569).
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    public string LatestFirmwareTag => _latestFirmwareTag;
     #endregion
 
     #region Upload firmware and update processes
@@ -996,6 +1006,7 @@ public class FirmwareUpdateCoordinator
         {
             var latestRelease = await _firmwareDownloadService.GetLatestReleaseAsync(includePreRelease: true);
             _latestFirmwareVersion = latestRelease?.Version.ToString() ?? string.Empty;
+            _latestFirmwareTag = latestRelease?.TagName ?? string.Empty;
 
             if (latestRelease == null)
             {
@@ -1014,7 +1025,7 @@ public class FirmwareUpdateCoordinator
                 {
                     if (isOutdated)
                     {
-                        AddNotification(device, latestRelease.Version.ToString());
+                        AddNotification(device, latestRelease.Version.ToString(), connectedDevices);
                     }
                     else
                     {
@@ -1030,9 +1041,10 @@ public class FirmwareUpdateCoordinator
     }
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.AddNotification
-    private void AddNotification(IStreamingDevice device, string latestFirmware)
+    private void AddNotification(
+        IStreamingDevice device, string latestFirmware, IReadOnlyList<IStreamingDevice> connectedDevices)
     {
-        var message = $"Device With Serial {device.DeviceSerialNo} has Outdated Firmware. Please Update to Version {latestFirmware}.";
+        var message = OutdatedFirmwareMessage(device, latestFirmware, connectedDevices);
 
         var existingNotification = _host.Notifications.FirstOrDefault(n => n.DeviceSerialNo != null
                                                                         && n.IsFirmwareUpdate
@@ -1044,12 +1056,48 @@ public class FirmwareUpdateCoordinator
             {
                 DeviceSerialNo = device.DeviceSerialNo,
                 Message = message,
-                IsFirmwareUpdate = true
+                IsFirmwareUpdate = true,
+                // Issue #569: the notification was text only, and the user had to find the update
+                // control without help. The button takes them to it.
+                ActionText = "Update",
+                Action = new RelayCommand(() => _host.ShowFirmwareSection(device)),
             });
         }
 
         _host.RefreshNotificationCount();
     }
+
+    /// <summary>
+    /// The text of the outdated-firmware notification: the name the user knows the device by, the
+    /// installed version and the newest version (issue #569).
+    /// </summary>
+    /// <remarks>
+    /// The name is the friendly name when the user set one, otherwise the part number — the name
+    /// the device tile shows. The serial is added only when another connected device has the same
+    /// name, because only then does the name not identify the device.
+    /// </remarks>
+    internal static string OutdatedFirmwareMessage(
+        IStreamingDevice device, string latestFirmware, IReadOnlyList<IStreamingDevice> connectedDevices)
+    {
+        var name = NotificationName(device);
+        var nameIsShared = connectedDevices.Any(other =>
+            !ReferenceEquals(other, device)
+            && !DeviceSerials.SameDevice(other.DeviceSerialNo, device.DeviceSerialNo)
+            && string.Equals(NotificationName(other), name, StringComparison.OrdinalIgnoreCase));
+        if (nameIsShared && !string.IsNullOrWhiteSpace(device.DeviceSerialNo))
+        {
+            name = $"{name} (serial {device.DeviceSerialNo})";
+        }
+
+        return string.IsNullOrWhiteSpace(device.DeviceVersion)
+            ? $"{name} has old firmware. Version {latestFirmware} is available."
+            : $"{name} has firmware {device.DeviceVersion}. Version {latestFirmware} is available.";
+    }
+
+    private static string NotificationName(IStreamingDevice device) =>
+        !string.IsNullOrWhiteSpace(device.FriendlyName) ? device.FriendlyName
+        : !string.IsNullOrWhiteSpace(device.DevicePartNumber) ? device.DevicePartNumber
+        : device.DeviceDisplayName;
 
     /// <summary>
     /// Leaves a record, outliving the run, that the WiFi half did not happen.

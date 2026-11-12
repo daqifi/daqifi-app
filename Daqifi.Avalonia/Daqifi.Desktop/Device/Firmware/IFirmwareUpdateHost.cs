@@ -112,5 +112,17 @@ public interface IFirmwareUpdateHost
     /// </summary>
     // @port: Daqifi.Desktop.Device.Firmware.IFirmwareUpdateHost.QuiesceWifiFirmwareProbeAsync
     Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Takes the user to the firmware update control of <paramref name="device"/>: the Devices pane,
+    /// with the device's drawer open at its FIRMWARE section. Run by the <b>Update</b> button of the
+    /// outdated-firmware notification (issue #569).
+    /// </summary>
+    /// <remarks>
+    /// A default no-op so that a host with no screen to navigate (the test doubles) needs no change.
+    /// <c>DaqifiViewModel</c> is the only host that ships, and it implements this.
+    /// </remarks>
+    // Downstream-only: no upstream counterpart.
+    void ShowFirmwareSection(IStreamingDevice device) { }
     #endregion
 }

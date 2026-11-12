@@ -47,7 +47,13 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
     // rate against the outgoing ceiling. See MaxFrequencyHz.
     [NotifyPropertyChangedFor(nameof(MaxFrequencyHz))]
     [NotifyPropertyChangedFor(nameof(FrequencyHz))]
+    [NotifyPropertyChangedFor(nameof(SelectedDeviceHasFirmwareUpdate))]
+    [NotifyPropertyChangedFor(nameof(SelectedDeviceFirmwareIsCurrent))]
+    [NotifyPropertyChangedFor(nameof(FirmwareStatusText))]
+    [NotifyPropertyChangedFor(nameof(UpdateFirmwareButtonText))]
     private DeviceTileViewModel? _selectedTile;
+
+    private bool _firmwareScrollPending;
 
     [ObservableProperty] private bool _isSettingsOpen;
 
@@ -113,6 +119,139 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
     // Downstream-only: no upstream counterpart.
     public int MaxFrequencyHz => SelectedDevice?.MaxStreamingFrequency ?? 1;
 
+    #region Firmware update availability (issue #569)
+    /// <summary>
+    /// The newest published firmware version, or an empty string until the version check has
+    /// succeeded. Read from the shell, which announces it after every check.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    public string LatestFirmwareVersion => _shell?.LatestFirmwareVersion ?? string.Empty;
+
+    /// <summary>
+    /// True when the newest version is known and the selected device is older. The flag is the one
+    /// the version check sets on the device, so the drawer agrees with the outdated-firmware
+    /// notification and with the tile.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    public bool SelectedDeviceHasFirmwareUpdate =>
+        SelectedDevice?.IsFirmwareOutdated == true && LatestFirmwareVersion.Length > 0;
+
+    /// <summary>True when the newest version is known and the selected device does not need it.</summary>
+    // Downstream-only: no upstream counterpart.
+    public bool SelectedDeviceFirmwareIsCurrent =>
+        SelectedDevice is { IsFirmwareOutdated: false } && LatestFirmwareVersion.Length > 0;
+
+    /// <summary>
+    /// One line at the top of the FIRMWARE section: the installed version, and either the newer
+    /// version or "Firmware is up to date". Only the installed version while the newest is not known.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    public string FirmwareStatusText
+    {
+        get
+        {
+            if (SelectedDevice == null) return string.Empty;
+            var installed = string.IsNullOrWhiteSpace(SelectedDevice.DeviceVersion)
+                ? "Installed version unknown."
+                : $"Installed {SelectedDevice.DeviceVersion}.";
+            if (SelectedDeviceHasFirmwareUpdate) return $"{installed} Version {LatestFirmwareVersion} is available.";
+            if (SelectedDeviceFirmwareIsCurrent) return $"{installed} Firmware is up to date.";
+            return installed;
+        }
+    }
+
+    /// <summary>
+    /// The label of the drawer's update button, which says what the button will write: the chosen
+    /// file, or the newest release by its version.
+    /// </summary>
+    /// <remarks>
+    /// <c>FirmwareUpdateCoordinator.UploadFirmwareAsync</c> flashes the file when
+    /// <c>FirmwareFilePath</c> is set and downloads the newest release when it is empty, so the
+    /// label follows the same test. When the device already has the newest version the button
+    /// installs it again, and "INSTALL" is true of that and of a device on a newer build.
+    /// </remarks>
+    // Downstream-only: no upstream counterpart.
+    public string UpdateFirmwareButtonText
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(_shell?.FirmwareFilePath)) return "UPDATE FROM FILE";
+            if (SelectedDeviceHasFirmwareUpdate) return $"UPDATE TO {LatestFirmwareVersion}";
+            if (SelectedDeviceFirmwareIsCurrent) return $"INSTALL {LatestFirmwareVersion}";
+            return "UPDATE";
+        }
+    }
+
+    /// <summary>The release-notes page of the newest version, or <c>null</c> when it is not known.</summary>
+    // Downstream-only: no upstream counterpart.
+    public Uri? FirmwareReleaseNotesUri => _shell?.LatestFirmwareReleaseNotesUri;
+
+    /// <summary>The text of the release-notes link.</summary>
+    // Downstream-only: no upstream counterpart.
+    public string FirmwareReleaseNotesText => $"Release notes for {LatestFirmwareVersion}";
+
+    /// <summary>
+    /// Raised after this pane opened a drawer for a <c>DaqifiViewModel.ShowFirmwareSection</c>
+    /// request, so the view scrolls the drawer to its FIRMWARE section. A request taken while the
+    /// pane is being built happens before the view can subscribe; the view collects that one with
+    /// <see cref="TakeFirmwareScrollRequest"/>.
+    /// </summary>
+    internal event EventHandler? FirmwareSectionShown;
+
+    /// <summary>Returns true once for each FIRMWARE-section request the view has not yet scrolled to.</summary>
+    internal bool TakeFirmwareScrollRequest()
+    {
+        var pending = _firmwareScrollPending;
+        _firmwareScrollPending = false;
+        return pending;
+    }
+
+    private void OnShellFirmwareSectionRequested(object? sender, EventArgs e) => OpenRequestedFirmwareSection();
+
+    /// <summary>
+    /// Opens the drawer of the device the shell asked for, if it is connected. A device that left
+    /// before the button was clicked has no tile, and the user stays on the Devices pane.
+    /// </summary>
+    private void OpenRequestedFirmwareSection()
+    {
+        var serial = _shell?.TakeFirmwareSectionRequest();
+        if (serial == null) return;
+
+        var tile = Devices.FirstOrDefault(d => DeviceSerials.SameDevice(d.Device.DeviceSerialNo, serial));
+        if (tile == null) return;
+
+        OpenSettings(tile);
+        _firmwareScrollPending = true;
+        FirmwareSectionShown?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void OnShellPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        switch (e.PropertyName)
+        {
+            case nameof(DaqifiViewModel.LatestFirmwareVersion):
+                OnPropertyChanged(nameof(LatestFirmwareVersion));
+                OnPropertyChanged(nameof(FirmwareReleaseNotesText));
+                RaiseFirmwareAvailabilityChanged();
+                break;
+            case nameof(DaqifiViewModel.LatestFirmwareReleaseNotesUri):
+                OnPropertyChanged(nameof(FirmwareReleaseNotesUri));
+                break;
+            case nameof(DaqifiViewModel.FirmwareFilePath):
+                OnPropertyChanged(nameof(UpdateFirmwareButtonText));
+                break;
+        }
+    }
+
+    private void RaiseFirmwareAvailabilityChanged()
+    {
+        OnPropertyChanged(nameof(SelectedDeviceHasFirmwareUpdate));
+        OnPropertyChanged(nameof(SelectedDeviceFirmwareIsCurrent));
+        OnPropertyChanged(nameof(FirmwareStatusText));
+        OnPropertyChanged(nameof(UpdateFirmwareButtonText));
+    }
+    #endregion
+
     /// <summary>Opens the inline settings drawer for a device tile.</summary>
     // @port: Daqifi.Desktop.ViewModels.DevicesPaneViewModel.OpenSettingsCommand
     public IRelayCommand<DeviceTileViewModel> OpenSettingsCommand { get; }
@@ -158,6 +297,15 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
 
         ConnectionManager.Instance.PropertyChanged += OnConnectionManagerPropertyChanged;
         Rebuild();
+
+        if (_shell != null)
+        {
+            _shell.PropertyChanged += OnShellPropertyChanged;
+            _shell.FirmwareSectionRequested += OnShellFirmwareSectionRequested;
+            // A notification's Update button can switch to the Devices tab, which builds this pane
+            // after the request was made.
+            OpenRequestedFirmwareSection();
+        }
     }
 
     // @port: Daqifi.Desktop.ViewModels.DevicesPaneViewModel.OnSelectedTileChanged
@@ -210,6 +358,10 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         if (e.PropertyName == nameof(IStreamingDevice.StreamingFrequency))
         {
             OnPropertyChanged(nameof(FrequencyHz));
+        }
+        else if (e.PropertyName is nameof(IStreamingDevice.IsFirmwareOutdated) or nameof(IStreamingDevice.DeviceVersion))
+        {
+            RaiseFirmwareAvailabilityChanged();
         }
     }
 
@@ -338,6 +490,11 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         _disposed = true;
 
         ConnectionManager.Instance.PropertyChanged -= OnConnectionManagerPropertyChanged;
+        if (_shell != null)
+        {
+            _shell.PropertyChanged -= OnShellPropertyChanged;
+            _shell.FirmwareSectionRequested -= OnShellFirmwareSectionRequested;
+        }
         Unfollow(SelectedDevice);
 
         foreach (var tile in Devices) tile.Dispose();
