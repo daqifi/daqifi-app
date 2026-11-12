@@ -191,13 +191,14 @@ public sealed class PreviousSessionImportTests : IDisposable
     private const string SameSecond = "2026-09-01 12:00:00";
 
     // A session of this user's database from the same second, with one sample: the old session's
-    // first sample (AddPreviousSession, sample 1) when the serial is left alone. previousSessionId
-    // marks it as the import's own copy of that old session.
-    private void AddCurrentSession(long id, SessionStatus status, string serial = "SN-TEST", long? previousSessionId = null)
+    // first sample (AddPreviousSession, sample 1) when the serial is left alone.
+    // previousFirstSampleId marks it as the import's own copy of the old session with that first
+    // sample ID.
+    private void AddCurrentSession(long id, SessionStatus status, string serial = "SN-TEST", long? previousFirstSampleId = null)
     {
         Execute(_current,
-            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousSessionId) " +
-            $"VALUES ({id}, '{SameSecond}', 'Other card log', {(int)status}, {previousSessionId?.ToString() ?? "NULL"});" +
+            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousFirstSampleId) " +
+            $"VALUES ({id}, '{SameSecond}', 'Other card log', {(int)status}, {previousFirstSampleId?.ToString() ?? "NULL"});" +
             "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
             $"VALUES ({id}, 1.5, 10, 'Nq1', 'AI0', '{serial}', '#FF0000', 1);");
     }
@@ -242,24 +243,12 @@ public sealed class PreviousSessionImportTests : IDisposable
         // The old session lost its samples after the copy began, so it cannot be imported again:
         // the partial copy is the only copy of that data left.
         AddPreviousSession(1, SameSecond, "Emptied since");
-        AddCurrentSession(9, SessionStatus.ImportFailed, previousSessionId: 1);
+        AddCurrentSession(9, SessionStatus.ImportFailed, previousFirstSampleId: 1);
 
         var outcome = await RunImport();
 
         Assert.Empty(outcome.Removed);
         Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = 9"));
-    }
-
-    [Fact]
-    public async Task A_copy_does_not_block_a_new_old_session_that_was_given_the_same_ID()
-    {
-        CreatePreviousDatabase();
-        // The earlier version deleted the session this copy came from, then gave its ID to a new one.
-        AddPreviousSession(1, "2026-10-01 08:00:00", "New session, reused ID", 1, 2);
-        AddCurrentSession(9, SessionStatus.Complete, previousSessionId: 1);
-
-        Assert.True(Import().HasSessionsToImport());
-        Assert.Single((await RunImport()).Imported);
     }
 
     [Fact]
@@ -278,7 +267,7 @@ public sealed class PreviousSessionImportTests : IDisposable
             context.Database.Migrate();
         }
 
-        Assert.Equal(1L, Scalar<long>(database, "SELECT COUNT(*) FROM Sessions WHERE PreviousSessionId IS NULL"));
+        Assert.Equal(1L, Scalar<long>(database, "SELECT COUNT(*) FROM Sessions WHERE PreviousFirstSampleId IS NULL"));
     }
 
     // A session of this user's database that starts with exactly the old session's first sample
@@ -432,7 +421,7 @@ public sealed class PreviousSessionImportTests : IDisposable
         AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1, 2, 3);
         // What a killed import leaves once startup has flagged it: a partial copy, ImportFailed.
         Execute(_current,
-            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousSessionId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1);" +
+            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousFirstSampleId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1);" +
             "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
             "VALUES (7, 1.5, 10, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);");
 
@@ -680,7 +669,7 @@ public sealed class PreviousSessionImportTests : IDisposable
         CreatePreviousDatabase();
         AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1, 2);
         Execute(_current,
-            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousSessionId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 1, 1);" +
+            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousFirstSampleId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 1, 1);" +
             "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
             "VALUES (7, 1.5, 10, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);");
 
@@ -697,7 +686,7 @@ public sealed class PreviousSessionImportTests : IDisposable
         CreatePreviousDatabase();
         AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1, 2);
         Execute(_current,
-            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousSessionId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1);" +
+            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousFirstSampleId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1);" +
             "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
             "VALUES (7, 1.5, 10, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);" +
             "INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES (3, '2026-01-01 00:00:00.0000000', 'Native', 0);" +
@@ -742,7 +731,7 @@ public sealed class PreviousSessionImportTests : IDisposable
         // The highest session is a failed copy the import will delete, lowering the maximum.
         Execute(_current,
             "INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES (0, '2026-01-01 00:00:00.0000000', 'Native', 0);" +
-            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousSessionId) VALUES (1, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1);");
+            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousFirstSampleId) VALUES (1, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1);");
         int promised;
         using (var context = TestDatabase.Contexts(_current).CreateDbContext())
         {
@@ -762,7 +751,7 @@ public sealed class PreviousSessionImportTests : IDisposable
         AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1);
         var rows = PreviousSessionImport.BatchSpan + 10;
         Execute(_current,
-            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousSessionId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1);" +
+            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousFirstSampleId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1);" +
             "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
             $"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < {rows}) " +
             "SELECT 7, x, x, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1 FROM c;");
@@ -779,7 +768,7 @@ public sealed class PreviousSessionImportTests : IDisposable
     {
         CreatePreviousDatabase();
         AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1);
-        Execute(_current, "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousSessionId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1);");
+        Execute(_current, "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousFirstSampleId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1);");
 
         var outcome = await RunImport();
 

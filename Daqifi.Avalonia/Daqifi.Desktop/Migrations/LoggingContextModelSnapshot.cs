@@ -77,7 +77,7 @@ partial class LoggingContextModelSnapshot : ModelSnapshot
                     .IsRequired()
                     .HasColumnType("TEXT");
 
-                b.Property<long?>("PreviousSessionId")
+                b.Property<long?>("PreviousFirstSampleId")
                     .HasColumnType("INTEGER");
 
                 b.Property<long?>("SampleCount")

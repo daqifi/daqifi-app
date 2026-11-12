@@ -70,12 +70,12 @@ public class LoggingSession : ObservableObject
     }
 
     /// <summary>
-    /// For a session the import of earlier sessions copied, the ID it has in the earlier version's
-    /// database; null for every other session. Only <see cref="PreviousSessionImport"/> writes it,
-    /// so it can tell its own copies apart from a session that only looks like one (#511).
-    /// Downstream addition.
+    /// For a session the import of earlier sessions copied, the ID of the old session's first sample
+    /// in the earlier version's database; null for every other session. Only
+    /// <see cref="PreviousSessionImport"/> writes it, so it can tell its own copies apart from a
+    /// session that only looks like one (#511). Downstream addition.
     /// </summary>
-    public long? PreviousSessionId { get; set; }
+    public long? PreviousFirstSampleId { get; set; }
 
     /// <summary>
     /// True when this row came from an import that did not finish, so what it holds is a prefix of
