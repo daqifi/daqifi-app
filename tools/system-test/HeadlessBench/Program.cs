@@ -7,6 +7,7 @@ using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Headless;
+using Avalonia.Input;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
@@ -53,7 +54,8 @@ using DesktopApp = Daqifi.Desktop.App;
 // Exit code 1 on any [FAIL]. Rows covered with a board: CONN-USB, DEV-INFO, DEV-TILE, CH-TILE,
 // DEV-RATE, CH-AI, STREAM-AI, LOG-SESSION, GRAPH-LIVE, CH-DIO, CH-PWM, SD-LIST, CONN-DISC,
 // DEV-NAME. Rows covered by --scripted, which needs none: LOGGED-LIST, LOGGED-PLOT, EXPORT-FAIL
-// (their double is a seeded database) and SD-LIST, CONN-LOST (their double is a ScriptedDevice).
+// (their double is a seeded database) and SD-LIST, CONN-LOST, CONN-DISC, LOG-MODE (their double
+// is a ScriptedDevice).
 // Add a Step per matrix row; keep the shape.
 
 internal static class HeadlessBench
@@ -1152,18 +1154,19 @@ internal static class HeadlessBench
     // ---------------------------------------------------------------- the T1 (--scripted) states
 
     // The states --scripted understands, in two kinds. The first three fabricate a DATABASE the
-    // app finds at boot; the last three fabricate a DEVICE (ScriptedDevice) and put it in front of
+    // app finds at boot; the last four fabricate a DEVICE (ScriptedDevice) and put it in front of
     // the app through ConnectionManager.Connect. Neither kind opens a serial port, which is what
-    // makes all six runnable with no hardware — and therefore runnable in CI.
+    // makes all seven runnable with no hardware — and therefore runnable in CI.
     private const string StateSessions500 = "sessions-500";
     private const string StateSession10H = "session-10h";
     private const string StateExportReadonly = "export-readonly";
     private const string StateSdEmpty = "sd-empty";
     private const string StateDropMidStream = "drop-mid-stream";
     private const string StateDisconnectMidStream = "disconnect-mid-stream";
+    private const string StateModeChangeMidSession = "mode-change-mid-session";
     private static readonly string[] ScriptedStates =
         [StateSessions500, StateSession10H, StateExportReadonly, StateSdEmpty, StateDropMidStream,
-         StateDisconnectMidStream];
+         StateDisconnectMidStream, StateModeChangeMidSession];
 
     /// <summary>Serial number the two device states give their <see cref="ScriptedDevice"/>. It
     /// reaches the UI — the drop notification names the device by it — so the rows assert against
@@ -1192,6 +1195,7 @@ internal static class HeadlessBench
     /// <c>DaqifiViewModel.SelectedIndex</c>: 0 Live Graph, 1 Logged Data, 2 Channels.</summary>
     private const int LiveGraphTabIndex = 0;
     private const int LoggedDataTabIndex = 1;
+    private const int DevicesTabIndex = 3;
 
     private const string SeedSerial = "SCRIPTED-0001";
     private const string SeedDeviceName = "Scripted Nyquist";
@@ -1220,7 +1224,8 @@ internal static class HeadlessBench
         // The two device states have nothing to seed: their double is a ScriptedDevice, and the
         // database they do touch (drop-mid-stream opens a real logging session) is the one the app
         // creates and migrates for itself at boot, under <out>/appdata.
-        if (_scripted is StateSdEmpty or StateDropMidStream or StateDisconnectMidStream) { return; }
+        if (_scripted is StateSdEmpty or StateDropMidStream or StateDisconnectMidStream
+            or StateModeChangeMidSession) { return; }
 
         var sw = Stopwatch.StartNew();
         var factory = new SeedContextFactory(DesktopApp.DatabasePath);
@@ -1332,6 +1337,7 @@ internal static class HeadlessBench
             case StateSdEmpty: UiProbe = (1, "SD-LIST"); RunSdEmptyRow(main, shell); break;
             case StateDropMidStream: UiProbe = (1, "CONN-LOST"); RunDropMidStreamRow(main, shell); break;
             case StateDisconnectMidStream: UiProbe = (1, "CONN-DISC"); RunDisconnectMidStreamRow(main, shell); break;
+            case StateModeChangeMidSession: UiProbe = (1, "LOG-MODE"); RunModeChangeMidSessionRow(main, shell); break;
             default: throw new ArgumentException($"unknown --scripted state '{_scripted}'");
         }
     }
@@ -2092,6 +2098,189 @@ internal static class HeadlessBench
                 }
             }
             catch (Exception ex) { Console.WriteLine($"[WARN] cleanup after {capturePrefix}: {ex.Message}"); }
+            Pump();
+        }
+    }
+
+    /// <summary>
+    /// LOG-MODE with a session running (issue #536): the two LOGGING MODE buttons in the Devices
+    /// drawer. A mode change stops each device's stream or SD log, so during a session it ended the
+    /// recording while the toggle still read LOGGING ON. The app now disables both buttons while a
+    /// session is ON, and the setter refuses the change if it is reached anyway.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the UI half of <c>LoggingModeMidSessionTests</c>. It reads the real buttons in the
+    /// real drawer, by the AutomationIds a FlaUI script uses, and checks them in both states — so a
+    /// dead <c>IsEnabled</c> binding, which leaves a button at its default of enabled, fails the
+    /// "locked" half rather than passing the "unlocked" one.
+    /// </para>
+    /// <para>
+    /// Each session is tried two ways. A real mouse click on the disabled button must change
+    /// nothing. Then <c>DevicesPaneViewModel.SetLoggingModeCommand</c> — the command the button's
+    /// behaviour invokes — is executed directly, which is the setter's backstop: the mode must not
+    /// change, the device must keep logging, the session must stay open, the buttons must show the
+    /// mode that is really in force, and the user must be told why.
+    /// </para>
+    /// <para>
+    /// The SD half runs only against <see cref="ScriptedDevice"/>, whose SD logging is a flag. It
+    /// is never run against a board: on the bench an SD logging session can leave the board
+    /// unresponsive until a reboot.
+    /// </para>
+    /// </remarks>
+    private static void RunModeChangeMidSessionRow(Window main, DaqifiViewModel shell)
+    {
+        const string streamToApp = "Stream to App";
+        const string logToDevice = "Log to Device";
+        const string refusal = "Stop logging before you change the logging mode.";
+
+        var device = new ScriptedDevice(ScriptedSerial);
+        var ai = device.AddAnalogInput(0);
+        ConnectScripted(shell, device);
+
+        using var channelsPane = new ChannelsPaneViewModel();
+        try
+        {
+            Pump();
+            channelsPane.ToggleChannelCommand.Execute(FindTile(channelsPane, ai));
+            Pump();
+
+            // The Devices tab, then the drawer on the device's tile, on the view model the pane
+            // built for itself — the one its buttons are bound to.
+            shell.SelectedIndex = DevicesTabIndex;
+            PumpFor(TimeSpan.FromMilliseconds(500));
+            var pane = main.GetVisualDescendants()
+                .OfType<Daqifi.Desktop.View.Prototype.DevicesPanePrototype>()
+                .FirstOrDefault()?.DataContext as DevicesPaneViewModel
+                ?? throw new InvalidOperationException("the Devices tab did not build its pane");
+            OpenDeviceDrawer(pane, device);
+            PumpFor(TimeSpan.FromMilliseconds(300));
+
+            var stream = ByAutomationId(main, "LoggingModeStreamToApp") as RadioButton
+                ?? throw new InvalidOperationException("the STREAM TO APP button is not in the drawer");
+            var sd = ByAutomationId(main, "LoggingModeLogToDevice") as RadioButton
+                ?? throw new InvalidOperationException("the LOG TO DEVICE button is not in the drawer");
+
+            // A real left click at the button's centre, through the headless platform's mouse.
+            void Click(RadioButton button)
+            {
+                var centre = button.TranslatePoint(
+                                 new Point(button.Bounds.Width / 2, button.Bounds.Height / 2), main)
+                             ?? throw new InvalidOperationException("the button is not in the window");
+                main.MouseMove(centre, RawInputModifiers.None);
+                main.MouseDown(centre, MouseButton.Left, RawInputModifiers.None);
+                main.MouseUp(centre, MouseButton.Left, RawInputModifiers.None);
+                Pump();
+            }
+
+            string Buttons() =>
+                $"STREAM TO APP enabled={stream.IsEffectivelyEnabled} checked={stream.IsChecked}, " +
+                $"LOG TO DEVICE enabled={sd.IsEffectivelyEnabled} checked={sd.IsChecked}";
+            bool Refused() => shell.NotificationList.Any(n => n.Message == refusal);
+
+            // Control: no session, both buttons usable.
+            var idleUnlocked = stream.IsEffectivelyEnabled && sd.IsEffectivelyEnabled;
+            var idleButtons = Buttons();
+            Capture(main, "t1-logmode-idle");
+
+            // Procedure A: stream into a session, then try LOG TO DEVICE twice — a real click on the
+            // disabled button, then the command that button invokes, which is the setter's backstop.
+            var sw = Stopwatch.StartNew();
+            shell.IsLogging = true;
+            var streaming = PumpUntil(() => LoggingManager.Instance.Active, TimeSpan.FromSeconds(15));
+            var aLocked = !stream.IsEffectivelyEnabled && !sd.IsEffectivelyEnabled;
+            var aLockedButtons = Buttons();
+            Click(sd);
+            PumpFor(TimeSpan.FromMilliseconds(300));
+            var aShot = Capture(main, "t1-logmode-streaming-locked");
+            var aClickInert = stream.IsChecked == true && sd.IsChecked == false
+                              && shell.SelectedLoggingMode == streamToApp && !Refused();
+            pane.SetLoggingModeCommand.Execute(logToDevice);
+            PumpFor(TimeSpan.FromMilliseconds(300));
+            var aHeld = shell.SelectedLoggingMode == streamToApp && !shell.IsLogToDeviceMode
+                        && device.Mode == DeviceMode.StreamToApp
+                        && shell.IsLogging && LoggingManager.Instance.Active
+                        && stream.IsChecked == true && sd.IsChecked == false;
+            var aRefused = Refused();
+            var aAfter = $"mode '{shell.SelectedLoggingMode}', device {device.Mode}, " +
+                         $"IsLogging={shell.IsLogging}, LoggingManager.Active={LoggingManager.Instance.Active}, {Buttons()}";
+
+            shell.IsLogging = false;
+            var aStopped = PumpUntil(() => !LoggingManager.Instance.Active, TimeSpan.FromSeconds(10));
+            var aUnlocked = stream.IsEffectivelyEnabled && sd.IsEffectivelyEnabled;
+            sw.Stop();
+
+            Step(1, "LOG-MODE", "works",
+                 idleUnlocked && streaming && aLocked && aClickInert && aHeld && aRefused && aStopped && aUnlocked,
+                 $"no session: {idleButtons}. Streaming session open={streaming}: {aLockedButtons}. " +
+                 $"A click on the disabled LOG TO DEVICE changed nothing={aClickInert}. " +
+                 $"SetLoggingModeCommand('{logToDevice}') during the session: {aAfter}; refusal message " +
+                 $"shown={aRefused}; mode and session held={aHeld}. After the stop (closed={aStopped}): {Buttons()}",
+                 aShot, sw.Elapsed.TotalSeconds);
+
+            // Procedure B: LOG TO DEVICE with no session, an SD session, then try STREAM TO APP the
+            // same two ways.
+            sw.Restart();
+
+            // Evidence only, not a pass condition: whether a real click on the enabled button changes
+            // the mode. The button's behaviour listens for a Checked event, and Avalonia 12's
+            // RadioButton raises IsCheckedChanged instead, so on this build the click moves the
+            // button and not the mode. That is a separate defect; the mode is changed below through
+            // the command the behaviour would have invoked.
+            Click(sd);
+            PumpFor(TimeSpan.FromMilliseconds(300));
+            var clickSwitched = shell.SelectedLoggingMode == logToDevice;
+            pane.SetLoggingModeCommand.Execute(logToDevice);
+            PumpFor(TimeSpan.FromMilliseconds(300));
+            var bSwitched = shell.SelectedLoggingMode == logToDevice && device.Mode == DeviceMode.LogToDevice;
+
+            shell.IsLogging = true;
+            var sdLogging = PumpUntil(() => device.IsLoggingToSdCard, TimeSpan.FromSeconds(10));
+            var bLocked = !stream.IsEffectivelyEnabled && !sd.IsEffectivelyEnabled;
+            var bLockedButtons = Buttons();
+            Click(stream);
+            PumpFor(TimeSpan.FromMilliseconds(300));
+            var bShot = Capture(main, "t1-logmode-sd-locked");
+            var bClickInert = sd.IsChecked == true && stream.IsChecked == false
+                              && shell.SelectedLoggingMode == logToDevice;
+            var refusalsBefore = shell.NotificationList.Count(n => n.Message == refusal);
+            pane.SetLoggingModeCommand.Execute(streamToApp);
+            PumpFor(TimeSpan.FromMilliseconds(300));
+            var bHeld = shell.SelectedLoggingMode == logToDevice && shell.IsLogToDeviceMode
+                        && device.Mode == DeviceMode.LogToDevice && device.IsLoggingToSdCard
+                        && shell.IsLogging && sd.IsChecked == true && stream.IsChecked == false;
+            var bRefused = shell.NotificationList.Count(n => n.Message == refusal) > refusalsBefore;
+            var bAfter = $"mode '{shell.SelectedLoggingMode}', device {device.Mode}, SD logging=" +
+                         $"{device.IsLoggingToSdCard}, IsLogging={shell.IsLogging}, {Buttons()}";
+            sw.Stop();
+
+            Step(1, "LOG-MODE", "sd",
+                 bSwitched && sdLogging && bLocked && bClickInert && bHeld && bRefused,
+                 $"with no session, a real click on LOG TO DEVICE changed the mode={clickSwitched} " +
+                 $"(evidence only, see the comment in the rig); SetLoggingModeCommand('{logToDevice}') " +
+                 $"did={bSwitched}. SD session on the scripted device={sdLogging}: {bLockedButtons}. " +
+                 $"A click on the disabled STREAM TO APP changed nothing={bClickInert}. " +
+                 $"SetLoggingModeCommand('{streamToApp}') during the session: {bAfter}; refusal message " +
+                 $"shown={bRefused}; mode and session held={bHeld}",
+                 bShot, sw.Elapsed.TotalSeconds);
+        }
+        finally
+        {
+            // Leave the run's shutdown a closed session, the default mode and an empty list.
+            try
+            {
+                if (shell.IsLogging)
+                {
+                    shell.IsLogging = false;
+                    PumpUntil(() => !LoggingManager.Instance.Active, TimeSpan.FromSeconds(10));
+                }
+                shell.SelectedLoggingMode = streamToApp;
+                if (ConnectionManager.Instance.ConnectedDevices.Contains(device))
+                {
+                    ConnectionManager.Instance.Disconnect(device);
+                }
+            }
+            catch (Exception ex) { Console.WriteLine($"[WARN] cleanup after LOG-MODE: {ex.Message}"); }
             Pump();
         }
     }

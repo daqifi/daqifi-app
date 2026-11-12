@@ -65,14 +65,15 @@ It goes through the **user's** code path, not a convenient one:
   set the way the Browse picker sets it and `ExportLoggingSessionsCommand` standing in for the
   EXPORT button — going through the shell's `ExportLoggingSessionCommand` instead runs the same
   code but drops the view model on the floor, and the failure message `EXPORT-FAIL` is about
-  lives on it. The three device states hold the same line: listing an empty card is
+  lives on it. The four device states hold the same line: listing an empty card is
   `shell.DeviceLogsViewModel.RefreshFilesCommand` on the instance the pane binds, after the Logged
   Data tab and its DEVICE LOGS segment have been selected the way a user selects them, and enabling
   the channel that `drop-mid-stream` streams is the Channels pane's own `ToggleChannelCommand` on
   the channel's tile — the call that both enables it on the device and subscribes it in the logging
   manager, which is the half the drop teardown has to release. `disconnect-mid-stream` removes the
   device with the shell's own `DisconnectDeviceCommand` and `RebootDeviceCommand`, the commands the
-  Devices drawer's DISCONNECT and REBOOT buttons bind.
+  Devices drawer's DISCONNECT and REBOOT buttons bind. `mode-change-mid-session` reads the LOGGING
+  MODE buttons in the drawer the Devices tab built for itself, found by their AutomationIds.
 
 Every step renders the live window to a PNG and appends one JSON line to
 `<out>/results.jsonl`, so a run leaves behind evidence rather than a verdict.
@@ -118,7 +119,7 @@ dotnet run --project tools/system-test/HeadlessBench/HeadlessBench.csproj --no-r
   --scripted sessions-500 --out "/tmp/headlessbench-t1-$(date +%Y%m%d-%H%M%S)"
 ```
 
-Six states, one matrix row each. `--port` is not used and no serial port is opened, so these
+Seven states, one matrix row each. `--port` is not used and no serial port is opened, so these
 are the only rows that can run on a machine with no hardware attached:
 
 | state | row | what it fabricates | what it checks |
@@ -129,6 +130,7 @@ are the only rows that can run on a machine with no hardware attached:
 | `sd-empty` | `SD-LIST` | a device whose SD card answers with nothing on it | an empty card reads `Ok` with zero files and the pane shows its NO FILES panel — not "no SD card installed" and not an error — then flips to the file grid when one file appears |
 | `drop-mid-stream` | `CONN-LOST` | a device that loses its transport while a logging session is streaming | the device leaves both lists, no channel is left subscribed to it, the session that drop ended is closed with it, and the app raises exactly one notification however many times the drop is reported |
 | `disconnect-mid-stream` | `CONN-DISC` | a device the user removes with **DISCONNECT**, then (on a second connect) with **REBOOT**, while a logging session is streaming | for each command: the device leaves both lists, the session closes, and the toggle is not left reading ON while it is disabled (#537). The second half also shows that a new session can start after the first one closed. `ScriptedDevice.Reboot` does nothing, so no board is rebooted |
+| `mode-change-mid-session` | `LOG-MODE` | a device that streams into a session, then (after a stop) logs to its SD card in a session | the two LOGGING MODE buttons are enabled with no session and disabled during each session (#536). A click driven onto a disabled button anyway does not change the mode, does not touch the device and does not close the session, and the buttons move back. The SD card is `ScriptedDevice`'s flag only; never run this half on a board |
 
 The first three seed `<out>/appdata/DAQiFiDatabase.db` **before** the app boots, because the one
 caller of `LoggingManager.ReloadPersistedLoggingSessions` is `DaqifiViewModel`'s one-time init:
@@ -137,7 +139,7 @@ the opposite of the state being scripted. The schema comes from the app's own
 `DatabaseMigrator`, and the samples go in through `BulkInsert` — the call `SessionSampleWriter`
 makes in production.
 
-The last three seed nothing and register a `ScriptedDevice` through
+The last four seed nothing and register a `ScriptedDevice` through
 **`ConnectionManager.Instance.Connect`**, which is where every desktop connect path ends up —
 `ConnectionDialogViewModel.ConnectManualSerialCommand` included. The only layer above it these
 states skip is the one that opens a serial port, and replacing that layer is what a device double
@@ -214,9 +216,10 @@ device-clock skew, the pin state a channel is left in after PWM is disabled, thr
 connect/disconnect, and UI pump latency).
 
 **With no board** (`--scripted`): `LOGGED-LIST`, `LOGGED-PLOT`, `EXPORT-FAIL`, `SD-LIST`,
-`CONN-LOST` and `CONN-DISC` — one per state, plus `EXPORT-FAIL`'s atomicity probe and its `cleanup`
-check, `CONN-LOST`'s `limits` check that a repeated drop report raises no second notification, and
-`CONN-DISC`'s `reboot` check that REBOOT closes a session the same way DISCONNECT does.
+`CONN-LOST`, `CONN-DISC` and `LOG-MODE` — one per state, plus `EXPORT-FAIL`'s atomicity probe and
+its `cleanup` check, `CONN-LOST`'s `limits` check that a repeated drop report raises no second
+notification, `CONN-DISC`'s `reboot` check that REBOOT closes a session the same way DISCONNECT
+does, and `LOG-MODE`'s `sd` check that holds an SD-card session the same way.
 
 Add a row by adding a `Step`; keep the shape — drive, assert the device (or the service layer),
 pump, assert the UI, capture, emit.
@@ -403,7 +406,7 @@ These are real limits of the current rig, not of the app.
 
 ## What CI does with it
 
-The `desktop` job in `.github/workflows/build.yml` builds it, and then **runs all six
+The `desktop` job in `.github/workflows/build.yml` builds it, and then **runs all seven
 `--scripted` states** — one process and one `--out` per state under `RUNNER_TEMP`, because
 `results.jsonl` is truncated at startup and a shared `--out` would discard the previous state's
 verdicts. The hardware rows are not run and cannot be: they drive a real board over serial.
