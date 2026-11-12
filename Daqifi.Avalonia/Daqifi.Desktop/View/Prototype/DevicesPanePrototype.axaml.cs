@@ -29,15 +29,20 @@ public partial class DevicesPanePrototype : UserControl
 
     /// <summary>
     /// Scrolls the firmware status line and CANCEL UPDATE into view when an update starts
-    /// (issue #570). They are the last items of the FIRMWARE section and are visible only during an
-    /// update, so they appear below the visible area of a drawer that is scrolled to the end — and
-    /// the cancel button is the only safe control to stop an update.
+    /// (issue #570). They are the items below the UPDATE button and are visible only during an
+    /// update, so they appear below the visible area of a drawer that is scrolled to show that
+    /// button at its bottom edge — and the cancel button is the only safe control to stop an update.
     /// </summary>
     /// <remarks>
-    /// Posted at <see cref="DispatcherPriority.Loaded"/>, below layout: the panel has no size until
-    /// the layout pass that follows the visibility change, and bringing a zero-size rectangle into
-    /// view moves nothing. Only the hidden-to-visible change acts, so the scroll position is the
-    /// user's again for the rest of the update.
+    /// Posted, so it runs after the binding update that made the panel visible, and it runs a
+    /// layout pass first: until one runs, the panel and the scroll extent still have their old
+    /// sizes, and a scroll computed from them is wrong. Nothing guarantees that the render timer's
+    /// layout pass comes before a posted job. Measured in the capture harness: without the layout
+    /// pass, a panel that was already fully visible still scrolled the drawer by its own height.
+    /// <para>
+    /// A panel that is already fully visible does not move the drawer. Only the hidden-to-visible
+    /// change acts, so the scroll position is the user's again for the rest of the update.
+    /// </para>
     /// </remarks>
     private void OnFirmwareRunPanelPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
     {
@@ -49,10 +54,13 @@ public partial class DevicesPanePrototype : UserControl
         Dispatcher.UIThread.Post(
             () =>
             {
-                if (FirmwareRunPanel.IsEffectivelyVisible)
+                if (!FirmwareRunPanel.IsEffectivelyVisible)
                 {
-                    FirmwareRunPanel.BringIntoView();
+                    return;
                 }
+
+                FirmwareRunPanel.UpdateLayout();
+                FirmwareRunPanel.BringIntoView();
             },
             DispatcherPriority.Loaded);
     }

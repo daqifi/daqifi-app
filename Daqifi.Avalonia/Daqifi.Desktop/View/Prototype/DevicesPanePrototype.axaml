@@ -893,9 +893,10 @@
 
                                     One panel holds both, so the code-behind can scroll the pair into
                                     view when an update starts (issue #570). They are the last items
-                                    of the section and appear only then; with the drawer scrolled to
-                                    the end, they appeared below the visible area and CANCEL UPDATE
-                                    was cut off. The panel adds no space when it is hidden.
+                                    of the section and appear only then; with the UPDATE button at
+                                    the bottom edge of the drawer, they appeared below the visible
+                                    area and CANCEL UPDATE was cut off. The panel adds no space when
+                                    it is hidden.
                                 -->
                                 <StackPanel x:Name="FirmwareRunPanel"
                                             IsVisible="{Binding Shell.IsFirmwareUploading}">
