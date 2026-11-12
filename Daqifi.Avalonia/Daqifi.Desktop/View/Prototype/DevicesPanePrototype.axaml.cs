@@ -6,7 +6,6 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Threading;
-using Avalonia.VisualTree;
 using Daqifi.Desktop.ViewModels;
 
 namespace Daqifi.Desktop.View.Prototype;
@@ -41,14 +40,34 @@ public partial class DevicesPanePrototype : UserControl
             var shell = (TopLevel.GetTopLevel(this) as Window)?.DataContext as DaqifiViewModel;
             DataContext = new DevicesPaneViewModel(shell);
         }
+        FollowFirmwareSectionRequests();
         base.OnAttachedToVisualTree(e);
+    }
 
+    // @port: Daqifi.Desktop.View.Prototype.DevicesPanePrototype.OnUnloaded
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnDetachedFromVisualTree(e);
         if (DataContext is DevicesPaneViewModel pane)
         {
-            pane.FirmwareSectionShown += OnFirmwareSectionShown;
-            // A request taken while the view model was being built, before this subscription.
-            if (pane.TakeFirmwareScrollRequest()) ScrollToFirmwareSection();
+            pane.FirmwareSectionShown -= OnFirmwareSectionShown;
         }
+        if (DataContext is IDisposable disposable)
+        {
+            disposable.Dispose();
+            DataContext = null;
+        }
+    }
+
+    /// <summary>
+    /// Subscribes to the view model's FIRMWARE-section requests (issue #569), and serves the one it
+    /// took while it was being built, before this subscription existed.
+    /// </summary>
+    private void FollowFirmwareSectionRequests()
+    {
+        if (DataContext is not DevicesPaneViewModel pane) return;
+        pane.FirmwareSectionShown += OnFirmwareSectionShown;
+        if (pane.TakeFirmwareScrollRequest()) ScrollToFirmwareSection();
     }
 
     private void OnFirmwareSectionShown(object? sender, EventArgs e)
@@ -68,23 +87,9 @@ public partial class DevicesPanePrototype : UserControl
             if (section == null) return;
             // A rectangle one viewport tall from the label down, so the label lands at the top of
             // the view and not at its bottom edge with the controls under it out of sight.
-            var viewportHeight = section.FindAncestorOfType<ScrollViewer>()?.Viewport.Height ?? 0;
+            var viewer = Avalonia.VisualTree.VisualExtensions.FindAncestorOfType<ScrollViewer>(section);
+            var viewportHeight = viewer?.Viewport.Height ?? 0;
             section.BringIntoView(new Rect(0, 0, section.Bounds.Width, Math.Max(section.Bounds.Height, viewportHeight)));
         }, DispatcherPriority.Loaded);
-    }
-
-    // @port: Daqifi.Desktop.View.Prototype.DevicesPanePrototype.OnUnloaded
-    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
-    {
-        base.OnDetachedFromVisualTree(e);
-        if (DataContext is DevicesPaneViewModel pane)
-        {
-            pane.FirmwareSectionShown -= OnFirmwareSectionShown;
-        }
-        if (DataContext is IDisposable disposable)
-        {
-            disposable.Dispose();
-            DataContext = null;
-        }
     }
 }
