@@ -4,7 +4,6 @@
 // the correspondence map.
 
 using CommunityToolkit.Mvvm.ComponentModel;
-using Daqifi.Desktop.Device;
 using OxyPlot;
 using OxyPlot.Series;
 using Avalonia.Threading;
@@ -35,7 +34,9 @@ public partial class LoggedSeriesLegendItem : ObservableObject
     /// Truncated serial number for compact legend display (e.g., "...4104").
     /// </summary>
     // @port: Daqifi.Desktop.Logger.LoggedSeriesLegendItem.TruncatedSerialNo
-    public string TruncatedSerialNo => DeviceSerials.ToShortDisplay(DeviceSerialNo);
+    public string TruncatedSerialNo => DeviceSerialNo?.Length > 4
+        ? $"...{DeviceSerialNo[^4..]}"
+        : DeviceSerialNo ?? string.Empty;
 
     [ObservableProperty]
     private OxyColor _seriesColor;

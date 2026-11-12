@@ -38,7 +38,7 @@ namespace Daqifi.Desktop.Device;
 /// (what Core's protobuf and discovery paths put in <c>IStreamingDevice.DeviceSerialNo</c>, and so
 /// what every connected device, saved profile and live-logged session holds) and a hex rendering
 /// (what <c>*IDN?</c>, the capability document and the header of an SD-card log report, and —
-/// since #493 — what the app shows). The text alone cannot always tell
+/// since #493 — what the app shows for a live device and a profile). The text alone cannot always tell
 /// the two apart: a 16-digit hex serial made only of digits is also a valid decimal number, so
 /// <c>0000000000000400</c> (stored serial <c>1024</c>) also reads as decimal <c>400</c>. Core's
 /// <c>DeviceIdentity.Matches</c> resolves that by reading decimal first, which rejects board
@@ -50,14 +50,16 @@ namespace Daqifi.Desktop.Device;
 /// #553.
 /// </para>
 /// <para>
-/// One kind of stored serial is not decimal. A session imported from an SD-card log keeps the
-/// serial from the file header, which the firmware writes with <c>"%016llX"</c> in both the CSV
-/// and the JSON format, and Core 1.9.1's SD parsers keep that text as it is. None of
-/// <see cref="SameDevice"/>'s callers compares such a serial, so matching is not affected, but
-/// <see cref="ToDisplay"/> cannot know where a value came from: it shows such a serial unchanged
-/// when it has a letter in it, and converts one made only of the digits 0–9 as if it were decimal,
-/// which shows a wrong serial for that session. For uniformly random serials that is about one
-/// board in 1,800, and the two Nq1 serials seen so far both have letters in them.
+/// Logged Data does not use this class's display rule: a logged session shows the serial text it
+/// stored, as before #493. One kind of stored serial is not decimal. A session imported from an
+/// SD-card CSV or JSON log keeps the serial from the file header, which the firmware writes with
+/// <c>"%016llX"</c>, and Core 1.9.1's SD parsers keep that text as it is. The session row keeps no
+/// record of where its serial came from, so <see cref="ToDisplay"/> would convert an all-digit
+/// header serial such as <c>0000000000000400</c> as if it were decimal and show a wrong serial.
+/// The user decided on 2026-11-11 that Logged Data shows the stored text (PR #551, option 3);
+/// <c>LoggedDataSerialTextTests</c> pins it, and the hex form in Logged Data is issue #553. None of
+/// <see cref="SameDevice"/>'s callers compares a logged session's serial, so matching is not
+/// affected.
 /// </para>
 /// <para>
 /// This class does not change any stored value. The serial is part of the SQLite key for session
@@ -111,10 +113,10 @@ public static class DeviceSerials
     /// <remarks>
     /// Only a value that is a plain base-10 number — the form of every serial Core reads from a
     /// connected device — is converted. Anything else (a USB descriptor string, a placeholder such
-    /// as "Unknown", a test fixture, the hex serial of a session imported from an SD-card log) is
-    /// returned unchanged. Null becomes the empty string, so a binding shows a blank cell rather
-    /// than nothing at all. The text alone does not show its format, so an SD-card hex serial made
-    /// only of the digits 0–9 is converted as if it were decimal; the class remarks describe it.
+    /// as "Unknown", a test fixture) is returned unchanged. Null becomes the empty string, so a
+    /// binding shows a blank cell rather than nothing at all. Use it for the serial of a live device
+    /// or a profile only: the text alone does not show its format, so a logged session's serial is
+    /// shown as stored (see the class remarks).
     /// </remarks>
     /// <param name="serial">The stored serial, normally decimal.</param>
     /// <returns>The display form of <paramref name="serial"/>.</returns>
@@ -130,7 +132,7 @@ public static class DeviceSerials
 
     /// <summary>
     /// The last four characters of <see cref="ToDisplay"/>, behind an ellipsis — the compact form
-    /// the legends and plot tooltips use. A display form of four characters or fewer is shown whole.
+    /// the live plot's tracker uses. A display form of four characters or fewer is shown whole.
     /// </summary>
     /// <param name="serial">The stored serial, normally decimal.</param>
     /// <returns>The short display form of <paramref name="serial"/>.</returns>

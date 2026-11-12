@@ -639,7 +639,7 @@
                                                        FontWeight="SemiBold"
                                                        Foreground="{DynamicResource TextTertiary}"
                                                        Margin="0,0,0,4"
-                                                       ToolTip.Tip="{Binding DeviceSerialNo, Converter={StaticResource SerialDisplay}}">
+                                                       ToolTip.Tip="{Binding DeviceSerialNo}">
                                                 <Run Text="{Binding TruncatedSerialNo, Mode=OneWay}"/>
                                             </TextBlock>
                                             <ItemsControl ItemsSource="{Binding Channels}">

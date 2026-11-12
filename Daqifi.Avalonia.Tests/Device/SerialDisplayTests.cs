@@ -10,8 +10,10 @@ using Xunit;
 namespace Daqifi.Avalonia.Tests.Device;
 
 /// <summary>
-/// Pins issue #493: the app shows a serial in the hex form <c>*IDN?</c> reports, while every stored
-/// serial — the session key, the profile identity — stays the decimal string Core produces.
+/// Pins issue #493: the app shows the serial of a live device or a profile in the hex form
+/// <c>*IDN?</c> reports, while every stored serial — the session key, the profile identity — stays
+/// the string Core produces. Logged Data shows the stored text instead; see
+/// <c>LoggedDataSerialTextTests</c>.
 ///
 /// <para>
 /// The reference values are read off real hardware, not derived from the code under test. The bench
@@ -156,34 +158,53 @@ public class SerialDisplayTests
     private static readonly string[] SerialMembers = ["DeviceSerialNo", "SerialNo", "SerialNumber"];
 
     /// <summary>
-    /// Every binding to a serial member in every view goes through <c>SerialDisplay</c>. A new view
-    /// that binds a serial without it would show the decimal form again, and nothing else would
-    /// notice — the build is green and the stored value is right.
+    /// The views that show a logged session. A logged session's stored serial does not show its
+    /// format (an SD-card import stores the header hex, a live-recorded session stores decimal), so
+    /// these views show the stored text, unchanged from <c>main</c>. Hex here is open as #553.
+    /// </summary>
+    private static readonly string[] LoggedSessionViews =
+    [
+        "Daqifi.Avalonia/Daqifi.Desktop/View/Prototype/LoggedDataPanePrototype.axaml",
+    ];
+
+    /// <summary>
+    /// Every binding to a serial member in a view of a live device or a profile goes through
+    /// <c>SerialDisplay</c>. A new view that binds a serial without it would show the decimal form
+    /// again, and nothing else would notice — the build is green and the stored value is right. A
+    /// view of a logged session is the opposite: its serial bindings show the stored text, without
+    /// the converter.
     /// </summary>
     /// <remarks>
     /// The markup is parsed, not grepped, so a comment that mentions a binding cannot count as one.
     /// </remarks>
     [Fact]
-    public void Every_binding_to_a_serial_goes_through_the_display_converter()
+    public void Every_binding_to_a_serial_goes_through_the_display_converter_except_in_Logged_Data()
     {
-        var (bindings, unconverted) = SerialBindings();
+        var (bindings, unconverted, convertedInLoggedData, loggedDataBindings) = SerialBindings();
 
         Assert.True(
             unconverted.Count == 0,
             "Serial bindings that show the stored form:" + Environment.NewLine + string.Join(Environment.NewLine, unconverted));
+        Assert.True(
+            convertedInLoggedData.Count == 0,
+            "Logged Data serial bindings that convert the stored text:" + Environment.NewLine +
+            string.Join(Environment.NewLine, convertedInLoggedData));
 
-        // Positive control: the walk must find the serial bindings it is guarding. There are 12 today
-        // (connection dialog 2, profiles desktop and mobile 4, devices desktop and mobile 4, live
-        // legend 1, logged legend tooltip 1); the bound is far enough below that to survive churn
-        // while still failing if the walk collapses.
+        // Positive control: the walk must find the serial bindings it is guarding. There are 11 outside
+        // Logged Data today (connection dialog 2, profiles desktop and mobile 4, devices desktop and
+        // mobile 4, live legend 1); the bound is far enough below that to survive churn while still
+        // failing if the walk collapses. Logged Data has 1 (the legend group tooltip).
         Assert.True(bindings >= 8, $"Only {bindings} serial binding(s) were found.");
+        Assert.True(loggedDataBindings >= 1, $"Only {loggedDataBindings} Logged Data serial binding(s) were found.");
     }
 
-    private static (int Bindings, List<string> Unconverted) SerialBindings()
+    private static (int Bindings, List<string> Unconverted, List<string> ConvertedInLoggedData, int LoggedDataBindings) SerialBindings()
     {
         var root = BindingFacts.RepoRoot();
         var bindings = 0;
+        var loggedDataBindings = 0;
         var unconverted = new List<string>();
+        var convertedInLoggedData = new List<string>();
 
         foreach (var path in Directory.EnumerateFiles(root, "*.axaml", SearchOption.AllDirectories))
         {
@@ -210,56 +231,26 @@ public class SerialDisplayTests
                     continue;
                 }
 
-                bindings++;
-                if (!value.Contains("Converter={StaticResource SerialDisplay}", StringComparison.Ordinal))
+                var converted = value.Contains("Converter={StaticResource SerialDisplay}", StringComparison.Ordinal);
+                var site = $"{relative}: {attribute.Name.LocalName}=\"{attribute.Value}\"";
+                if (LoggedSessionViews.Contains(relative, StringComparer.Ordinal))
                 {
-                    unconverted.Add($"{relative}: {attribute.Name.LocalName}=\"{attribute.Value}\"");
+                    loggedDataBindings++;
+                    if (converted) { convertedInLoggedData.Add(site); }
+                    continue;
                 }
+
+                bindings++;
+                if (!converted) { unconverted.Add(site); }
             }
         }
 
-        return (bindings, unconverted);
+        return (bindings, unconverted, convertedInLoggedData, loggedDataBindings);
     }
 
     #endregion
 
     #region The code-built display strings
-
-    [Fact]
-    public void The_logged_plot_tracker_names_the_device_by_its_hex_tail()
-    {
-        var (series, legendItem) = new PlotModelFactory().CreateChannelSeries(
-            "AI0", BenchDecimal, Daqifi.Core.Channel.ChannelType.Analog, "#FFD32F2F", new PlotModel(), null);
-
-        Assert.StartsWith("AI0 (...E898)", series.TrackerFormatString);
-        Assert.Equal("...E898", legendItem.TruncatedSerialNo);
-        // The identity the legend keys on is still the stored value.
-        Assert.Equal(BenchDecimal, legendItem.DeviceSerialNo);
-    }
-
-    [Fact]
-    public void The_logged_legend_group_shows_the_hex_tail_and_keeps_the_stored_serial()
-    {
-        var group = new DeviceLegendGroup(BenchDecimal);
-
-        Assert.Equal("...E898", group.TruncatedSerialNo);
-        Assert.Equal(BenchDecimal, group.DeviceSerialNo);
-    }
-
-    [Fact]
-    public void A_multi_device_session_names_each_rate_by_its_hex_tail()
-    {
-        var session = new LoggingSession
-        {
-            DeviceMetadata =
-            [
-                new SessionDeviceMetadata { DeviceSerialNo = BenchDecimal, DeviceName = "A", SamplingFrequencyHz = 100 },
-                new SessionDeviceMetadata { DeviceSerialNo = "9090642310508636305", DeviceName = "B", SamplingFrequencyHz = 1000 },
-            ],
-        };
-
-        Assert.Equal("...E898: 100 Hz · ...E891: 1 kHz", session.FrequencyDisplay);
-    }
 
     [Fact]
     public void The_summary_section_header_shows_the_hex_serial()
