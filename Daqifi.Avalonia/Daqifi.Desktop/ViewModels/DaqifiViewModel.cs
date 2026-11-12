@@ -455,6 +455,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
             OnPropertyChanged(nameof(IsLogging));
             OnPropertyChanged(nameof(IsSdCardLoggingActive));
+            RefreshCanToggleLogging();
         }
     }
 
@@ -2209,8 +2210,24 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     {
         OnPropertyChanged(nameof(IsLogging));
         OnPropertyChanged(nameof(IsSdCardLoggingActive));
+        RefreshCanToggleLogging();
         UpdateSdLoggingTimer();
     }
+
+    /// <summary>
+    /// A running session can always be stopped from the toggle that started it, and with no
+    /// session running the toggle needs an active channel to start one.
+    /// </summary>
+    /// <remarks>
+    /// Without the <see cref="IsLogging"/> term the toggle could read ON and be disabled at once: a
+    /// device still logging to its SD card after a reconnect has no subscribed channel (#537). The
+    /// rule reads <see cref="IsLogging"/>, so it is evaluated again everywhere that announces a
+    /// change of it which <see cref="UpdateUi"/> does not see: the device's own SD state (here, via
+    /// <see cref="RaiseLoggingStateChanged"/>) and a refused stop in the setter. Without that, the
+    /// end of an SD-only run left the toggle enabled with no active channel.
+    /// </remarks>
+    private void RefreshCanToggleLogging()
+        => CanToggleLogging = IsLogging || ActiveChannels.Count > 0;
 
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.UpdateSdLoggingTimer
     private void UpdateSdLoggingTimer()
@@ -2282,6 +2299,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     LoggingManager.Instance.Unsubscribe(orphan);
                 }
 
+                // The user's own DISCONNECT and REBOOT reach here and never the NotifyConnection
+                // case below, so the last device leaving that way must close the session too (#537).
+                CloseSessionIfNoDeviceIsLeft();
+
                 // Probe the WiFi module version now that the device list (and each device's
                 // initialization) has settled — this runs AFTER UpdateConnectedDeviceUI, so it never
                 // races the connection handshake. The WiFi version is shown inline on the device pane,
@@ -2351,22 +2372,29 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // LoggingManager.Active, and this view model is subscribed to that singleton
                     // too — so the write re-enters UpdateUi. With NotifyConnection still raised,
                     // that re-entry would show a second dialog for the same drop.
-                    CloseSessionIfTheDropTookTheLastDevice();
+                    CloseSessionIfNoDeviceIsLeft();
                 }
                 break;
         }
-        CanToggleLogging = ActiveChannels.Count > 0;
+        RefreshCanToggleLogging();
         _ = _firmwareCoordinator.RefreshFirmwareUpdatesAsync();
         RemoveNotification();
     }
 
     /// <summary>
-    /// Ends the logging session when the spontaneous disconnect that raised the notification took
-    /// the LAST connected device with it (issue #525).
+    /// Ends the logging session when the LAST connected device has gone, whatever took it: a
+    /// spontaneous drop (issue #525) or the user's own DISCONNECT or REBOOT (issue #537).
     /// </summary>
     /// <remarks>
     /// <para>
-    /// A drop tears the device's channels out of <c>LoggingManager</c> — deliberately, see
+    /// Called from two cases of <see cref="UpdateUi"/>. <c>"ConnectedDevices"</c> is the one every
+    /// removal raises — <c>ConnectionManager.Disconnect</c> and <c>Reboot</c> raise only that, and
+    /// the drop teardown reaches it through <c>Disconnect</c> as well. <c>"NotifyConnection"</c>
+    /// also calls it, after its dialog flag is consumed; by then the first call has usually closed
+    /// the session already, and this one is a no-op.
+    /// </para>
+    /// <para>
+    /// A drop, like a manual disconnect, tears the device's channels out of <c>LoggingManager</c> — deliberately, see
     /// <c>ConnectionManager.TearDownDroppedDevice</c> — and that is what drives
     /// <see cref="CanToggleLogging"/> to false at the end of this handler. Without this, the
     /// session those channels belonged to was left running: the header kept reading LOGGING ON, the toggle that
@@ -2404,7 +2432,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// still has devices behind it.
     /// </para>
     /// </remarks>
-    private void CloseSessionIfTheDropTookTheLastDevice()
+    private void CloseSessionIfNoDeviceIsLeft()
     {
         if (ConnectionManager.Instance.ConnectedDevices.Count > 0)
         {
@@ -2419,7 +2447,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         }
 
         _appLogger.Information(
-            "The last connected device dropped while logging; closing the session.");
+            "The last connected device went away while logging; closing the session.");
 
         IsLogging = false;
     }

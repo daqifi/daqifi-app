@@ -1152,16 +1152,18 @@ internal static class HeadlessBench
     // ---------------------------------------------------------------- the T1 (--scripted) states
 
     // The states --scripted understands, in two kinds. The first three fabricate a DATABASE the
-    // app finds at boot; the last two fabricate a DEVICE (ScriptedDevice) and put it in front of
+    // app finds at boot; the last three fabricate a DEVICE (ScriptedDevice) and put it in front of
     // the app through ConnectionManager.Connect. Neither kind opens a serial port, which is what
-    // makes all five runnable with no hardware — and therefore runnable in CI.
+    // makes all six runnable with no hardware — and therefore runnable in CI.
     private const string StateSessions500 = "sessions-500";
     private const string StateSession10H = "session-10h";
     private const string StateExportReadonly = "export-readonly";
     private const string StateSdEmpty = "sd-empty";
     private const string StateDropMidStream = "drop-mid-stream";
+    private const string StateDisconnectMidStream = "disconnect-mid-stream";
     private static readonly string[] ScriptedStates =
-        [StateSessions500, StateSession10H, StateExportReadonly, StateSdEmpty, StateDropMidStream];
+        [StateSessions500, StateSession10H, StateExportReadonly, StateSdEmpty, StateDropMidStream,
+         StateDisconnectMidStream];
 
     /// <summary>Serial number the two device states give their <see cref="ScriptedDevice"/>. It
     /// reaches the UI — the drop notification names the device by it — so the rows assert against
@@ -1218,7 +1220,7 @@ internal static class HeadlessBench
         // The two device states have nothing to seed: their double is a ScriptedDevice, and the
         // database they do touch (drop-mid-stream opens a real logging session) is the one the app
         // creates and migrates for itself at boot, under <out>/appdata.
-        if (_scripted is StateSdEmpty or StateDropMidStream) { return; }
+        if (_scripted is StateSdEmpty or StateDropMidStream or StateDisconnectMidStream) { return; }
 
         var sw = Stopwatch.StartNew();
         var factory = new SeedContextFactory(DesktopApp.DatabasePath);
@@ -1329,6 +1331,7 @@ internal static class HeadlessBench
             case StateExportReadonly: UiProbe = (1, "EXPORT-FAIL"); RunExportFailureRow(main, shell); break;
             case StateSdEmpty: UiProbe = (1, "SD-LIST"); RunSdEmptyRow(main, shell); break;
             case StateDropMidStream: UiProbe = (1, "CONN-LOST"); RunDropMidStreamRow(main, shell); break;
+            case StateDisconnectMidStream: UiProbe = (1, "CONN-DISC"); RunDisconnectMidStreamRow(main, shell); break;
             default: throw new ArgumentException($"unknown --scripted state '{_scripted}'");
         }
     }
@@ -1961,6 +1964,134 @@ internal static class HeadlessBench
                 }
             }
             catch (Exception ex) { Console.WriteLine($"[WARN] cleanup stop logging: {ex.Message}"); }
+            Pump();
+        }
+    }
+
+    /// <summary>
+    /// CONN-DISC with a session running (issue #537): the user clicks DISCONNECT, and later REBOOT,
+    /// on the last device while it streams into a logging session. What the app owes is the same
+    /// close <see cref="RunDropMidStreamRow"/> asserts for a drop — the session ends, and the
+    /// toggle is never left reading ON while it is disabled.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the end-to-end half of the unit tests in <c>DroppedDeviceSessionStopTests</c>.
+    /// Those call <c>UpdateUi</c> by hand, because a bare view model is not subscribed to
+    /// <c>ConnectionManager</c>; here the shell booted the real way and IS subscribed, so this row
+    /// is what shows that <c>ConnectionManager.Disconnect</c> and <c>Reboot</c> really reach the
+    /// close through the manager's own <c>"ConnectedDevices"</c> notification.
+    /// </para>
+    /// <para>
+    /// The two commands run one after the other on two connects of the same scripted device. The
+    /// REBOOT half therefore also shows that a new session can start after the DISCONNECT half
+    /// closed the first: before the fix, the Channels pane refused the second channel toggle
+    /// because a session was still "in progress".
+    /// </para>
+    /// <para>
+    /// <see cref="ScriptedDevice.Reboot"/> does nothing. That is the right double: the command's
+    /// own work is to release the channels and call <c>ConnectionManager.Reboot</c>, which removes
+    /// the device whatever the hardware does next. No real board is rebooted by this row.
+    /// </para>
+    /// </remarks>
+    private static void RunDisconnectMidStreamRow(Window main, DaqifiViewModel shell)
+    {
+        var (disconnectPass, disconnectEvidence, disconnectShot, disconnectSeconds) =
+            RemoveLastDeviceMidSession(main, shell, "t1-conndisc-disconnect",
+                                       device => shell.DisconnectDeviceCommand.Execute(device));
+        Step(1, "CONN-DISC", "works", disconnectPass,
+             "DISCONNECT of the last device mid-session: " + disconnectEvidence,
+             disconnectShot, disconnectSeconds);
+
+        var (rebootPass, rebootEvidence, rebootShot, rebootSeconds) =
+            RemoveLastDeviceMidSession(main, shell, "t1-conndisc-reboot",
+                                       device => shell.RebootDeviceCommand.Execute(device));
+        Step(1, "CONN-DISC", "reboot", rebootPass,
+             "REBOOT of the last device mid-session (a new session after the DISCONNECT above): " +
+             rebootEvidence,
+             rebootShot, rebootSeconds);
+    }
+
+    /// <summary>
+    /// One connect, one channel, one streaming session, then <paramref name="remove"/> on the only
+    /// device. Returns whether the device left both lists, the session closed, and the toggle was
+    /// not left ON-and-disabled.
+    /// </summary>
+    private static (bool Pass, string Evidence, string? Shot, double Seconds) RemoveLastDeviceMidSession(
+        Window main, DaqifiViewModel shell, string capturePrefix, Action<IStreamingDevice> remove)
+    {
+        var device = new ScriptedDevice(ScriptedSerial);
+        var ai = device.AddAnalogInput(0);
+        ConnectScripted(shell, device);
+
+        using var channelsPane = new ChannelsPaneViewModel();
+        try
+        {
+            Pump();
+            channelsPane.ToggleChannelCommand.Execute(FindTile(channelsPane, ai));
+            Pump();
+
+            shell.SelectedIndex = LiveGraphTabIndex;
+            PumpFor(TimeSpan.FromMilliseconds(300));
+            shell.IsLogging = true;
+            PumpUntil(() => LoggingManager.Instance.Active, TimeSpan.FromSeconds(15));
+
+            var startedAt = DateTime.Now;
+            for (var i = 0; i < DroppedRunSamples; i++)
+            {
+                device.PushSample(ai, startedAt.AddMilliseconds(i * 10), Math.Sin(i / 8.0));
+                Pump();
+            }
+            PumpFor(TimeSpan.FromMilliseconds(500));
+
+            var plottedBefore = shell.Plotter?.LoggedPoints?.Values.Sum(l => l.Count) ?? -1;
+            var subscribedBefore = LoggingManager.Instance.SubscribedChannels.Count;
+            var activeBefore = LoggingManager.Instance.Active;
+            var midStream = activeBefore && plottedBefore > 0 && subscribedBefore > 0;
+            Capture(main, capturePrefix + "-streaming");
+
+            var sw = Stopwatch.StartNew();
+            remove(device);
+            var removed = PumpUntil(
+                () => !shell.ConnectedDevices.Contains(device)
+                      && !ConnectionManager.Instance.ConnectedDevices.Contains(device),
+                TimeSpan.FromSeconds(15));
+            var sessionClosed = PumpUntil(
+                () => !shell.IsLogging && !LoggingManager.Instance.Active,
+                TimeSpan.FromSeconds(5));
+            PumpFor(TimeSpan.FromMilliseconds(500));
+            sw.Stop();
+
+            // The state the report was about: the toggle reads ON and cannot be clicked.
+            var onButDisabled = shell.IsLogging && !shell.CanToggleLogging;
+            var shot = Capture(main, capturePrefix + "-removed");
+
+            return (midStream && removed && sessionClosed && !onButDisabled,
+                    $"streaming when the command ran: LoggingManager.Active={activeBefore}, " +
+                    $"{subscribedBefore} subscribed channel(s), {plottedBefore} live plot point(s); " +
+                    $"the device left both lists={removed} in {sw.Elapsed.TotalSeconds:F1} s; the " +
+                    $"session closed={sessionClosed} (shell.IsLogging={shell.IsLogging}, " +
+                    $"LoggingManager.Active={LoggingManager.Instance.Active}); " +
+                    $"CanToggleLogging={shell.CanToggleLogging}, so ON-and-disabled={onButDisabled}",
+                    shot, sw.Elapsed.TotalSeconds);
+        }
+        finally
+        {
+            // Leave the next half (or the run's shutdown) a closed session and an empty list, the
+            // same tidy-up RunDropMidStreamRow does.
+            try
+            {
+                if (shell.IsLogging)
+                {
+                    shell.IsLogging = false;
+                    PumpUntil(() => !LoggingManager.Instance.Active, TimeSpan.FromSeconds(10));
+                }
+                if (ConnectionManager.Instance.ConnectedDevices.Contains(device))
+                {
+                    ConnectionManager.Instance.Disconnect(device);
+                }
+            }
+            catch (Exception ex) { Console.WriteLine($"[WARN] cleanup after {capturePrefix}: {ex.Message}"); }
             Pump();
         }
     }
