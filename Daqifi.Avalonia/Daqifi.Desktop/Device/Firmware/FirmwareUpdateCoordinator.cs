@@ -221,6 +221,24 @@ public class FirmwareUpdateCoordinator
             return;
         }
 
+        // Issue #564: one click on UPDATE used to start the write. Ask first, and touch nothing —
+        // not the flag, not the status line, not the WiFi probe — until the user says yes.
+        var confirmed = await _host.ConfirmFirmwareUpdateAsync(
+            FirmwareUpdateConfirmTitle,
+            DescribeFirmwareUpdate(serialStreamingDevice, _latestFirmwareVersion, _host.FirmwareFilePath));
+        if (!confirmed)
+        {
+            return;
+        }
+
+        // The prompt is awaited, so the state the guards above checked can move under it: another
+        // run can start, or the drawer can be pointed at a different device. Proceed only if the
+        // user's "yes" still describes what would run.
+        if (_host.IsFirmwareUploading || !ReferenceEquals(_host.SelectedDevice, serialStreamingDevice))
+        {
+            return;
+        }
+
         _host.SelectedDeviceSupportsFirmwareUpdate = true;
         _host.HasErrorOccured = false;
         _host.IsUploadComplete = false;
@@ -325,6 +343,7 @@ public class FirmwareUpdateCoordinator
             }
 
             _host.IsUploadComplete = true;
+            NotifyWifiSettingsMayBeErased(serialStreamingDevice);
             _appLogger.AddBreadcrumb("firmware", "Firmware update completed");
             _host.ShowFirmwareUpdateSucceeded();
         }
@@ -359,6 +378,75 @@ public class FirmwareUpdateCoordinator
             // explicitly re-selects a file. (The auto path never writes this property.)
             _host.FirmwareFilePath = string.Empty;
         }
+    }
+
+    /// <summary>The title of the prompt <see cref="UploadFirmwareAsync"/> shows before a write.</summary>
+    internal const string FirmwareUpdateConfirmTitle = "Update firmware?";
+
+    /// <summary>
+    /// The body of the prompt <see cref="UploadFirmwareAsync"/> shows before a write (issue #564):
+    /// which device, from which version to which, how long it takes, what not to do during it, and
+    /// what it can erase.
+    /// <para>
+    /// The erase is the firmware's and the bootloader's, not this app's: the
+    /// <see href="https://github.com/daqifi/daqifi-nyquist-firmware/releases/tag/v3.9.0">v3.9.0
+    /// release notes</see> say that each in-app update before 3.9.0 erased the WiFi credentials and
+    /// the calibration, and that the correction reaches newly manufactured units only. The app cannot
+    /// yet tell which bootloader a unit carries, so the warning is given for every unit.
+    /// </para>
+    /// </summary>
+    /// <param name="device">The device the update would write.</param>
+    /// <param name="latestFirmwareVersion">
+    /// The latest release the last version check found, or empty when no check has succeeded.
+    /// </param>
+    /// <param name="manualFirmwarePath">The user-selected <c>.hex</c> file, or empty for an auto-update.</param>
+    internal static string DescribeFirmwareUpdate(
+        IStreamingDevice device,
+        string latestFirmwareVersion,
+        string manualFirmwarePath)
+    {
+        var installed = string.IsNullOrWhiteSpace(device.DeviceVersion) ? "unknown" : device.DeviceVersion;
+        var target = !string.IsNullOrWhiteSpace(manualFirmwarePath)
+            ? $"the file {Path.GetFileName(manualFirmwarePath)}"
+            : string.IsNullOrWhiteSpace(latestFirmwareVersion) ? "the latest release" : latestFirmwareVersion;
+
+        return $"Device: {device.DeviceDisplayName}\n" +
+               $"Installed version: {installed}\n" +
+               $"New version: {target}\n\n" +
+               "The update takes approximately 1 minute. Do not disconnect the USB cable during the update.\n\n" +
+               "The update can erase the WiFi settings and the calibration of the device. " +
+               "After the update, set the WiFi settings again.";
+    }
+
+    /// <summary>
+    /// Tells the user, after a successful write, that the device may have lost its WiFi settings
+    /// (issue #564). The success dialog closes and the status line is hidden once the run ends, so a
+    /// notification is the one place this outlives the run. A device that was set to join a site
+    /// network comes back as its own access point and WiFi discovery no longer finds it.
+    /// <para>
+    /// Owned by the device's serial, like <see cref="NotifyWifiModuleWasNotUpdated"/>, and
+    /// deduplicated per device on the same terms, so a second update does not stack a second copy.
+    /// </para>
+    /// </summary>
+    private void NotifyWifiSettingsMayBeErased(SerialStreamingDevice serialStreamingDevice)
+    {
+        var message =
+            $"{serialStreamingDevice.DeviceDisplayName}: the firmware update can erase the WiFi settings " +
+            "and the calibration of the device. Set the WiFi settings of the device again.";
+        var serial = serialStreamingDevice.DeviceSerialNo;
+
+        if (_host.Notifications.Any(notification =>
+                notification.Message == message && DeviceSerials.SameDevice(notification.DeviceSerialNo, serial)))
+        {
+            return;
+        }
+
+        _host.Notifications.Add(new Notifications
+        {
+            Message = message,
+            DeviceSerialNo = serial
+        });
+        _host.RefreshNotificationCount();
     }
 
     /// <summary>

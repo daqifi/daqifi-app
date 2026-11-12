@@ -137,6 +137,14 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.ConfirmOverlay
     public ConfirmOverlayViewModel ConfirmOverlay { get; } = new();
 
+    /// <summary>
+    /// Backs the prompt the Devices pane shows before a firmware write (issue #564). A separate
+    /// instance from <see cref="ConfirmOverlay"/>, which the Logged Data pane binds: one shared
+    /// instance would open both panes' overlays at once, and the hidden pane's focus handler would
+    /// then act on a prompt it does not show.
+    /// </summary>
+    public ConfirmOverlayViewModel FirmwareUpdateConfirm { get; } = new();
+
     private SettingsViewModel? _appSettings;
 
     /// <summary>
@@ -553,6 +561,9 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             // delete) doesn't get stranded when the user navigates away from the
             // pane that owns the overlay.
             ConfirmOverlay.Cancel();
+            // The same for the firmware prompt: the Devices pane that shows it detaches on a tab
+            // change, and a "yes" must never arrive for a prompt the user can no longer see.
+            FirmwareUpdateConfirm.Cancel();
             OnPropertyChanged();
         }
     }
@@ -2562,6 +2573,14 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         Dispatcher.UIThread.Invoke(ShowDialog);
         CloseFlyouts();
     }
+
+    /// <summary>
+    /// Shows the firmware-update prompt in the Devices pane (issue #564). The affirmative button is
+    /// the danger style because the write can erase the device's WiFi settings and calibration; the
+    /// pane moves focus to CANCEL, so Enter does not start a write.
+    /// </summary>
+    Task<bool> IFirmwareUpdateHost.ConfirmFirmwareUpdateAsync(string title, string message)
+        => FirmwareUpdateConfirm.ShowAsync(title, message, "UPDATE", isDestructive: true);
 
     /// <summary>
     /// Cancels any in-flight connect-time WiFi firmware probe AND waits for it to fully unwind before

@@ -416,6 +416,9 @@ public class FirmwareUpdateCancellationTests : IDisposable
 
         public void ShowFirmwareUpdateSucceeded() { }
 
+        /// <summary>Confirms at once: these facts are about the run, not the prompt in front of it (issue #564).</summary>
+        public Task<bool> ConfirmFirmwareUpdateAsync(string title, string message) => Task.FromResult(true);
+
         /// <summary>Completes once the coordinator has reached the probe quiesce.</summary>
         public Task WaitUntilQuiescingAsync() => _quiescing.Task.WaitAsync(UnwindTimeout);
 

@@ -462,6 +462,9 @@ public class WifiFlashPlatformGateTests : IDisposable
 
         public void ShowFirmwareUpdateSucceeded() { }
 
+        /// <summary>Confirms at once: these facts are about the run, not the prompt in front of it (issue #564).</summary>
+        public Task<bool> ConfirmFirmwareUpdateAsync(string title, string message) => Task.FromResult(true);
+
         public Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default)
             => Task.CompletedTask;
     }

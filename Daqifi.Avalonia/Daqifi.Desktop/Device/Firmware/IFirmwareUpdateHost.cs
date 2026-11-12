@@ -105,6 +105,16 @@ public interface IFirmwareUpdateHost
     void ShowFirmwareUpdateSucceeded();
 
     /// <summary>
+    /// Asks the user to confirm a firmware update before anything touches the device (issue #564).
+    /// Resolves to <c>true</c> only when the user confirms; a cancel, or a host reset that closes
+    /// the prompt, resolves to <c>false</c>. Presentation is a view concern, so the coordinator
+    /// supplies the text and the host decides how to show it.
+    /// </summary>
+    /// <param name="title">The title of the prompt.</param>
+    /// <param name="message">The body of the prompt: device, versions, duration and the risks.</param>
+    Task<bool> ConfirmFirmwareUpdateAsync(string title, string message);
+
+    /// <summary>
     /// Cancels any in-flight connect-time WiFi firmware probe and awaits its full unwind. Called by the
     /// coordinator before a flash (PIC32 or WiFi) so the probe's SCPI exchange
     /// (<c>POWer:STATe 1</c> / <c>GETChipInfo?</c>) can never still be on the wire when the device

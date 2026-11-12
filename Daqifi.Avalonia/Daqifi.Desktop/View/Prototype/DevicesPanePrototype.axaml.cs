@@ -5,6 +5,7 @@
 
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Threading;
 using Daqifi.Desktop.ViewModels;
 
 namespace Daqifi.Desktop.View.Prototype;
@@ -40,6 +41,21 @@ public partial class DevicesPanePrototype : UserControl
             DataContext = new DevicesPaneViewModel(shell);
         }
         base.OnAttachedToVisualTree(e);
+    }
+
+    /// <summary>
+    /// Moves keyboard focus to CANCEL when the firmware-update prompt opens (issue #564), so the
+    /// safe choice is the default and Enter does not start a write. The same deferral as the Logged
+    /// Data pane's confirm overlay: focusing inside the change handler can race the visibility switch.
+    /// </summary>
+    private void OnFirmwareUpdateConfirmIsVisibleChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+    {
+        if (e.Property == IsVisibleProperty && e.NewValue is true)
+        {
+            Dispatcher.UIThread.Post(
+                () => this.FindControl<Button>("FirmwareConfirmCancelButton")?.Focus(),
+                DispatcherPriority.Input);
+        }
     }
 
     // @port: Daqifi.Desktop.View.Prototype.DevicesPanePrototype.OnUnloaded
