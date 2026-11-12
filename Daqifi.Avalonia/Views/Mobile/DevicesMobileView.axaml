@@ -216,7 +216,8 @@
           <TextBlock Text="DATA ACQUISITION" Classes="sectionLabel" />
 
           <TextBlock Text="LOGGING MODE" Classes="fieldLabel" />
-          <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
+          <!-- Disabled while a session is ON (#536); see DevicesPanePrototype.axaml. -->
+          <Grid ColumnDefinitions="*,*" ColumnSpacing="8" IsEnabled="{Binding !Shell.IsLogging}">
             <!-- Drive the mode switch off the RadioButton's Checked (desktop rationale) rather
                  than Command; the Stream-to-app radio owns the single SetLoggingModeCommand. On
                  mobile (WiFi/TCP) Log-to-device is USB-gated (IsEnabled=IsUsb) and normally

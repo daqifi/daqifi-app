@@ -168,6 +168,11 @@
             <Style Selector="^:pointerover">
                 <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
             </Style>
+            <!-- Without this a disabled LOGGING MODE button looks the same as an enabled one, so the
+                 lock during a session (#536) would read as a button that ignores the click. -->
+            <Style Selector="^:disabled">
+                <Setter Property="Opacity" Value="0.4"/>
+            </Style>
         </ControlTheme>
 
         <!-- Tile gear (upstream inline Button template → ControlTheme) -->
@@ -610,7 +615,11 @@
                                     BorderThickness="1"
                                     CornerRadius="3"
                                     Padding="3">
-                                <Grid ColumnDefinitions="*,*">
+                                <!-- Disabled while a session is ON (#536): a mode change stops the devices'
+                                     stream or SD log, so it would end the recording while the toggle still
+                                     read LOGGING ON. IsEnabled is inherited, so LOG TO DEVICE keeps its own
+                                     USB gate as well. -->
+                                <Grid ColumnDefinitions="*,*" IsEnabled="{Binding !Shell.IsLogging}">
                                     <!-- Drive the mode switch off Checked rather than Command: a RadioButton's
                                          bound Command fires only on a real Click, which a background UI-automation
                                          host cannot raise. Checking the button through the automation Toggle

@@ -719,6 +719,25 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                 var isLogToDeviceMode = mode == "Log to Device";
                 var deviceMode = isLogToDeviceMode ? DeviceMode.LogToDevice : DeviceMode.StreamToApp;
 
+                // No mode change during a session (#536). SwitchMode stops each device's stream or
+                // SD log before it changes the mode, and the CurrentMode write below closes the
+                // database session (toward SD) or leaves the run with none (toward streaming) — but
+                // nothing turned the toggle OFF, so it read LOGGING ON over a run recording nothing.
+                // IsLogging, not _isLogging: a device still logging to its SD card after a reconnect
+                // is a session the toggle shows as ON too. The mode buttons are disabled while a
+                // session runs, so this is the backstop for any other route here.
+                if (IsLogging)
+                {
+                    // The radio buttons have already moved themselves; they bind IsLogToDeviceMode
+                    // one way, so announce both properties to put them back.
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(IsLogToDeviceMode));
+                    ReportLoggingProblem(
+                        "Cannot Change Logging Mode",
+                        "Stop logging before you change the logging mode.");
+                    return;
+                }
+
                 // All-or-nothing, and reported rather than thrown (#214). SelectedLoggingMode is a
                 // single value for the whole app, so a fleet that cannot all move is put back where
                 // it was — that rollback already existed. What did not was surviving it: the setter
