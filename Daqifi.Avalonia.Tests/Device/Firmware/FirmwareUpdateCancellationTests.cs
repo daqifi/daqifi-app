@@ -414,7 +414,7 @@ public class FirmwareUpdateCancellationTests : IDisposable
 
         public void ShowFirmwareError(string message) { }
 
-        public void ShowFirmwareUpdateSucceeded() { }
+        public void ShowFirmwareUpdateSucceeded(string message) { }
 
         /// <summary>Completes once the coordinator has reached the probe quiesce.</summary>
         public Task WaitUntilQuiescingAsync() => _quiescing.Task.WaitAsync(UnwindTimeout);

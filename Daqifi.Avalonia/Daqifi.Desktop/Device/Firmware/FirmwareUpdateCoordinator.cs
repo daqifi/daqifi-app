@@ -243,6 +243,12 @@ public class FirmwareUpdateCoordinator
 
             var isManualUpload = !string.IsNullOrWhiteSpace(_host.FirmwareFilePath);
 
+            // Read before the flash for the success dialog (issue #570): the device still reports
+            // the version it had, and the finally clears FirmwareFilePath.
+            var previousVersion = serialStreamingDevice.DeviceVersion;
+            var manualFirmwarePath = isManualUpload ? _host.FirmwareFilePath : null;
+            string? installedVersion = null;
+
             _appLogger.AddBreadcrumb("firmware", $"Firmware update started for {serialStreamingDevice.Name}");
 
             // Quiesce inside the try so a fault here still runs the finally (which clears
@@ -280,6 +286,7 @@ public class FirmwareUpdateCoordinator
                     GetFirmwareDownloadDirectory(),
                     includePreRelease: true,
                     cancellationToken: cancellationToken);
+                installedVersion = await GetDownloadedFirmwareVersionAsync(cancellationToken);
             }
             else
             {
@@ -291,13 +298,13 @@ public class FirmwareUpdateCoordinator
                 throw new FileNotFoundException("Firmware file path is invalid or does not exist.", effectiveFirmwarePath);
             }
 
+            // The status line is made from the report's State, in user words (issue #570). Core's
+            // CurrentOperation is its own engineering text ("Programming record 4587 of 54957") and
+            // goes to no screen; the progress bar shows the amount.
             var pic32Progress = new Progress<FirmwareUpdateProgress>(report =>
             {
                 _host.UploadFirmwareProgress = Math.Clamp((int)Math.Round(report.PercentComplete), 0, 100);
-                if (!string.IsNullOrWhiteSpace(report.CurrentOperation))
-                {
-                    _host.FirmwareUpdateStatusText = report.CurrentOperation;
-                }
+                _host.FirmwareUpdateStatusText = FirmwareUpdateMessages.DescribeState(report.State);
             });
 
             // Suspend the watcher's HID discovery for just the PIC32 flash: the connected device reboots
@@ -325,8 +332,18 @@ public class FirmwareUpdateCoordinator
             }
 
             _host.IsUploadComplete = true;
+
+            // A full bar after the run reads as "something is still at 100 %" and invites a second
+            // write of the same version (issue #570). The finished run is the dialog's to report.
+            _host.UploadFirmwareProgress = 0;
+            _host.UploadWiFiProgress = 0;
+
             _appLogger.AddBreadcrumb("firmware", "Firmware update completed");
-            _host.ShowFirmwareUpdateSucceeded();
+            _host.ShowFirmwareUpdateSucceeded(FirmwareUpdateMessages.UpdateSucceeded(
+                FirmwareUpdateMessages.DeviceNameFor(serialStreamingDevice),
+                previousVersion,
+                installedVersion,
+                manualFirmwarePath));
         }
         catch (OperationCanceledException)
         {
@@ -966,6 +983,32 @@ public class FirmwareUpdateCoordinator
         var firmwareDirectory = Path.Combine(_firmwareDataDirectory, "Firmware", "PIC32");
         Directory.CreateDirectory(firmwareDirectory);
         return firmwareDirectory;
+    }
+
+    /// <summary>
+    /// The version of the package <see cref="IFirmwareDownloadService.DownloadLatestFirmwareAsync"/>
+    /// just downloaded, for the success dialog (issue #570). Null if it cannot be read.
+    /// </summary>
+    /// <remarks>
+    /// Asked with the same <c>includePreRelease: true</c> as the download, so both read the same
+    /// release; Core caches the release list, so this sends no second request. A failure here
+    /// costs only the version in a dialog text, never the update, so it is logged and swallowed.
+    /// Cancellation is not swallowed: it must still stop the run.
+    /// </remarks>
+    private async Task<string?> GetDownloadedFirmwareVersionAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var release = await _firmwareDownloadService.GetLatestReleaseAsync(
+                includePreRelease: true,
+                cancellationToken);
+            return release?.Version.ToString();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _appLogger.Warning($"Could not read the downloaded firmware version: {ex.Message}");
+            return null;
+        }
     }
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.GetWifiDownloadDirectory

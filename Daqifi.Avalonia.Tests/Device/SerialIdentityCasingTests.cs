@@ -278,7 +278,7 @@ public class SerialIdentityCasingTests : IDisposable
 
         public void ShowFirmwareError(string message) { }
 
-        public void ShowFirmwareUpdateSucceeded() { }
+        public void ShowFirmwareUpdateSucceeded(string message) { }
 
         public Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default)
             => Task.CompletedTask;
