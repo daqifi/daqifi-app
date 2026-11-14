@@ -539,8 +539,14 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
 
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.IsStreaming
     public bool IsStreaming { get; set; }
+    /// <summary>
+    /// Gets or sets whether a newer firmware release exists for this device. Observable because
+    /// the release check sets it after the device tile exists, and the tile's UPDATE badge only
+    /// reads it again on <c>PropertyChanged</c> (#568).
+    /// </summary>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.IsFirmwareOutdated
-    public bool IsFirmwareOutdated { get; set; }
+    [ObservableProperty]
+    private bool _isFirmwareOutdated;
 
     /// <summary>
     /// True only for boards that carry a separately-flashable WINC1500 WiFi module. ESP32-based
