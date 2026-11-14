@@ -502,6 +502,31 @@ public class CurrentRateCapEnforcementTests
     }
 
     /// <summary>
+    /// A refused SD logging start changes nothing on the device. The wrapper sends its own DIO
+    /// enable or disable command for SD logging; before the review on PR #580 that went out ahead
+    /// of the cap step, so a start refused as busy still changed the DIO state once the import
+    /// released the device.
+    /// </summary>
+    [Fact]
+    public void A_refused_SD_logging_start_sends_no_DIO_command()
+    {
+        using var harness = ConnectedCoreDevice(neverAnswers: true);
+        harness.CoreDevice.Metadata.UpdateFromProtobuf(BenchStatus());
+        harness.CoreDevice.Metadata.Capabilities = new DeviceCapabilities { MaxSamplingRate = BoardCeilingHz };
+        var device = WrapperAt(OverCapRateHz, harness.CoreDevice);
+        device.SwitchMode(DeviceMode.LogToDevice);
+        Assert.Equal(DeviceMode.LogToDevice, device.Mode);
+        harness.Transport.ClearSent();
+
+        var refusal = Record.Exception(device.StartSdCardLogging);
+
+        Assert.IsType<DeviceBusyException>(refusal);
+        lock (device.SentMessages) { Assert.Empty(device.SentMessages); }
+        Assert.DoesNotContain("DIO:PORt", harness.Transport.SentText, StringComparison.Ordinal);
+        Assert.False(device.IsLoggingToSdCard);
+    }
+
+    /// <summary>
     /// The limit must outlast Core's own answer for a device that is free but silent — its
     /// 3,000 ms first-reply wait after the consumer swap — so that device keeps the pre-#547
     /// behaviour (start with a Warning) and is not refused as busy.
@@ -726,8 +751,15 @@ public class CurrentRateCapEnforcementTests
     {
         public override ConnectionType ConnectionType => ConnectionType.Usb;
 
+        /// <summary>As the USB serial device does: SD logging goes through the same Core device.</summary>
+        protected override DaqifiStreamingDevice? CoreDeviceForSd => CoreDevice;
+
+        /// <summary>What the wrapper itself sent (not Core), in order.</summary>
+        public List<string> SentMessages { get; } = [];
+
         protected override void SendMessage(IOutboundMessage<string> message)
         {
+            lock (SentMessages) { SentMessages.Add(message.Data); }
         }
 
         /// <summary>Stands in for what <c>Connect()</c> assigns after opening the transport.</summary>

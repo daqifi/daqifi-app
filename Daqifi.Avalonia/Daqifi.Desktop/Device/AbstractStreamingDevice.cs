@@ -1650,11 +1650,6 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
                 }
             }
 
-            // Core doesn't handle DIO enable yet, so desktop still sends this directly
-            SendMessage(hasDigitalChannels
-                ? ScpiMessageProducer.EnableDioPorts()
-                : ScpiMessageProducer.DisableDioPorts());
-
             var coreDevice = GetConnectedCoreDevice(CoreDeviceForSd);
             // Against the ceiling in force now, not the one in force when the rate was chosen.
             ClampRateToAdvertisedCeiling();
@@ -1662,6 +1657,14 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             // ...and then under what this channel set can actually sustain, which the ceiling
             // above says nothing about. A start over that cap is refused, not clamped (#272).
             HoldRateToCurrentConfigurationCap(coreDevice);
+
+            // Core doesn't handle DIO enable yet, so desktop still sends this directly. After the
+            // cap step, not before: that step can refuse the start (#547), and a refused start
+            // must not change the device. The firmware's current cap counts analog channels
+            // only, so the DIO state does not change the cap read above.
+            SendMessage(hasDigitalChannels
+                ? ScpiMessageProducer.EnableDioPorts()
+                : ScpiMessageProducer.DisableDioPorts());
 
             // The Core package resumes StartSdCardLoggingAsync continuations on the caller's
             // synchronization context. Running it on the thread pool prevents UI deadlocks.
@@ -1896,24 +1899,6 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     {
         if (IsStreaming) return;
 
-        // Prevent computer sleep when starting streaming. The P/Invoke
-        // targets kernel32.dll — a DllNotFoundException on mobile — so it
-        // is Windows-guarded; other heads skip the block entirely and log
-        // nothing. Mobile sleep-prevention (a wake lock) is a future
-        // divergence, not required to stream.
-        if (OperatingSystem.IsWindows())
-        {
-            var previousState = NativeMethods.SetThreadExecutionState(NativeMethods.EsContinuous | NativeMethods.EsSystemRequired);
-            if (previousState == 0) // Check for failure (returns 0 on failure)
-            {
-                AppLogger.Warning("Failed to set computer from sleeping while streaming.");
-            }
-            else
-            {
-                AppLogger.Information("Preventing computer sleep during streaming.");
-            }
-        }
-
         if (Mode != DeviceMode.StreamToApp)
         {
             throw new InvalidOperationException("Cannot initialize streaming while in LogToDevice mode");
@@ -1964,6 +1949,25 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         coreStreamingDevice.StartStreaming();
         IsStreaming = coreStreamingDevice.IsStreaming;
         AppLogger.AddBreadcrumb("streaming", $"Streaming started at {StreamingFrequency} Hz");
+
+        // Prevent computer sleep once streaming has started, not before: StopStreaming clears the
+        // requirement only for a device that is streaming, so a start refused above (wrong mode,
+        // or a busy device, #547) must not set it. The P/Invoke targets kernel32.dll — a
+        // DllNotFoundException on mobile — so it is Windows-guarded; other heads skip the block
+        // entirely and log nothing. Mobile sleep-prevention (a wake lock) is a future divergence,
+        // not required to stream.
+        if (IsStreaming && OperatingSystem.IsWindows())
+        {
+            var previousState = NativeMethods.SetThreadExecutionState(NativeMethods.EsContinuous | NativeMethods.EsSystemRequired);
+            if (previousState == 0) // Check for failure (returns 0 on failure)
+            {
+                AppLogger.Warning("Failed to set computer from sleeping while streaming.");
+            }
+            else
+            {
+                AppLogger.Information("Preventing computer sleep during streaming.");
+            }
+        }
     }
 
     /// <summary>
