@@ -1039,6 +1039,16 @@ public class FirmwareUpdateCoordinator
         {
             _appLogger.Warning($"Failed to check firmware updates: {ex.Message}");
         }
+        finally
+        {
+            // Every check ends by announcing what it found, whoever started it: the shell on a
+            // connection change, or a firmware run after its write (PR #574). The per-device results
+            // are recorded above, so the announcement is what tells an open drawer to read them —
+            // also when the version did not change, when the lookup found no release (empty
+            // version: the drawer shows the installed version only), and when the check failed
+            // (the last known release, which every result still matches or does not).
+            _host.SetLatestFirmwareRelease(_latestFirmwareVersion, _latestFirmwareTag);
+        }
     }
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.AddNotification

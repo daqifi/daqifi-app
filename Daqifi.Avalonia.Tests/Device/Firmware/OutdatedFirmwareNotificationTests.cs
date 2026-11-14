@@ -257,7 +257,7 @@ public class OutdatedFirmwareNotificationTests : IDisposable
     private Notifications NoticeFor(DesktopStreamingDevice device) =>
         _host.Notifications.Single(n => n.IsFirmwareUpdate && n.DeviceSerialNo == device.DeviceSerialNo);
 
-    private static FirmwareReleaseInfo Release(int major, int minor, int patch) => new()
+    internal static FirmwareReleaseInfo Release(int major, int minor, int patch) => new()
     {
         Version = new FirmwareVersion(major, minor, patch, PreLabel: null, PreNumber: 0),
         TagName = $"v{major}.{minor}.{patch}",
@@ -309,15 +309,18 @@ public class OutdatedFirmwareNotificationTests : IDisposable
     /// reduced to the versions these tests use. <see cref="ThrowOnCheck"/> makes the per-device
     /// comparison fail.
     /// </summary>
-    private sealed class LatestIs390DownloadService : IFirmwareDownloadService
+    internal sealed class LatestIs390DownloadService : IFirmwareDownloadService
     {
         public FirmwareReleaseInfo Latest { get; set; } = Release(3, 9, 0);
 
         public bool ThrowOnCheck { get; set; }
 
+        /// <summary>The release lookup finds nothing (no published release).</summary>
+        public bool NoRelease { get; set; }
+
         public Task<FirmwareReleaseInfo?> GetLatestReleaseAsync(
             bool includePreRelease = false, CancellationToken cancellationToken = default) =>
-            Task.FromResult<FirmwareReleaseInfo?>(Latest);
+            Task.FromResult<FirmwareReleaseInfo?>(NoRelease ? null : Latest);
 
         public Task<FirmwareUpdateCheckResult> CheckForUpdateAsync(
             string deviceVersionString, bool includePreRelease = false, CancellationToken cancellationToken = default) =>
@@ -348,7 +351,7 @@ public class OutdatedFirmwareNotificationTests : IDisposable
     }
 
     /// <summary>PIC32 update service that no test here reaches.</summary>
-    private sealed class NoFlashUpdateService : IFirmwareUpdateService
+    internal sealed class NoFlashUpdateService : IFirmwareUpdateService
     {
         public FirmwareUpdateState CurrentState => FirmwareUpdateState.Idle;
 

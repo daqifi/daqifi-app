@@ -590,9 +590,19 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
     /// <summary>
     /// Records the newest release and announces it. <paramref name="tag"/> is the GitHub release tag
-    /// (for example <c>v3.9.0</c>); the release-notes link is made from it.
+    /// (for example <c>v3.9.0</c>); the release-notes link is made from it. The coordinator calls
+    /// this at the end of every version check, through <see cref="IFirmwareUpdateHost"/>.
     /// </summary>
-    internal void SetLatestFirmwareRelease(string version, string tag)
+    /// <remarks>
+    /// The check can resume off the UI thread, so this can run there. It is deliberately not
+    /// marshalled: it writes two reference fields and raises <c>PropertyChanged</c>, and the only
+    /// listener is <c>DevicesPaneViewModel</c>, which only raises <c>PropertyChanged</c> in turn for
+    /// bindings. Avalonia's <c>InpcPropertyAccessorPlugin</c> subscribes through
+    /// <c>WeakEvents.ThreadSafePropertyChanged</c>, which moves the update to the UI thread before it
+    /// sets a target (issue #264) — the same reasoning as <c>DevicesPaneViewModel.OnSelectedDeviceStateChanged</c>.
+    /// The comparison results the drawer then reads are behind a lock.
+    /// </remarks>
+    public void SetLatestFirmwareRelease(string version, string tag)
     {
         _latestFirmwareVersion = version ?? string.Empty;
         _latestFirmwareReleaseNotesUri = string.IsNullOrWhiteSpace(_latestFirmwareVersion) || string.IsNullOrWhiteSpace(tag)
@@ -600,16 +610,6 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             : new Uri($"https://github.com/daqifi/daqifi-nyquist-firmware/releases/tag/{Uri.EscapeDataString(tag)}");
         OnPropertyChanged(nameof(LatestFirmwareReleaseNotesUri));
         OnPropertyChanged(nameof(LatestFirmwareVersion));
-    }
-
-    /// <summary>
-    /// Runs the coordinator's version check, then publishes what it found. The coordinator logs and
-    /// swallows its own failures, so this never throws.
-    /// </summary>
-    private async Task RefreshFirmwareUpdatesAsync()
-    {
-        await _firmwareCoordinator.RefreshFirmwareUpdatesAsync();
-        SetLatestFirmwareRelease(_firmwareCoordinator.LatestFirmwareVersion, _firmwareCoordinator.LatestFirmwareTag);
     }
 
     /// <summary>
@@ -2512,7 +2512,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                 break;
         }
         RefreshCanToggleLogging();
-        _ = RefreshFirmwareUpdatesAsync();
+        _ = _firmwareCoordinator.RefreshFirmwareUpdatesAsync();
         RemoveNotification();
     }
 

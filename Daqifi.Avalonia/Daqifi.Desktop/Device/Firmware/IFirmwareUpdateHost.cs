@@ -134,5 +134,15 @@ public interface IFirmwareUpdateHost
     /// <remarks>A default no-op for the same reason as <see cref="ShowFirmwareSection"/>.</remarks>
     // Downstream-only: no upstream counterpart.
     void RecordFirmwareComparison(IStreamingDevice device, string latestVersion, bool isOutdated) { }
+
+    /// <summary>
+    /// Publishes the newest release that a version check found (<paramref name="version"/> and its
+    /// release <paramref name="tag"/>; both empty when none was found), after the check recorded
+    /// each device's comparison. Called at the end of every check, so a check started by any caller
+    /// reaches the Devices drawer (issue #569).
+    /// </summary>
+    /// <remarks>A default no-op for the same reason as <see cref="ShowFirmwareSection"/>.</remarks>
+    // Downstream-only: no upstream counterpart.
+    void SetLatestFirmwareRelease(string version, string tag) { }
     #endregion
 }

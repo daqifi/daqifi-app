@@ -1,4 +1,10 @@
+using System.Collections.ObjectModel;
+using Daqifi.Avalonia.Tests.Device.Firmware;
+using Daqifi.Core.Firmware;
 using Daqifi.Desktop;
+using Daqifi.Desktop.Device.Firmware;
+using Daqifi.Desktop.Models;
+using Microsoft.Extensions.Logging.Abstractions;
 using Daqifi.Desktop.Device;
 using Daqifi.Desktop.Device.SerialDevice;
 using Daqifi.Desktop.ViewModels;
@@ -235,6 +241,88 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
     }
     #endregion
 
+    #region Any caller of the version check reaches the drawer
+    /// <summary>
+    /// The check is not only started by the shell. After a successful write, PR #574 sets the new
+    /// <c>DeviceVersion</c> and calls the coordinator's <c>RefreshFirmwareUpdatesAsync</c> directly.
+    /// The check records the new comparison, and the drawer must hear about it: before this fix only
+    /// the shell's own wrapper announced the newest release, so the drawer stayed on "Installed
+    /// 3.9.0." and never said "Firmware is up to date" after an update.
+    /// </summary>
+    [Fact]
+    public async Task A_check_started_outside_the_shell_tells_the_drawer_after_a_firmware_write()
+    {
+        var shell = new DaqifiViewModel(new NullDialogService());
+        var pane = Track(new DevicesPaneViewModel(shell));
+        var device = Nq1("9090539562006014104", "3.8.0");
+        shell.SetLatestFirmwareRelease("3.9.0", "v3.9.0");
+        shell.RecordFirmwareComparison(device, "3.9.0", isOutdated: true);
+        pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(device));
+        Assert.True(pane.SelectedDeviceHasFirmwareUpdate);
+
+        // What the write leaves behind: the device reports the new version.
+        device.DeviceVersion = "3.9.0";
+        Assert.Equal("Installed 3.9.0.", pane.FirmwareStatusText);
+
+        var coordinator = new FirmwareUpdateCoordinator(
+            new ShellWithDevices(shell, device),
+            new OutdatedFirmwareNotificationTests.NoFlashUpdateService(),
+            new OutdatedFirmwareNotificationTests.LatestIs390DownloadService(),
+            NullLogger<FirmwareUpdateService>.Instance,
+            new RecordingAppLogger(),
+            Path.Combine(Path.GetTempPath(), "daqifi-569-direct-check", Guid.NewGuid().ToString("N")),
+            wifiUpdateModeSettleDelay: TimeSpan.Zero,
+            canFlashWifiModule: false);
+        var announced = new List<string?>();
+        pane.PropertyChanged += (_, e) => announced.Add(e.PropertyName);
+
+        await coordinator.RefreshFirmwareUpdatesAsync();
+
+        Assert.Contains(nameof(DevicesPaneViewModel.SelectedDeviceFirmwareIsCurrent), announced);
+        Assert.True(pane.SelectedDeviceFirmwareIsCurrent);
+        Assert.Equal("Installed 3.9.0. Firmware is up to date.", pane.FirmwareStatusText);
+    }
+
+    /// <summary>
+    /// The check finds no release (or the lookup gives nothing): the announcement still comes, with
+    /// no newest version, and the drawer shows the installed version only.
+    /// </summary>
+    [Fact]
+    public async Task A_check_that_finds_no_release_leaves_the_drawer_on_the_installed_version()
+    {
+        var (shell, pane, device) = DrawerOpenOn("3.9.0", outdated: false);
+        shell.SetLatestFirmwareRelease("3.9.0", "v3.9.0");
+        Assert.True(pane.SelectedDeviceFirmwareIsCurrent);
+        var downloads = new OutdatedFirmwareNotificationTests.LatestIs390DownloadService { NoRelease = true };
+        var coordinator = new FirmwareUpdateCoordinator(
+            new ShellWithDevices(shell, device),
+            new OutdatedFirmwareNotificationTests.NoFlashUpdateService(),
+            downloads,
+            NullLogger<FirmwareUpdateService>.Instance,
+            new RecordingAppLogger(),
+            Path.Combine(Path.GetTempPath(), "daqifi-569-direct-check", Guid.NewGuid().ToString("N")),
+            wifiUpdateModeSettleDelay: TimeSpan.Zero,
+            canFlashWifiModule: false);
+
+        await coordinator.RefreshFirmwareUpdatesAsync();
+
+        Assert.False(pane.SelectedDeviceFirmwareIsCurrent);
+        Assert.Equal("Installed 3.9.0.", pane.FirmwareStatusText);
+        Assert.Null(pane.FirmwareReleaseNotesUri);
+    }
+
+    /// <summary>The shell itself is a host whose announcement reaches the drawer, not the interface's default no-op.</summary>
+    [Fact]
+    public void The_shell_publishes_a_release_given_to_it_as_firmware_host()
+    {
+        var (shell, pane, _) = DrawerOpenOn("3.9.0", outdated: false);
+
+        ((IFirmwareUpdateHost)shell).SetLatestFirmwareRelease("3.9.0", "v3.9.0");
+
+        Assert.True(pane.SelectedDeviceFirmwareIsCurrent);
+    }
+    #endregion
+
     #region The notification's Update button
     /// <summary>
     /// The Devices pane is on screen: the request opens the drawer of that device and asks the view
@@ -327,6 +415,36 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
     #endregion
 
     #region Helpers
+    /// <summary>
+    /// The shell as the firmware host, with its device list replaced. The shell's own list is
+    /// <c>ConnectionManager.Instance.ConnectedDevices</c>, and registering a device there would start
+    /// the shell's own (real, networked) check, which could finish during the test. Every other
+    /// member goes to the shell, so the recording and the announcement are the shell's own.
+    /// </summary>
+    private sealed class ShellWithDevices(DaqifiViewModel shell, IStreamingDevice device) : IFirmwareUpdateHost
+    {
+        private readonly IFirmwareUpdateHost _shell = shell;
+        public IStreamingDevice? SelectedDevice => _shell.SelectedDevice;
+        public IReadOnlyList<IStreamingDevice> ConnectedDevices { get; } = [device];
+        public string FirmwareFilePath { get => _shell.FirmwareFilePath; set => _shell.FirmwareFilePath = value; }
+        public bool SelectedDeviceSupportsFirmwareUpdate { set => _shell.SelectedDeviceSupportsFirmwareUpdate = value; }
+        public bool IsFirmwareUploading { get => _shell.IsFirmwareUploading; set => _shell.IsFirmwareUploading = value; }
+        public bool IsUploadComplete { set => _shell.IsUploadComplete = value; }
+        public bool HasErrorOccured { set => _shell.HasErrorOccured = value; }
+        public int UploadFirmwareProgress { set => _shell.UploadFirmwareProgress = value; }
+        public int UploadWiFiProgress { set => _shell.UploadWiFiProgress = value; }
+        public string FirmwareUpdateStatusText { set => _shell.FirmwareUpdateStatusText = value; }
+        public ObservableCollection<Notifications> Notifications => _shell.Notifications;
+        public IStreamingDevice? DeviceBeingUpdated { set { } }
+        public void RefreshNotificationCount() => _shell.RefreshNotificationCount();
+        public void ShowFirmwareError(string message) { }
+        public void ShowFirmwareUpdateSucceeded() { }
+        public Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public void RecordFirmwareComparison(IStreamingDevice d, string latestVersion, bool isOutdated) =>
+            shell.RecordFirmwareComparison(d, latestVersion, isOutdated);
+        public void SetLatestFirmwareRelease(string version, string tag) => shell.SetLatestFirmwareRelease(version, tag);
+    }
+
     private (DaqifiViewModel Shell, DevicesPaneViewModel Pane, SerialStreamingDevice Device) DrawerOpenOn(
         string installed, bool outdated)
     {
