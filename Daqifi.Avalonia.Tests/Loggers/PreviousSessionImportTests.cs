@@ -707,6 +707,28 @@ public sealed class PreviousSessionImportTests : IDisposable
     }
 
     [Fact]
+    public async Task Without_AUTOINCREMENT_a_session_left_for_later_keeps_the_offer_open()
+    {
+        // No copy can be proved here (sample IDs can be given twice), so the import skips nothing.
+        CreatePreviousDatabase(autoincrement: false);
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Finished", 1);
+        AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Maybe still recording", 2);
+        var recording = new PreviousSessionImport(_previous, _current, _markers) { RecordingWindow = TimeSpan.FromHours(1) };
+
+        var first = await RunImport(recording);
+
+        Assert.Single(first.Imported);
+        Assert.Equal(1, first.LeftForLater);
+        Assert.True(Import().HasSessionsToImport(), "The newest session must be offered again.");
+
+        // The next import copies the newest session, and the finished one again: a duplicate, not
+        // a loss. Then the offer ends.
+        Assert.Equal(2, (await RunImport()).Imported.Count);
+        Assert.Equal(2L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions WHERE Name = 'Finished'"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
     public async Task A_matching_session_another_instance_is_still_importing_is_left_alone()
     {
         CreatePreviousDatabase();
