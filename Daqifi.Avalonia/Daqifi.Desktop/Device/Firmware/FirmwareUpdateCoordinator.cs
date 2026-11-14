@@ -1261,52 +1261,21 @@ public class FirmwareUpdateCoordinator
     }
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.CreateWifiFirmwareUpdateService
-    private FirmwareUpdateService CreateWifiFirmwareUpdateService(string wifiVersion, string portName)
-    {
-        // Bridge activation action: opened at the "Power cycle WINC" prompt and sends
-        // LAN:FWUpdate then LAN:APPLY, which makes the firmware run its WiFi deinit/reinit cycle
-        // and call wifi_serial_bridge_Init(); the 2 s WincBootPromptResponseDelay below covers
-        // that before the flash tool issues its first serial bridge query.
-        //
-        // Since Core 1.10.0 (daqifi-core#877) Core's own prep step already sends LAN:FWUpdate,
-        // then LAN:APPLY, then waits PostLanBridgeEntryDelay (2 s), so the bridge is up before
-        // this runs. This callback therefore BOUNCES a bridge that is already up: the REINIT
-        // tears it down and the preserved request flag brings it straight back, inside the same
-        // 2 s window it always had. Core's documentation for WifiBridgeActivationCallback says to
-        // leave it unset. It is kept for now on purpose: the at-prompt timing is unchanged from
-        // the flow this app has used, and removing it changes a Windows-only flash that cannot
-        // be tested without an attended Windows run. Retiring it is tracked in issue #442.
-        Action bridgeActivationAction = () =>
-        {
-            _appLogger.Information($"Opening {portName} to send bridge activation commands.");
-            try
-            {
-                // USB CDC virtual ports ignore the baud rate; match the Core transport defaults.
-                using var port = new SerialPort(portName, 9600, Parity.None, 8, StopBits.One)
-                {
-                    DtrEnable = true,
-                    RtsEnable = false,
-                    WriteTimeout = 2000
-                };
-                port.Open();
-                // Brief pause to allow the DTR signal to be recognised by the firmware
-                // before we send commands (firmware checks isCdcHostConnected via DTR).
-                Thread.Sleep(200);
-                // Re-assert the FW-update-requested flag (idempotent; belt-and-suspenders).
-                port.Write("SYSTem:COMMUnicate:LAN:FWUpdate\n");
-                Thread.Sleep(100);
-                // Trigger the WiFi manager REINIT → bridge-mode state machine.
-                port.Write("SYSTem:COMMUnicate:LAN:APPLY\n");
-                // Give the firmware a moment to enqueue the APPLY before we close the port.
-                Thread.Sleep(300);
-                _appLogger.Information("Bridge activation commands sent successfully.");
-            }
-            catch (Exception ex)
-            {
-                _appLogger.Warning($"Bridge activation failed for {portName}: {ex.Message}");
-            }
-        };
+    private FirmwareUpdateService CreateWifiFirmwareUpdateService(string wifiVersion, string portName) =>
+        new(
+            FirmwareUpdateServiceConfig.CreateBootloaderHidTransport(),
+            _firmwareDownloadService,
+            new ProcessExternalProcessRunner(),
+            _firmwareLogger,
+            options: CreateWifiOptions(wifiVersion, portName));
 
+    /// <summary>
+    /// The options the WiFi-module flash runs with. Separate from
+    /// <see cref="CreateWifiFirmwareUpdateService"/> so a test can read them: Core does not expose
+    /// the options a <see cref="FirmwareUpdateService"/> holds.
+    /// </summary>
+    internal static FirmwareUpdateServiceOptions CreateWifiOptions(string wifiVersion, string portName)
+    {
         // Start from the shared firmware config so the bootloader HID timeouts stay aligned with
         // the transport (keeps read and write windows symmetric), then layer on WiFi-specific
         // settings. The WiFi flow flashes via the external WINC tool rather than the HID loop, so
@@ -1324,21 +1293,25 @@ public class FirmwareUpdateCoordinator
         // Give Windows a little more time to re-enumerate the UART before reconnect attempts.
         wifiOptions.PostWifiReconnectDelay = TimeSpan.FromSeconds(3);
 
-        // Core owns the WiFi-flash lifecycle (LAN update-mode prep and bridge entry, port-release
-        // wait, WINC prompt handling, retry, and output-based success verification). The app
-        // still hands in the at-prompt bridge activation above (see the note there) and keeps the
-        // post-flash transparent-mode recovery.
-        wifiOptions.WifiBridgeActivationCallback = bridgeActivationAction;
+        // Core owns the WiFi-flash lifecycle: LAN update-mode prep AND bridge entry, port-release
+        // wait, WINC prompt handling, retry, and output-based success verification. The app keeps
+        // only the post-flash transparent-mode recovery.
+        //
+        // WifiBridgeActivationCallback is deliberately NOT set. Until Core 1.10.0 the prep step
+        // sent LAN:FWUpdate alone, and this app opened the port at the "Power cycle WINC" prompt
+        // to send LAN:FWUpdate and LAN:APPLY itself. Core 1.10.0 sends both in prep and waits
+        // PostLanBridgeEntryDelay (daqifi-core#877), so the bridge is up before the flash tool
+        // starts. Once the bridge is up the firmware is in USB transparent mode: UsbCdc_FinalizeRead
+        // bypasses the SCPI parser and forwards every byte to the WINC, except the exact
+        // "SYSTem:USB:TRANSparent:MODE 0" escape (firmware v3.9.0, UsbCdc.c and
+        // wifi_serial_bridge_interface.c). The old callback's two SCPI lines therefore went onto
+        // the flash tool's programming link as ASCII, not to the SCPI parser (review of PR #582).
+        // Core's own documentation for the callback also says to leave it unset (issue #442).
         wifiOptions.WincBootPromptResponseDelay = TimeSpan.FromSeconds(2);
         // Let the OS free the COM handle after disconnect before the WINC tool opens the port.
         wifiOptions.PostLanDisconnectPortReleaseDelay = TimeSpan.FromSeconds(1.5);
 
-        return new FirmwareUpdateService(
-            FirmwareUpdateServiceConfig.CreateBootloaderHidTransport(),
-            _firmwareDownloadService,
-            new ProcessExternalProcessRunner(),
-            _firmwareLogger,
-            options: wifiOptions);
+        return wifiOptions;
     }
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.NormalizeWifiFirmwareVersion
