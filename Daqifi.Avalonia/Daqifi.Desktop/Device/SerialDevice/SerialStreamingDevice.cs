@@ -144,10 +144,11 @@ public class SerialStreamingDevice : AbstractStreamingDevice, ILanChipInfoProvid
                 break;
             case ScpiInitializationErrorException:
                 // Core's init sequence throws the typed ScpiInitializationErrorException (Core #317)
-                // when a command gets a SCPI -200 execution error back, from two sibling sites:
-                // "SCPI error during initialization" (echo/stop/power/stream-format/sysinfo) and
-                // "SCPI error while setting stream interface to USB" (the SYSTem:STReam:INTerface 0
-                // switch). Firmware persists the last stream interface across sessions, so a device
+                // when a command gets a SCPI -200 execution error back. Since Core 1.10.0 the
+                // SYSTem:STReam:INTerface 0 switch is part of the same setup block as
+                // echo/stop/power/stream-format/sysinfo (daqifi-core#918), so every case reads
+                // "SCPI error during initialization"; before that the switch had its own site and
+                // message. Firmware persists the last stream interface across sessions, so a device
                 // previously left streaming over WiFi commonly triggers this on the next USB connect.
                 // Classified by the typed exception, not a message match (Core added the type in
                 // 1.3.0 for exactly this) — a device/environmental condition, not an app bug

@@ -1274,12 +1274,19 @@ public class FirmwareUpdateCoordinator
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.CreateWifiFirmwareUpdateService
     private FirmwareUpdateService CreateWifiFirmwareUpdateService(string wifiVersion, string portName)
     {
-        // Bridge activation action: opened at the "Power cycle WINC" prompt to trigger the
-        // device's bridge-mode state machine right before the flash tool starts programming.
-        // By deferring APPLY (SYSTem:COMMunicate:LAN:APPLY) until this point we give the
-        // firmware a guaranteed promptResponseDelay window (2 s) to complete the WiFi
-        // deinit/reinit cycle and call wifi_serial_bridge_Init() before the flash tool
-        // issues its first serial bridge query.
+        // Bridge activation action: opened at the "Power cycle WINC" prompt and sends
+        // LAN:FWUpdate then LAN:APPLY, which makes the firmware run its WiFi deinit/reinit cycle
+        // and call wifi_serial_bridge_Init(); the 2 s WincBootPromptResponseDelay below covers
+        // that before the flash tool issues its first serial bridge query.
+        //
+        // Since Core 1.10.0 (daqifi-core#877) Core's own prep step already sends LAN:FWUpdate,
+        // then LAN:APPLY, then waits PostLanBridgeEntryDelay (2 s), so the bridge is up before
+        // this runs. This callback therefore BOUNCES a bridge that is already up: the REINIT
+        // tears it down and the preserved request flag brings it straight back, inside the same
+        // 2 s window it always had. Core's documentation for WifiBridgeActivationCallback says to
+        // leave it unset. It is kept for now on purpose: the at-prompt timing is unchanged from
+        // the flow this app has used, and removing it changes a Windows-only flash that cannot
+        // be tested without an attended Windows run. Retiring it is tracked in issue #442.
         Action bridgeActivationAction = () =>
         {
             _appLogger.Information($"Opening {portName} to send bridge activation commands.");
@@ -1321,17 +1328,17 @@ public class FirmwareUpdateCoordinator
         // Keep legacy argument profile used by shipped WINC tool bundle.
         wifiOptions.WifiFlashToolArgumentsTemplate = $"/p {{port}} /d WINC1500 /v {wifiVersion} /k /e /i aio /w";
         wifiOptions.WifiPortOverride = portName;
-        // After sending FWUpdate (flag-only, no APPLY), disconnect quickly so the
-        // COM port is free for the bridge activation raw write at the "Power cycle
-        // WINC" prompt.  The FWUpdate flag persists in firmware RAM until APPLY fires.
+        // The pause between LAN:FWUpdate and LAN:APPLY in Core's prep step (Core 1.10.0 sends
+        // both, daqifi-core#877; before that it sent FWUpdate alone and this was the pause before
+        // disconnecting). 100 ms is the pacing Core's own WifiBridgeActivator uses between the two.
         wifiOptions.PostLanFirmwareModeDelay = TimeSpan.FromMilliseconds(100);
         // Give Windows a little more time to re-enumerate the UART before reconnect attempts.
         wifiOptions.PostWifiReconnectDelay = TimeSpan.FromSeconds(3);
 
-        // Core now owns the WiFi-flash lifecycle (port-release wait, WINC prompt handling +
-        // bridge activation, retry, and output-based success verification). Hand the bridge
-        // activation in as a callback and let Core's prompt responder drive it; the desktop keeps
-        // only the device-level prep (LAN update mode) and post-flash transparent-mode recovery.
+        // Core owns the WiFi-flash lifecycle (LAN update-mode prep and bridge entry, port-release
+        // wait, WINC prompt handling, retry, and output-based success verification). The app
+        // still hands in the at-prompt bridge activation above (see the note there) and keeps the
+        // post-flash transparent-mode recovery.
         wifiOptions.WifiBridgeActivationCallback = bridgeActivationAction;
         wifiOptions.WincBootPromptResponseDelay = TimeSpan.FromSeconds(2);
         // Let the OS free the COM handle after disconnect before the WINC tool opens the port.

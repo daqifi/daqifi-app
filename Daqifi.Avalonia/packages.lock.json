@@ -48,9 +48,9 @@
       },
       "Daqifi.Core": {
         "type": "Direct",
-        "requested": "[1.9.1, )",
-        "resolved": "1.9.1",
-        "contentHash": "eW1ReLnEcBc5A0keB6Bxux0ypAOgbj8boVLosYDBHU+V9Xg0AIKAkdVUhaS+KQc2WUYJnq/cOOJA0RqggX1c0Q==",
+        "requested": "[1.10.0, )",
+        "resolved": "1.10.0",
+        "contentHash": "Ev2u4pUuuJ/r7hqkisGBjSdE4SJuco2fsVZr+186ViTgfJUbV7rZqmCQAVMSYoecte46BfXiLzLwPPFdco/cpA==",
         "dependencies": {
           "Google.Protobuf": "3.36.2",
           "HidSharp": "2.6.4",

@@ -165,8 +165,8 @@
       },
       "Daqifi.Core": {
         "type": "Transitive",
-        "resolved": "1.9.1",
-        "contentHash": "eW1ReLnEcBc5A0keB6Bxux0ypAOgbj8boVLosYDBHU+V9Xg0AIKAkdVUhaS+KQc2WUYJnq/cOOJA0RqggX1c0Q==",
+        "resolved": "1.10.0",
+        "contentHash": "Ev2u4pUuuJ/r7hqkisGBjSdE4SJuco2fsVZr+186ViTgfJUbV7rZqmCQAVMSYoecte46BfXiLzLwPPFdco/cpA==",
         "dependencies": {
           "Google.Protobuf": "3.36.2",
           "HidSharp": "2.6.4",
@@ -846,7 +846,7 @@
           "Avalonia.Fonts.Inter": "[12.1.6, )",
           "Avalonia.Themes.Fluent": "[12.1.6, )",
           "CommunityToolkit.Mvvm": "[8.4.2, )",
-          "Daqifi.Core": "[1.9.1, )",
+          "Daqifi.Core": "[1.10.0, )",
           "EFCore.BulkExtensions.Sqlite": "[10.0.1, )",
           "Microsoft.Data.Sqlite": "[10.0.14, )",
           "Microsoft.EntityFrameworkCore": "[10.0.14, )",
