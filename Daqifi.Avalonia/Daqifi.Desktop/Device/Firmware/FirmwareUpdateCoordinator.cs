@@ -468,9 +468,10 @@ public class FirmwareUpdateCoordinator
     /// finished write) for as long as GitHub takes to answer once the release cache has expired, and
     /// on a failure it would leave the old notification standing. The release list is refreshed
     /// separately, after the run has closed (see the end of <see cref="UploadFirmwareAsync"/>).
-    /// The decision is <see cref="IsOlderThan"/>, the one the full check uses (issue #569), so the
-    /// same installed version and release give the same answer here and there — including a
-    /// reported version that does not parse, which both count as older, and pre-release ordering.
+    /// The decision is <see cref="CompareWithRelease"/>, the one the full check uses (issue #569),
+    /// so the same installed version and release give the same answer here and there — including a
+    /// reported version that does not parse, which both treat as unknown (issue #583), and
+    /// pre-release ordering.
     /// </para>
     /// <para>
     /// The device's version is <paramref name="reportedVersion"/>: the version in a fresh status
@@ -513,28 +514,16 @@ public class FirmwareUpdateCoordinator
         }
 
         // The full check's own decision, on the release this coordinator recorded (issue #569).
-        var isOutdated = IsOlderThan(
+        // Recording it as the device's result matters: without it the drawer keeps the result from
+        // before the write — "3.8.0, outdated" for a device that now reports 3.9.0 — and shows no
+        // result at all until the refresh after the run answers, which it may never do while
+        // GitHub is unavailable.
+        ApplyFirmwareComparison(
+            serialStreamingDevice,
             restartedVersion,
-            new FirmwareReleaseInfo { Version = latest, TagName = _latestFirmwareTag, IsPreRelease = latest.IsPreRelease });
-        serialStreamingDevice.IsFirmwareOutdated = isOutdated;
-
-        // Record this comparison as the device's result (issue #569), with the values it used, the
-        // way the full check does. Without it the drawer keeps the result from before the write —
-        // "3.8.0, outdated" for a device that now reports 3.9.0 — and shows no result at all until
-        // the refresh after the run answers, which it may never do while GitHub is unavailable.
-        _host.RecordFirmwareComparison(serialStreamingDevice, restartedVersion, recordedRelease, isOutdated);
-
-        if (!string.IsNullOrWhiteSpace(serialStreamingDevice.DeviceSerialNo))
-        {
-            if (isOutdated)
-            {
-                AddNotification(serialStreamingDevice, restartedVersion, recordedRelease, _host.ConnectedDevices);
-            }
-            else
-            {
-                RemoveFirmwareNotification(serialStreamingDevice);
-            }
-        }
+            recordedRelease,
+            new FirmwareReleaseInfo { Version = latest, TagName = _latestFirmwareTag, IsPreRelease = latest.IsPreRelease },
+            _host.ConnectedDevices);
 
         // Announce, as every check does at its end, so an open drawer reads the result again. The
         // release is the one already recorded: no lookup, so nothing here waits on the network.
@@ -1495,21 +1484,7 @@ public class FirmwareUpdateCoordinator
                 // release this check found — nothing is awaited between this read and the record
                 // below, so the result cannot be attached to a version it did not compare.
                 var installedVersion = device.DeviceVersion ?? string.Empty;
-                var isOutdated = IsOlderThan(installedVersion, latestRelease);
-                device.IsFirmwareOutdated = isOutdated;
-                _host.RecordFirmwareComparison(device, installedVersion, latestVersion, isOutdated);
-
-                if (!string.IsNullOrWhiteSpace(device.DeviceSerialNo))
-                {
-                    if (isOutdated)
-                    {
-                        AddNotification(device, installedVersion, latestVersion, connectedDevices);
-                    }
-                    else
-                    {
-                        RemoveFirmwareNotification(device);
-                    }
-                }
+                ApplyFirmwareComparison(device, installedVersion, latestVersion, latestRelease, connectedDevices);
             }
         }
         catch (Exception ex)
@@ -1530,19 +1505,76 @@ public class FirmwareUpdateCoordinator
 
     /// <summary>
     /// Whether <paramref name="installedVersion"/> is older than <paramref name="latestRelease"/>:
-    /// the rule of Core 1.9.1's <c>GitHubFirmwareDownloadService.CheckForUpdateAsync</c>, applied to
-    /// the release this check already holds.
+    /// <c>true</c> or <c>false</c>, or <c>null</c> when the installed version does not parse and so
+    /// cannot be compared. The rule of Core 1.10.0's <c>FirmwareUpdateCheckResult.Status</c>, applied
+    /// to the release this check already holds.
     /// </summary>
     /// <remarks>
-    /// Core's method takes only the installed version and looks the newest release up again (from a
-    /// cache with a 60-minute lifetime that <c>InvalidateCache</c> clears), so it can compare with a
-    /// different release than the one this check records and shows (review of PR #576). The rule is
-    /// the same as Core's: a version that does not parse counts as older (Core:
-    /// <c>!hasCurrent || latest.Version &gt; deviceVersion</c>), and pre-releases are ordered by
+    /// <para>
+    /// Core's <c>CheckForUpdateAsync</c> takes only the installed version and looks the newest
+    /// release up again (from a cache with a 60-minute lifetime that <c>InvalidateCache</c> clears),
+    /// so it can compare with a different release than the one this check records and shows (review
+    /// of PR #576). The rule is the same as Core's: <c>UpdateAvailable</c> only when the release is
+    /// newer than a version that parsed, and pre-releases are ordered by
     /// <see cref="FirmwareVersion"/>'s own comparison, which is what Core's <c>&gt;</c> uses.
+    /// </para>
+    /// <para>
+    /// A version that does not parse is <c>null</c>, Core's <c>DeviceVersionUnknown</c> (issue #583,
+    /// daqifi-core#910). Until Core 1.10.0 it counted as older, and the app offered a one-click
+    /// update for it. A flash is the one operation that can leave a board unbootable, and the
+    /// release offered can be older than a developer or pre-release build the parser cannot read.
+    /// A user can still flash such a device from the drawer, as a deliberate choice.
+    /// </para>
     /// </remarks>
-    internal static bool IsOlderThan(string installedVersion, FirmwareReleaseInfo latestRelease) =>
-        !FirmwareVersion.TryParse(installedVersion, out var installed) || latestRelease.Version > installed;
+    internal static bool? CompareWithRelease(string? installedVersion, FirmwareVersion latestRelease) =>
+        FirmwareVersion.TryParse(installedVersion, out var installed) ? latestRelease > installed : null;
+
+    /// <inheritdoc cref="CompareWithRelease(string?, FirmwareVersion)"/>
+    internal static bool? CompareWithRelease(string? installedVersion, FirmwareReleaseInfo latestRelease) =>
+        CompareWithRelease(installedVersion, latestRelease.Version);
+
+    /// <summary>
+    /// Applies one comparison result to <paramref name="device"/>: its outdated flag, the result the
+    /// drawer reads, and the outdated-firmware notification. Shared by the full check and the
+    /// recheck after a write, so the two can never apply a result two ways (issue #569).
+    /// </summary>
+    /// <remarks>
+    /// An installed version that cannot be compared records NO result, so the drawer shows the
+    /// installed version only, with neither "up to date" nor "available" (its "not compared"
+    /// state). The flag is cleared and the notification is removed, because no update is offered
+    /// for a version that is unknown (issue #583).
+    /// </remarks>
+    private void ApplyFirmwareComparison(
+        IStreamingDevice device, string installedVersion, string latestVersion,
+        FirmwareReleaseInfo latestRelease, IReadOnlyList<IStreamingDevice> connectedDevices)
+    {
+        var comparison = CompareWithRelease(installedVersion, latestRelease);
+        device.IsFirmwareOutdated = comparison == true;
+        if (comparison is { } isOutdated)
+        {
+            _host.RecordFirmwareComparison(device, installedVersion, latestVersion, isOutdated);
+        }
+        else
+        {
+            _appLogger.Information(
+                $"Firmware version '{installedVersion}' of {device.DevicePartNumber} cannot be compared with " +
+                $"release {latestVersion}; no update is offered.");
+        }
+
+        if (string.IsNullOrWhiteSpace(device.DeviceSerialNo))
+        {
+            return;
+        }
+
+        if (comparison == true)
+        {
+            AddNotification(device, installedVersion, latestVersion, connectedDevices);
+        }
+        else
+        {
+            RemoveFirmwareNotification(device);
+        }
+    }
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.AddNotification
     private void AddNotification(
