@@ -80,20 +80,20 @@ public partial class MobileMainView : UserControl
     {
         base.OnAttachedToVisualTree(e);
         AbstractChannel.ScaleResultsRejected += OnScaleResultsRejected;
-        _activatable = Application.Current?.TryGetFeature<IActivatableLifetime>();
-        if (_activatable is not null) { _activatable.Deactivated += OnAppDeactivated; }
         // The on-screen keyboard (#589). Only a phone top level has an input pane.
         _inputPane = TopLevel.GetTopLevel(this)?.InputPane;
         if (_inputPane is not null) { _inputPane.StateChanged += OnInputPaneStateChanged; }
+        _activatable = Application.Current?.TryGetFeature<IActivatableLifetime>();
+        if (_activatable is not null) { _activatable.Deactivated += OnAppDeactivated; }
     }
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         AbstractChannel.ScaleResultsRejected -= OnScaleResultsRejected;
-        if (_activatable is not null) { _activatable.Deactivated -= OnAppDeactivated; }
-        _activatable = null;
         if (_inputPane is not null) { _inputPane.StateChanged -= OnInputPaneStateChanged; }
         _inputPane = null;
+        if (_activatable is not null) { _activatable.Deactivated -= OnAppDeactivated; }
+        _activatable = null;
         // A destroyed activity takes the shell with it; save the open edit as desktop does when its
         // pane detaches (#560).
         SaveProfileEdit();
