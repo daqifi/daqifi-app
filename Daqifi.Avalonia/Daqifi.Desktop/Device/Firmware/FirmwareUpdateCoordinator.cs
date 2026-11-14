@@ -1098,7 +1098,8 @@ public class FirmwareUpdateCoordinator
             && string.Equals(NotificationName(other), name, StringComparison.OrdinalIgnoreCase));
         if (nameIsShared && !string.IsNullOrWhiteSpace(device.DeviceSerialNo))
         {
-            name = $"{name} (serial {device.DeviceSerialNo})";
+            // The serial in the form the app shows everywhere else (issue #493).
+            name = $"{name} (serial {DeviceSerials.ToDisplay(device.DeviceSerialNo)})";
         }
 
         return string.IsNullOrWhiteSpace(device.DeviceVersion)

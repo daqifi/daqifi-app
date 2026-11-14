@@ -108,8 +108,8 @@ public class OutdatedFirmwareNotificationTests : IDisposable
         await CreateCoordinator().RefreshFirmwareUpdatesAsync();
 
         var messages = _host.Notifications.Select(n => n.Message).ToList();
-        Assert.Contains("Nq1 (serial 9090539562006014104) has firmware 3.8.0. Version 3.9.0 is available.", messages);
-        Assert.Contains("Nq1 (serial 9090539562006014105) has firmware 3.8.0. Version 3.9.0 is available.", messages);
+        Assert.Contains("Nq1 (serial 7E2815916200E898) has firmware 3.8.0. Version 3.9.0 is available.", messages);
+        Assert.Contains("Nq1 (serial 7E2815916200E899) has firmware 3.8.0. Version 3.9.0 is available.", messages);
     }
 
     [Fact]
@@ -153,7 +153,7 @@ public class OutdatedFirmwareNotificationTests : IDisposable
 
         _host.SetConnectedDevices(first, second);
         await coordinator.RefreshFirmwareUpdatesAsync();
-        Assert.Equal("Nq1 (serial 9090539562006014104) has firmware 3.8.0. Version 3.9.0 is available.", NoticeFor(first).Message);
+        Assert.Equal("Nq1 (serial 7E2815916200E898) has firmware 3.8.0. Version 3.9.0 is available.", NoticeFor(first).Message);
         Assert.Equal(2, _host.Notifications.Count);
 
         _host.SetConnectedDevices(first);
