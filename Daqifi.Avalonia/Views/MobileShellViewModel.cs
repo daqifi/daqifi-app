@@ -102,7 +102,22 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ShowChannelSelector))]
     [NotifyPropertyChangedFor(nameof(ShowDeviceList))]
+    [NotifyCanExecuteChangedFor(nameof(DisconnectCommand))]
     private bool _isConnected;
+
+    /// <summary>
+    /// The connected device's name, for the device bar that replaces <b>Scan for devices</b> while
+    /// a device is connected (#598). Empty when nothing is connected.
+    /// </summary>
+    [ObservableProperty]
+    private string _connectedDeviceName = "";
+
+    /// <summary>
+    /// One short line under <see cref="ConnectedDeviceName"/>: how the device is reached and its
+    /// firmware. The long connect sentence stays in <see cref="Status"/>.
+    /// </summary>
+    [ObservableProperty]
+    private string _connectedDeviceDetail = "";
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ShowChannelSelector))]
@@ -390,6 +405,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     {
         Status = "Connecting via USB…";
         AppLogger.Instance.AddBreadcrumb("ui", "Tapped Connect via USB");
+        await WaitForPendingReleaseAsync();
         var result = await MobileUsbConnector.ConnectAsync();
         if (result.Device != null)
         {
@@ -413,6 +429,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     {
         Status = $"Connecting to {label}…";
         AppLogger.Instance.AddBreadcrumb("ui", $"Tapped Connect — {label}");
+        await WaitForPendingReleaseAsync();
         try
         {
             // Do NOT tear down the current connection before the new one succeeds:
@@ -472,11 +489,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         var previous = _connected;
         if (previous != null && !ReferenceEquals(previous, device))
         {
-            previous.PropertyChanged -= OnConnectedDevicePropertyChanged;
-            try { ConnectionManager.Instance.UnregisterConnectedDevice(previous); } catch { /* best-effort */ }
-            // Disconnect off the UI thread — a wedged transport must not stall the UI
-            // (matches Dispose's teardown).
-            Task.Run(() => { try { previous.Disconnect(); } catch { /* best-effort */ } });
+            ReleaseDevice(previous);
         }
         _connected = device;
         // Follow the device's own state instead of trusting the snapshot taken when streaming
@@ -501,6 +514,8 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             Channels.Add(new ChannelToggle(ch.Name, ch.Index));
         }
         IsStreaming = false;
+        ConnectedDeviceName = device.Name;
+        ConnectedDeviceDetail = DescribeConnection(device);
         IsConnected = true;
         Status = $"Connected: {device.Name}  •  SN {(device.Metadata.SerialNumber is null ? "?" : DeviceSerials.ToDisplay(device.Metadata.SerialNumber))}"
                + $"  •  FW {device.Metadata.FirmwareVersion ?? "?"}"
@@ -926,17 +941,11 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
 
         StopCountingSamples();
         IsStreaming = false;
-        IsConnected = false;
         _silentPolls = 0;
         _samplesAtLastPoll = TotalSamples;
-        _connected = null;
+        ForgetConnectedDevice();
 
-        if (lost != null)
-        {
-            lost.PropertyChanged -= OnConnectedDevicePropertyChanged;
-            try { ConnectionManager.Instance.UnregisterConnectedDevice(lost); } catch { /* best-effort */ }
-            Task.Run(() => { try { lost.Disconnect(); } catch { /* best-effort */ } });
-        }
+        if (lost != null) { ReleaseDevice(lost); }
 
         AppLogger.Instance.AddBreadcrumb(
             "device", $"Connection lost: {name}", BreadcrumbLevel.Error);
@@ -953,19 +962,121 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         // and through it the device — reachable.
         StopCountingSamples();
         var connected = _connected;
+        ForgetConnectedDevice();
+        if (connected != null) { ReleaseDevice(connected); }
+    }
+
+    /// <summary>
+    /// Ends the connection to the current device at the user's request, so the board's single TCP
+    /// client slot is free for the desktop app or another phone (#598).
+    /// </summary>
+    /// <remarks>
+    /// A running stream is stopped first, the graceful way. A client that goes away while the
+    /// board streams leaves the board streaming into a dead socket (daqifi-nyquist-firmware#1072),
+    /// so the disconnect must never skip the stop.
+    /// <para>
+    /// The screen goes back to the disconnected state at once. The socket closes on a pool thread
+    /// (<see cref="ReleaseDevice"/>), and the next connect waits for it, so a tap on the same board
+    /// straight after Disconnect does not race the old connection for the one slot.
+    /// </para>
+    /// </remarks>
+    [RelayCommand(CanExecute = nameof(IsConnected))]
+    private void Disconnect()
+    {
+        var device = _connected;
+        if (device == null) { return; }
+        var name = device.Name;
+        AppLogger.Instance.AddBreadcrumb("ui", $"Tapped Disconnect — {name}");
+
+        if (IsStreaming) { StopStream(); }
+        // Backstop, as in Dispose: StopStream runs only while the shell believes it is streaming.
+        StopCountingSamples();
+        ForgetConnectedDevice();
+        ReleaseDevice(device);
+
+        Status = Devices.Count > 0
+            ? $"Disconnected from {name}. Tap a device to connect again."
+            : $"Disconnected from {name}. Tap Scan to find devices.";
+    }
+
+    /// <summary>
+    /// Puts the shell in the disconnected state: no adopted device, and nothing left on screen
+    /// that names it.
+    /// </summary>
+    private void ForgetConnectedDevice()
+    {
         _connected = null;
+        IsStreaming = false;
         IsConnected = false;
-        if (connected != null)
+        ConnectedDeviceName = "";
+        ConnectedDeviceDetail = "";
+    }
+
+    /// <summary>
+    /// The one teardown every path that lets go of a device uses: a user Disconnect, a lost
+    /// connection, a connect that replaces the device, and <see cref="Dispose"/>.
+    /// </summary>
+    /// <remarks>
+    /// Detaches the shell from the device's events, unregisters it from
+    /// <see cref="ConnectionManager"/> so the projected panes stop showing it, then disconnects it
+    /// off the UI thread, because a wedged transport must not stall the UI. The disconnect task is
+    /// kept in <see cref="PendingRelease"/> so the next connect can wait for the socket to close.
+    /// </remarks>
+    private void ReleaseDevice(AbstractStreamingDevice device)
+    {
+        device.PropertyChanged -= OnConnectedDevicePropertyChanged;
+        try { ConnectionManager.Instance.UnregisterConnectedDevice(device); } catch { /* best-effort */ }
+        var previous = PendingRelease;
+        PendingRelease = Task.Run(async () =>
         {
-            connected.PropertyChanged -= OnConnectedDevicePropertyChanged;
-            try { ConnectionManager.Instance.UnregisterConnectedDevice(connected); }
-            catch { /* bridge is best-effort */ }
-            Task.Run(() =>
-            {
-                try { connected.Disconnect(); }
-                catch { /* teardown best-effort */ }
-            });
+            // One release at a time, in order: the slot is free only when every older socket is closed.
+            try { await previous.ConfigureAwait(false); } catch { /* best-effort */ }
+            try { device.Disconnect(); } catch { /* best-effort */ }
+        });
+    }
+
+    /// <summary>
+    /// The disconnect of the device the shell let go of last, or a completed task when there is
+    /// none. Internal so a test can wait for the teardown to finish.
+    /// </summary>
+    internal Task PendingRelease { get; private set; } = Task.CompletedTask;
+
+    /// <summary>
+    /// The longest a connect waits for the previous socket to close. A board that never answers
+    /// the close must not block a connect to a different board for ever.
+    /// </summary>
+    internal TimeSpan ReleaseWaitLimit = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Waits, for <see cref="ReleaseWaitLimit"/> at most, until the device the shell let go of last
+    /// has closed its connection. The Nyquist accepts one TCP client, so a reconnect that starts
+    /// while the old socket is still open is refused.
+    /// </summary>
+    private async Task WaitForPendingReleaseAsync()
+    {
+        var pending = PendingRelease;
+        if (pending.IsCompleted) { return; }
+        try { await pending.WaitAsync(ReleaseWaitLimit); }
+        catch (TimeoutException)
+        {
+            AppLogger.Instance.AddBreadcrumb(
+                "device", "Previous device still disconnecting; connecting anyway", BreadcrumbLevel.Warning);
         }
+        catch { /* the release logs its own failures */ }
+    }
+
+    /// <summary>
+    /// The second line of the connected device bar: the address (IP for WiFi, "USB" for OTG) and
+    /// the firmware version, as far as the device has reported them.
+    /// </summary>
+    internal static string DescribeConnection(AbstractStreamingDevice device)
+    {
+        var parts = new List<string>(2);
+        var address = device.ConnectionType == ConnectionType.Usb ? "USB" : device.IpAddress;
+        if (!string.IsNullOrWhiteSpace(address)) { parts.Add(address); }
+        var firmware = device.Metadata.FirmwareVersion;
+        if (!string.IsNullOrWhiteSpace(firmware)) { parts.Add($"FW {firmware}"); }
+        return parts.Count == 0 ? "Connected" : string.Join("  •  ", parts);
     }
 }
 

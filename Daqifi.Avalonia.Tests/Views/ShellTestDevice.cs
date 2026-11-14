@@ -29,6 +29,17 @@ internal sealed class ShellTestDevice : AbstractStreamingDevice
 
     public void AttachCore(DaqifiStreamingDevice coreDevice) => CoreDevice = coreDevice;
 
+    private int _disconnectCalls;
+
+    /// <summary>How many times anything called <see cref="Disconnect"/> on this device.</summary>
+    public int DisconnectCalls => Volatile.Read(ref _disconnectCalls);
+
+    public override bool Disconnect()
+    {
+        Interlocked.Increment(ref _disconnectCalls);
+        return base.Disconnect();
+    }
+
     public void SyncFromCore(DaqifiDevice coreDevice) => SyncFromCoreDevice(coreDevice);
 
     /// <summary>
