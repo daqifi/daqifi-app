@@ -468,9 +468,9 @@ public class FirmwareUpdateCoordinator
     /// finished write) for as long as GitHub takes to answer once the release cache has expired, and
     /// on a failure it would leave the old notification standing. The release list is refreshed
     /// separately, after the run has closed (see the end of <see cref="UploadFirmwareAsync"/>).
-    /// The rule is Core's own <c>CheckForUpdateAsync</c> rule — outdated when the release is newer
-    /// than the device by <see cref="FirmwareVersion"/> ordering — so pre-release ordering is the
-    /// same here as in the full check.
+    /// The decision is <see cref="IsOlderThan"/>, the one the full check uses (issue #569), so the
+    /// same installed version and release give the same answer here and there — including a
+    /// reported version that does not parse, which both count as older, and pre-release ordering.
     /// </para>
     /// <para>
     /// The device's version is <paramref name="reportedVersion"/>: the version in a fresh status
@@ -486,10 +486,11 @@ public class FirmwareUpdateCoordinator
     /// </para>
     /// <para>
     /// When the version is not known (<paramref name="reportedVersion"/> is <c>null</c>), nothing
-    /// changes: not <c>DeviceVersion</c>, not <c>IsFirmwareOutdated</c>, not the notification. The
-    /// same holds when no release has been recorded, or a version does not parse. The refresh after
-    /// the run then reads the wrapper's <c>DeviceVersion</c>, which is still the old value, so it
-    /// keeps the notification too: "unknown" is never turned into a guess in either direction.
+    /// changes: not <c>DeviceVersion</c>, not <c>IsFirmwareOutdated</c>, not the notification, and no
+    /// comparison is recorded for the drawer. When no release has been recorded, there is nothing to
+    /// compare with, so the version is copied to the device and nothing else changes. The refresh
+    /// after the run reads the wrapper's <c>DeviceVersion</c> — still the old value when the version is
+    /// unknown — so it keeps the notification too: "unknown" is never turned into a guess.
     /// </para>
     /// </summary>
     private void RecheckFirmwareAfterWrite(
@@ -506,13 +507,15 @@ public class FirmwareUpdateCoordinator
         serialStreamingDevice.DeviceVersion = restartedVersion;
 
         var recordedRelease = _latestFirmwareVersion;
-        if (!FirmwareVersion.TryParse(recordedRelease, out var latest)
-            || !FirmwareVersion.TryParse(restartedVersion, out var installed))
+        if (!FirmwareVersion.TryParse(recordedRelease, out var latest))
         {
             return;
         }
 
-        var isOutdated = latest > installed;
+        // The full check's own decision, on the release this coordinator recorded (issue #569).
+        var isOutdated = IsOlderThan(
+            restartedVersion,
+            new FirmwareReleaseInfo { Version = latest, TagName = _latestFirmwareTag, IsPreRelease = latest.IsPreRelease });
         serialStreamingDevice.IsFirmwareOutdated = isOutdated;
 
         // Record this comparison as the device's result (issue #569), with the values it used, the

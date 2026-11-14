@@ -188,6 +188,65 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     }
 
     /// <summary>
+    /// The drawer, as the app reads it (issue #569): after a successful write, with the release lookup
+    /// failing afterwards (the computer went offline), the real shell's <c>FirmwareComparisonFor</c>
+    /// says the device is current — <c>false</c>, not <c>null</c> ("not known") — and the notice is
+    /// gone. Only the write's own comparison can make that so: the refresh after the run fails.
+    /// </summary>
+    [Fact]
+    public async Task After_the_write_the_drawer_says_current_even_when_the_lookup_fails_afterwards()
+    {
+        var shell = new Daqifi.Desktop.ViewModels.DaqifiViewModel(new Daqifi.Avalonia.Tests.ViewModels.NullDialogService());
+        _host.Shell = shell;
+        await ConnectOn(Previous);
+        Assert.True(shell.FirmwareComparisonFor(_device), "Before the write the drawer must say outdated.");
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        _reader.Reported = Latest;
+        _downloads.Lookup = LookupMode.Throw;
+
+        await RunUpdate();
+
+        Assert.True(_host.UpdateSucceeded);
+        Assert.Equal(1, _downloads.LookupsAfterWriteStarted);
+        Assert.False(shell.FirmwareComparisonFor(_device));
+        Assert.DoesNotContain(_host.Notifications, n => n.IsFirmwareUpdate);
+    }
+
+    /// <summary>
+    /// One rule (issue #569): the write's comparison and the full check decide the same way for the
+    /// same inputs. A reported version that does not parse is the case where a second rule would
+    /// differ; <c>IsOlderThan</c> counts it as older. Here the refresh after the run compares the same
+    /// installed value with the same release, and both record the same result.
+    /// </summary>
+    [Fact]
+    public async Task A_version_that_does_not_parse_is_decided_as_the_full_check_decides()
+    {
+        const string unparseable = "not-a-version";
+        await ConnectOn(Previous);
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        _reader.Reported = unparseable;
+        var comparisonsBefore = _host.Comparisons.Count;
+
+        await RunUpdate();
+
+        var expected = FirmwareUpdateCoordinator.IsOlderThan(
+            unparseable,
+            new FirmwareReleaseInfo { Version = ParseVersion(Latest), TagName = "v" + Latest, IsPreRelease = false });
+        Assert.True(expected);
+
+        // The write's comparison, recorded before the dialog ...
+        Assert.Equal(comparisonsBefore + 1, _host.ComparisonsWhenSucceeded);
+        var fromTheWrite = _host.Comparisons[comparisonsBefore];
+        Assert.Equal((unparseable, Latest, expected), fromTheWrite);
+        Assert.Equal(1, _host.FirmwareNotificationsWhenSucceeded);
+
+        // ... and the full check's, after the run: the same.
+        var fromTheRefresh = Assert.Single(_host.Comparisons.Skip(comparisonsBefore + 1));
+        Assert.Equal(fromTheWrite, fromTheRefresh);
+        Assert.True(_device.IsFirmwareOutdated);
+    }
+
+    /// <summary>
     /// The review finding on PR #574: the release lookup takes no token, so when GitHub never answers
     /// it must not hold the run open. The notification is settled anyway, the run completes, and the
     /// upload flag (which keeps Cancel enabled) is down. (The lookup that names the release in the
@@ -574,6 +633,11 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         Assert.Equal(Latest, coordinator.LatestFirmwareVersion);
     }
 
+    private static FirmwareVersion ParseVersion(string value) =>
+        FirmwareVersion.TryParse(value, out var version)
+            ? version
+            : throw new ArgumentException($"Not a firmware version: {value}", nameof(value));
+
     /// <summary>Runs the update, failing the test rather than hanging if the run never completes.</summary>
     private Task RunUpdate() => _coordinator.UploadFirmwareAsync().WaitAsync(RunTimeout);
 
@@ -916,11 +980,24 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
 
         public int AnnouncementsWhenSucceeded { get; private set; } = -1;
 
-        public void RecordFirmwareComparison(
-            DesktopStreamingDevice device, string installedVersion, string latestVersion, bool isOutdated) =>
-            Comparisons.Add((installedVersion, latestVersion, isOutdated));
+        /// <summary>
+        /// The real shell, when a test wants the Devices drawer's own reading of the results: both
+        /// calls below are forwarded to it, so <c>FirmwareComparisonFor</c> answers as in the app.
+        /// </summary>
+        public Daqifi.Desktop.ViewModels.DaqifiViewModel? Shell { get; set; }
 
-        public void SetLatestFirmwareRelease(string version, string tag) => Announcements++;
+        public void RecordFirmwareComparison(
+            DesktopStreamingDevice device, string installedVersion, string latestVersion, bool isOutdated)
+        {
+            Comparisons.Add((installedVersion, latestVersion, isOutdated));
+            Shell?.RecordFirmwareComparison(device, installedVersion, latestVersion, isOutdated);
+        }
+
+        public void SetLatestFirmwareRelease(string version, string tag)
+        {
+            Announcements++;
+            Shell?.SetLatestFirmwareRelease(version, tag);
+        }
 
         /// <summary>How many times the confirmation before a write was asked (issue #564).</summary>
         public int Confirmations { get; private set; }
