@@ -3,6 +3,7 @@ using Daqifi.Core.Communication.Transport;
 using Daqifi.Core.Device;
 using Daqifi.Core.Device.Capabilities;
 using Daqifi.Desktop.Device;
+using System.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Sentry.Extensibility;
 using Xunit;
@@ -353,6 +354,33 @@ public class CurrentRateCapEnforcementTests
             Assert.DoesNotContain(Breadcrumbs(), message => message.Contains(WarningFragment, StringComparison.Ordinal));
         }
 
+        /// <summary>
+        /// Issue #547: a read that the limit ends is a failed read like any other. The start comes
+        /// back within the limit, says that the limit was reached, and gives the same
+        /// "no fresh document" explanation for a refusal that may follow.
+        /// </summary>
+        [Fact]
+        public void Is_raised_when_the_read_does_not_answer_within_the_limit()
+        {
+            var core = new CapabilityRefreshingCoreDevice("core") { NeverAnswers = true };
+            core.Metadata.UpdateFromProtobuf(BenchStatus());
+            core.Metadata.Capabilities = new DeviceCapabilities { MaxSamplingRate = BoardCeilingHz };
+            var device = WrapperAt(OverCapRateHz, core);
+
+            var stopwatch = Stopwatch.StartNew();
+            device.HoldRateForHandoff(core);
+            stopwatch.Stop();
+
+            Assert.True(
+                stopwatch.Elapsed < AbstractStreamingDevice.CapabilityRefreshTimeout + LimitSlack,
+                $"The start waited {stopwatch.Elapsed.TotalMilliseconds:0} ms for a read that never answers.");
+            Assert.True(core.LastToken.IsCancellationRequested);
+            Assert.Equal(OverCapRateHz, device.StreamingFrequency);
+            var breadcrumbs = Breadcrumbs();
+            Assert.Contains(breadcrumbs, message => message.Contains("did not answer the capability read within 3 s", StringComparison.Ordinal));
+            Assert.Contains(breadcrumbs, message => message.Contains(WarningFragment, StringComparison.Ordinal));
+        }
+
         private List<string> Breadcrumbs()
         {
             lock (_breadcrumbs) { return [.. _breadcrumbs]; }
@@ -403,9 +431,96 @@ public class CurrentRateCapEnforcementTests
     }
     #endregion
 
+    #region The read cannot hold the start longer than its limit (#547)
+    /// <summary>
+    /// Issue #547, Case B, through Core's real read. An SD card download holds Core's operation
+    /// lock for all of its duration, and the capability read is a text exchange that must get
+    /// that lock first. The start runs on the UI thread, so before the limit the window froze
+    /// until the download ended. Here a <c>RunExclusiveAsync</c> block holds the lock the way the
+    /// download does, and the start must come back within the limit.
+    /// </summary>
+    /// <remarks>
+    /// The start command must not reach the wire while the "download" still owns the device —
+    /// Core holds a plain send back until the operation ends — and must reach it after. So the
+    /// session is late, not lost, and the download's bytes are not mixed with a stream.
+    /// </remarks>
+    [Fact]
+    public async Task A_start_while_another_operation_holds_the_device_waits_no_longer_than_the_limit()
+    {
+        const int rateHz = 1000;
+        using var harness = ConnectedCoreDevice(useCoresOwnRead: true);
+        harness.CoreDevice.Metadata.UpdateFromProtobuf(BenchStatus());
+        Assert.True(harness.CoreDevice.Supports(DeviceFeature.CapabilityDocument));
+        var device = WrapperAt(rateHz, harness.CoreDevice);
+
+        var lockHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var downloadEnds = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var download = harness.CoreDevice.RunExclusiveAsync(async _ =>
+        {
+            lockHeld.SetResult();
+            // The safety net only matters without the limit: it ends the "download" so that a
+            // start which waits for it fails on the time assertion instead of hanging the run.
+            await Task.WhenAny(downloadEnds.Task, Task.Delay(UnansweredReadSafetyNet));
+        });
+        await lockHeld.Task.WaitAsync(SendTimeout);
+        harness.Transport.ClearSent();
+
+        var stopwatch = Stopwatch.StartNew();
+        device.InitializeStreaming();
+        stopwatch.Stop();
+
+        try
+        {
+            Assert.InRange(
+                stopwatch.Elapsed,
+                AbstractStreamingDevice.CapabilityRefreshTimeout - TimeSpan.FromMilliseconds(100),
+                AbstractStreamingDevice.CapabilityRefreshTimeout + LimitSlack);
+            Assert.DoesNotContain("SYSTem:StartStreamData", harness.Transport.SentText, StringComparison.Ordinal);
+        }
+        finally
+        {
+            downloadEnds.TrySetResult();
+            await download;
+        }
+
+        Assert.True(
+            harness.Transport.WaitForSentText($"SYSTem:StartStreamData {rateHz}", SendTimeout),
+            $"Expected the start command once the operation ended; saw: {harness.Transport.SentText}");
+    }
+
+    /// <summary>
+    /// The limit is a token, so the read itself can be stopped — Core observes it both while it
+    /// waits for the operation lock and during the exchange. A read handed
+    /// <see cref="CancellationToken.None"/> cannot be stopped by anything.
+    /// </summary>
+    [Fact]
+    public void The_capability_read_is_given_a_token_that_can_end_it()
+    {
+        var core = CoreDeviceRefreshingTo(MeasuredCurrentCapHz);
+        var device = WrapperAt(OverCapRateHz, core);
+
+        device.HoldRateForHandoff(core);
+
+        Assert.True(core.LastToken.CanBeCanceled);
+        Assert.False(core.LastToken.IsCancellationRequested);
+    }
+    #endregion
+
     #region Helpers
     /// <summary>Core's producer flushes on its own thread, so the write lags the call.</summary>
     private static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// How far past the limit a bounded start may finish: thread-pool scheduling and Core's
+    /// cancellation unwinding, with room for a loaded CI runner.
+    /// </summary>
+    private static readonly TimeSpan LimitSlack = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Ends a wait the limit should have ended long before, so a start without the limit fails on
+    /// a time assertion rather than hanging the test run.
+    /// </summary>
+    private static readonly TimeSpan UnansweredReadSafetyNet = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// The bench board's document reduced to the two fields these cases turn on. Built rather than
@@ -464,12 +579,13 @@ public class CurrentRateCapEnforcementTests
         return device;
     }
 
-    private static Harness ConnectedCoreDevice(int? cappingTo = null)
+    private static Harness ConnectedCoreDevice(int? cappingTo = null, bool useCoresOwnRead = false)
     {
         var transport = new CapturingTransport();
         var core = new CapabilityRefreshingCoreDevice("core", transport)
         {
-            RefreshedDocument = cappingTo is { } capHz ? DocumentCapping(capHz) : null
+            RefreshedDocument = cappingTo is { } capHz ? DocumentCapping(capHz) : null,
+            UseCoresOwnRead = useCoresOwnRead
         };
         core.Connect();
         core.Metadata.Capabilities = new DeviceCapabilities { MaxSamplingRate = BoardCeilingHz };
@@ -518,12 +634,38 @@ public class CurrentRateCapEnforcementTests
         /// <summary>What the refresh throws instead of answering, if anything.</summary>
         public Exception? RefreshFailure { get; init; }
 
+        /// <summary>
+        /// Run Core's own read — operation lock, text exchange and all — instead of answering.
+        /// </summary>
+        public bool UseCoresOwnRead { get; init; }
+
+        /// <summary>
+        /// Answer nothing until the caller cancels: a device the read cannot get to. Gives up
+        /// after <see cref="UnansweredReadSafetyNet"/> so a caller that passes no token fails on
+        /// its time assertion instead of hanging the run.
+        /// </summary>
+        public bool NeverAnswers { get; init; }
+
         public int RefreshCount { get; private set; }
+
+        /// <summary>The token the last read was given.</summary>
+        public CancellationToken LastToken { get; private set; }
 
         public override Task<CapabilityDocument?> ReadCapabilityDocumentAsync(
             CancellationToken cancellationToken = default)
         {
             RefreshCount++;
+            LastToken = cancellationToken;
+
+            if (UseCoresOwnRead)
+            {
+                return base.ReadCapabilityDocumentAsync(cancellationToken);
+            }
+
+            if (NeverAnswers)
+            {
+                return WaitForCancellationAsync(cancellationToken);
+            }
 
             if (RefreshFailure != null)
             {
@@ -536,6 +678,12 @@ public class CurrentRateCapEnforcementTests
             }
 
             return Task.FromResult(RefreshedDocument);
+        }
+
+        private static async Task<CapabilityDocument?> WaitForCancellationAsync(CancellationToken cancellationToken)
+        {
+            await Task.Delay(UnansweredReadSafetyNet, cancellationToken);
+            return null;
         }
     }
 

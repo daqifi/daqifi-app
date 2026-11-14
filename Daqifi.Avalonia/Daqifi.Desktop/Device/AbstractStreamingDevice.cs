@@ -145,6 +145,20 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     }
 
     /// <summary>
+    /// The longest time <see cref="HoldRateToCurrentConfigurationCap"/> waits for the capability
+    /// read before it starts against the last cap the device stated (#547).
+    /// </summary>
+    /// <remarks>
+    /// An uncontended read takes approximately 1.1 s over USB on Core 1.9.1 (bench Nq1, fw 3.8.0:
+    /// 1,075 ms, 1,126 ms and 1,127 ms), nearly all of it the consumer swap of a text exchange
+    /// (daqifi-core#900). Three seconds keeps more than twice that as margin, so a normal start
+    /// still reads and applies the cap, and it is also Core's own wait for the document's first
+    /// reply. A longer wait is almost always the operation lock: an SD card download holds it for
+    /// all of its duration, which can be minutes.
+    /// </remarks>
+    internal static readonly TimeSpan CapabilityRefreshTimeout = TimeSpan.FromSeconds(3);
+
+    /// <summary>
     /// Holds the rate about to be handed to <paramref name="coreDevice"/> under the cap the device
     /// will accept for the channel set enabled <i>right now</i>, re-reading its capability document
     /// first so that cap describes this configuration and not the one that existed at connect.
@@ -195,6 +209,18 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// cover.
     /// </para>
     /// <para>
+    /// <b>The read has a time limit (#547).</b> This runs on the thread that starts the session,
+    /// and on the desktop and mobile heads that is the UI thread: the LOGGING toggle's setter.
+    /// The read is a text exchange, so it must first get Core's operation lock, and an SD card
+    /// download holds that lock for all of its duration. Without a limit, a start during an SD
+    /// import froze the window until the download ended. So the read gets
+    /// <see cref="CapabilityRefreshTimeout"/>. A read that does not finish in that time is
+    /// cancelled and handled like any other failed read above: the last cap the device stated is
+    /// applied and the start continues. The start command that follows is safe to send while the
+    /// download still holds the device, because Core holds back a plain send until the operation
+    /// that owns the device ends.
+    /// </para>
+    /// <para>
     /// Must be called after the rate has been assigned to <paramref name="coreDevice"/> (Core
     /// enforces against its own live rate) and before streaming starts: the document read is a
     /// text-mode exchange, which pauses Core's protobuf consumer for its duration.
@@ -212,14 +238,26 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         // legacy firmware and swallow the one warning that explains the refusal it is heading for.
         var deviceDescribesItself = coreDevice.Supports(DeviceFeature.CapabilityDocument);
         var readAnswered = false;
+        using var refreshTimeout = new CancellationTokenSource(CapabilityRefreshTimeout);
 
         try
         {
             // Blocking here is the choice the surrounding handoff already makes — StartSdCardLogging
             // does the same with StartSdCardLoggingAsync — and Task.Run keeps Core's continuations
-            // off the caller's synchronization context.
+            // off the caller's synchronization context. The token is what bounds the block: Core
+            // observes it while it waits for the operation lock and during the exchange (#547).
+            var refreshToken = refreshTimeout.Token;
             readAnswered =
-                Task.Run(() => coreDevice.ReadCapabilityDocumentAsync()).GetAwaiter().GetResult() != null;
+                Task.Run(() => coreDevice.ReadCapabilityDocumentAsync(refreshToken)).GetAwaiter().GetResult() != null;
+        }
+        catch (OperationCanceledException) when (refreshTimeout.IsCancellationRequested)
+        {
+            // Expected when another operation holds the device, so no stack: what is worth
+            // saying is that the limit was reached and the usual cause.
+            AppLogger.Warning(
+                $"Device {DisplayIdentifier} did not answer the capability read within " +
+                $"{CapabilityRefreshTimeout.TotalSeconds:0.#} s. Another operation on the device, such " +
+                "as an SD card download, can hold it for longer than that.");
         }
         catch (Exception ex)
         {
