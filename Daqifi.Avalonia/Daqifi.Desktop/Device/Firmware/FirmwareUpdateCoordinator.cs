@@ -142,9 +142,11 @@ public class FirmwareUpdateCoordinator
     private readonly bool _canFlashWifiModule;
 
     /// <summary>
-    /// Reads the firmware version from a status reply that the device sends after the write
-    /// (issue #570). Production: <see cref="PostRestartFirmwareVersion.ReadAsync"/>. Overridable so
-    /// unit tests can give the reply without a device. Shared with #566 by design.
+    /// Reads the firmware version from a status reply that the device sends after the write;
+    /// <c>null</c> when it is not known (issues #566 and #570). Production:
+    /// <see cref="PostRestartFirmwareVersion.ReadAsync"/>. Overridable so unit tests can give the reply
+    /// without a device. See <see cref="PostRestartFirmwareVersion"/> for why this is not
+    /// <c>Metadata.FirmwareVersion</c>.
     /// </summary>
     private readonly Func<DaqifiDevice, CancellationToken, Task<string?>> _readPostRestartVersion;
     #endregion
@@ -176,8 +178,8 @@ public class FirmwareUpdateCoordinator
     /// </param>
     /// <param name="readPostRestartVersion">
     /// Overrides how the version is read from the restarted device. Null uses
-    /// <see cref="PostRestartFirmwareVersion.ReadAsync"/>. The result is null when the version is
-    /// not known.
+    /// <see cref="PostRestartFirmwareVersion.ReadAsync"/>; tests pass a fake so the reading is set
+    /// without a device. The result is null when the version is not known (issues #566 and #570).
     /// </param>
     public FirmwareUpdateCoordinator(
         IFirmwareUpdateHost host,
@@ -271,6 +273,7 @@ public class FirmwareUpdateCoordinator
         // a throw before the try would leave it raised with no finally to lower it — the pane stuck
         // "uploading" behind a Cancel button with nothing left to cancel. Every statement the
         // preamble used to run before opening the run therefore moved inside.
+        var refreshReleasesAfterRun = false;
         var cancellationToken = BeginUpload();
         try
         {
@@ -382,6 +385,9 @@ public class FirmwareUpdateCoordinator
                 await UpdateWifiModuleAsync(serialStreamingDevice, cancellationToken);
             }
 
+            RecheckFirmwareAfterWrite(serialStreamingDevice, reportedVersion);
+            refreshReleasesAfterRun = true;
+
             _host.IsUploadComplete = true;
 
             // A full bar after the run reads as "something is still at 100 %" and invites a second
@@ -430,7 +436,109 @@ public class FirmwareUpdateCoordinator
             // case of issue #599. The next run defaults to a full auto-update unless the user
             // explicitly re-selects a file. (The auto path never writes this property.)
             _host.FirmwareFilePath = string.Empty;
+
+            // Refresh the release list only now that the run has closed, and do not await it: the
+            // lookup takes no token, so it must never hold IsFirmwareUploading up or delay the
+            // success dialog (issue #566). It catches its own failures. RecheckFirmwareAfterWrite
+            // has already settled the notification against the recorded release; this pass picks
+            // up a release published since that one was recorded.
+            if (refreshReleasesAfterRun)
+            {
+                _ = RefreshFirmwareUpdatesAsync();
+            }
         }
+    }
+
+    /// <summary>
+    /// Settles the outdated-firmware notification and
+    /// <see cref="Daqifi.Desktop.Device.IStreamingDevice.IsFirmwareOutdated"/> for the device a write
+    /// has just succeeded on, before the success dialog tells the user the update is done
+    /// (issue #566). Makes no network request.
+    /// <para>
+    /// <see cref="RefreshFirmwareUpdatesAsync"/> is otherwise reached only from the end of the
+    /// shell's <c>UpdateUi</c>, which runs on a connection-manager or logging-manager property
+    /// change. The device stays in the connected list for the whole update by design, so nothing
+    /// raises one when the update completes: a successful update left "has Outdated Firmware"
+    /// standing beside a tile that already showed the new version.
+    /// </para>
+    /// <para>
+    /// The comparison is against the release already recorded in <see cref="_latestFirmwareVersion"/>,
+    /// the one the standing notification was raised for, and not a fresh release lookup. That lookup
+    /// takes no token: run inside the write it would hold the upload open (Cancel enabled over a
+    /// finished write) for as long as GitHub takes to answer once the release cache has expired, and
+    /// on a failure it would leave the old notification standing. The release list is refreshed
+    /// separately, after the run has closed (see the end of <see cref="UploadFirmwareAsync"/>).
+    /// The decision is <see cref="IsOlderThan"/>, the one the full check uses (issue #569), so the
+    /// same installed version and release give the same answer here and there — including a
+    /// reported version that does not parse, which both count as older, and pre-release ordering.
+    /// </para>
+    /// <para>
+    /// The device's version is <paramref name="reportedVersion"/>: the version in a fresh status
+    /// reply of the restarted device, read by <see cref="_readPostRestartVersion"/> once the write
+    /// has returned. It is NOT <c>Metadata.FirmwareVersion</c>. Core keeps that field when a reply
+    /// omits the version, and Core can complete the write even when its initialization after the
+    /// reconnect fails — so the field can still hold the version from before the write, and
+    /// comparing it would keep the obsolete notification with nothing to show it was stale.
+    /// </para>
+    /// <para>
+    /// Both directions are settled, not only removal: a manual <c>.hex</c> can install an OLDER
+    /// image, and the notification must then stay, or come back.
+    /// </para>
+    /// <para>
+    /// When the version is not known (<paramref name="reportedVersion"/> is <c>null</c>), nothing
+    /// changes: not <c>DeviceVersion</c>, not <c>IsFirmwareOutdated</c>, not the notification, and no
+    /// comparison is recorded for the drawer. When no release has been recorded, there is nothing to
+    /// compare with, so the version is copied to the device and nothing else changes. The refresh
+    /// after the run reads the wrapper's <c>DeviceVersion</c> — still the old value when the version is
+    /// unknown — so it keeps the notification too: "unknown" is never turned into a guess.
+    /// </para>
+    /// </summary>
+    private void RecheckFirmwareAfterWrite(
+        SerialStreamingDevice serialStreamingDevice,
+        string? reportedVersion)
+    {
+        if (string.IsNullOrWhiteSpace(reportedVersion))
+        {
+            return;
+        }
+
+        var restartedVersion = reportedVersion;
+
+        serialStreamingDevice.DeviceVersion = restartedVersion;
+
+        var recordedRelease = _latestFirmwareVersion;
+        if (!FirmwareVersion.TryParse(recordedRelease, out var latest))
+        {
+            return;
+        }
+
+        // The full check's own decision, on the release this coordinator recorded (issue #569).
+        var isOutdated = IsOlderThan(
+            restartedVersion,
+            new FirmwareReleaseInfo { Version = latest, TagName = _latestFirmwareTag, IsPreRelease = latest.IsPreRelease });
+        serialStreamingDevice.IsFirmwareOutdated = isOutdated;
+
+        // Record this comparison as the device's result (issue #569), with the values it used, the
+        // way the full check does. Without it the drawer keeps the result from before the write —
+        // "3.8.0, outdated" for a device that now reports 3.9.0 — and shows no result at all until
+        // the refresh after the run answers, which it may never do while GitHub is unavailable.
+        _host.RecordFirmwareComparison(serialStreamingDevice, restartedVersion, recordedRelease, isOutdated);
+
+        if (!string.IsNullOrWhiteSpace(serialStreamingDevice.DeviceSerialNo))
+        {
+            if (isOutdated)
+            {
+                AddNotification(serialStreamingDevice, restartedVersion, recordedRelease, _host.ConnectedDevices);
+            }
+            else
+            {
+                RemoveFirmwareNotification(serialStreamingDevice);
+            }
+        }
+
+        // Announce, as every check does at its end, so an open drawer reads the result again. The
+        // release is the one already recorded: no lookup, so nothing here waits on the network.
+        _host.SetLatestFirmwareRelease(recordedRelease, _latestFirmwareTag);
     }
 
     /// <summary>
