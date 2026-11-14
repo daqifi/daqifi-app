@@ -354,33 +354,6 @@ public class CurrentRateCapEnforcementTests
             Assert.DoesNotContain(Breadcrumbs(), message => message.Contains(WarningFragment, StringComparison.Ordinal));
         }
 
-        /// <summary>
-        /// Issue #547: a read that the limit ends is a failed read like any other. The start comes
-        /// back within the limit, says that the limit was reached, and gives the same
-        /// "no fresh document" explanation for a refusal that may follow.
-        /// </summary>
-        [Fact]
-        public void Is_raised_when_the_read_does_not_answer_within_the_limit()
-        {
-            var core = new CapabilityRefreshingCoreDevice("core") { NeverAnswers = true };
-            core.Metadata.UpdateFromProtobuf(BenchStatus());
-            core.Metadata.Capabilities = new DeviceCapabilities { MaxSamplingRate = BoardCeilingHz };
-            var device = WrapperAt(OverCapRateHz, core);
-
-            var stopwatch = Stopwatch.StartNew();
-            device.HoldRateForHandoff(core);
-            stopwatch.Stop();
-
-            Assert.True(
-                stopwatch.Elapsed < AbstractStreamingDevice.CapabilityRefreshTimeout + LimitSlack,
-                $"The start waited {stopwatch.Elapsed.TotalMilliseconds:0} ms for a read that never answers.");
-            Assert.True(core.LastToken.IsCancellationRequested);
-            Assert.Equal(OverCapRateHz, device.StreamingFrequency);
-            var breadcrumbs = Breadcrumbs();
-            Assert.Contains(breadcrumbs, message => message.Contains("did not answer the capability read within 3 s", StringComparison.Ordinal));
-            Assert.Contains(breadcrumbs, message => message.Contains(WarningFragment, StringComparison.Ordinal));
-        }
-
         private List<string> Breadcrumbs()
         {
             lock (_breadcrumbs) { return [.. _breadcrumbs]; }
@@ -437,15 +410,16 @@ public class CurrentRateCapEnforcementTests
     /// lock for all of its duration, and the capability read is a text exchange that must get
     /// that lock first. The start runs on the UI thread, so before the limit the window froze
     /// until the download ended. Here a <c>RunExclusiveAsync</c> block holds the lock the way the
-    /// download does, and the start must come back within the limit.
+    /// download does, and the start must be refused within the limit.
     /// </summary>
     /// <remarks>
-    /// The start command must not reach the wire while the "download" still owns the device —
-    /// Core holds a plain send back until the operation ends — and must reach it after. So the
-    /// session is late, not lost, and the download's bytes are not mixed with a stream.
+    /// Refused, and nothing sent — not even after the "download" ends. A start queued behind the
+    /// download would carry the chosen rate unchecked against the connect-time cap, and the
+    /// firmware refuses a rate the channel set cannot sustain, so the session would show LOGGING
+    /// on with no samples (review on PR #580).
     /// </remarks>
     [Fact]
-    public async Task A_start_while_another_operation_holds_the_device_waits_no_longer_than_the_limit()
+    public async Task A_start_while_another_operation_holds_the_device_is_refused_within_the_limit()
     {
         const int rateHz = 1000;
         using var harness = ConnectedCoreDevice(useCoresOwnRead: true);
@@ -466,7 +440,7 @@ public class CurrentRateCapEnforcementTests
         harness.Transport.ClearSent();
 
         var stopwatch = Stopwatch.StartNew();
-        device.InitializeStreaming();
+        var refusal = Record.Exception(device.InitializeStreaming);
         stopwatch.Stop();
 
         try
@@ -475,7 +449,11 @@ public class CurrentRateCapEnforcementTests
                 stopwatch.Elapsed,
                 AbstractStreamingDevice.CapabilityRefreshTimeout - TimeSpan.FromMilliseconds(100),
                 AbstractStreamingDevice.CapabilityRefreshTimeout + LimitSlack);
-            Assert.DoesNotContain("SYSTem:StartStreamData", harness.Transport.SentText, StringComparison.Ordinal);
+            var busy = Assert.IsType<DeviceBusyException>(refusal);
+            Assert.IsAssignableFrom<OperationCanceledException>(busy.InnerException);
+            Assert.Contains("did not answer within 5 s", busy.Message, StringComparison.Ordinal);
+            Assert.False(device.IsStreaming);
+            Assert.False(harness.CoreDevice.IsStreaming);
         }
         finally
         {
@@ -483,9 +461,57 @@ public class CurrentRateCapEnforcementTests
             await download;
         }
 
+        // Nothing was queued behind the operation: once it ends, no start goes out.
+        Assert.False(
+            harness.Transport.WaitForSentText("SYSTem:StartStreamData", RefusedStartQuietPeriod),
+            $"A refused start must send nothing; saw: {harness.Transport.SentText}");
+    }
+
+    /// <summary>
+    /// The read that the limit ends is a refusal, not a failed read: the start does not go on
+    /// against the last stated cap, the rate the user chose is left alone, and the read's own
+    /// token is the one that was cancelled. The refusal reaches the user through the fleet, as
+    /// every other device refusal does: the toggle sees
+    /// <see cref="FleetCommandResult.EveryDeviceRefused"/> and turns LOGGING back off with the
+    /// device's sentence.
+    /// </summary>
+    [Fact]
+    public void A_read_that_does_not_answer_within_the_limit_refuses_the_start_through_the_fleet()
+    {
+        using var harness = ConnectedCoreDevice(neverAnswers: true);
+        harness.CoreDevice.Metadata.UpdateFromProtobuf(BenchStatus());
+        // The status resets the ceiling; restore it so the over-cap rate can be handed to Core.
+        harness.CoreDevice.Metadata.Capabilities = new DeviceCapabilities { MaxSamplingRate = BoardCeilingHz };
+        var device = WrapperAt(OverCapRateHz, harness.CoreDevice);
+        harness.Transport.ClearSent();
+
+        var stopwatch = Stopwatch.StartNew();
+        var start = LoggingFleet.Start([device], new Daqifi.Avalonia.Tests.RecordingAppLogger());
+        stopwatch.Stop();
+
         Assert.True(
-            harness.Transport.WaitForSentText($"SYSTem:StartStreamData {rateHz}", SendTimeout),
-            $"Expected the start command once the operation ended; saw: {harness.Transport.SentText}");
+            stopwatch.Elapsed < AbstractStreamingDevice.CapabilityRefreshTimeout + LimitSlack,
+            $"The start waited {stopwatch.Elapsed.TotalMilliseconds:0} ms for a read that never answers.");
+        Assert.True(start.EveryDeviceRefused);
+        Assert.IsType<DeviceBusyException>(Assert.Single(start.Refusals).Exception);
+        Assert.Contains("Try again when that operation ends.", start.RefusalSummary, StringComparison.Ordinal);
+        Assert.True(harness.CoreDevice.LastToken.IsCancellationRequested);
+        Assert.Equal(OverCapRateHz, device.StreamingFrequency);
+        Assert.False(device.IsStreaming);
+        Assert.DoesNotContain("SYSTem:StartStreamData", harness.Transport.SentText, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The limit must outlast Core's own answer for a device that is free but silent — its
+    /// 3,000 ms first-reply wait after the consumer swap — so that device keeps the pre-#547
+    /// behaviour (start with a Warning) and is not refused as busy.
+    /// </summary>
+    [Fact]
+    public void The_limit_outlasts_Cores_own_wait_for_a_silent_device()
+    {
+        const int coresFirstReplyWaitMs = 3000; // DaqifiDevice.CapabilityDocumentResponseTimeoutMs, Core 1.9.1
+        Assert.True(
+            AbstractStreamingDevice.CapabilityRefreshTimeout >= TimeSpan.FromMilliseconds(coresFirstReplyWaitMs + 1500));
     }
 
     /// <summary>
@@ -521,6 +547,9 @@ public class CurrentRateCapEnforcementTests
     /// a time assertion rather than hanging the test run.
     /// </summary>
     private static readonly TimeSpan UnansweredReadSafetyNet = TimeSpan.FromSeconds(10);
+
+    /// <summary>How long a refused start is watched for a command that should never be sent.</summary>
+    private static readonly TimeSpan RefusedStartQuietPeriod = TimeSpan.FromSeconds(1);
 
     /// <summary>
     /// The bench board's document reduced to the two fields these cases turn on. Built rather than
@@ -579,13 +608,14 @@ public class CurrentRateCapEnforcementTests
         return device;
     }
 
-    private static Harness ConnectedCoreDevice(int? cappingTo = null, bool useCoresOwnRead = false)
+    private static Harness ConnectedCoreDevice(int? cappingTo = null, bool useCoresOwnRead = false, bool neverAnswers = false)
     {
         var transport = new CapturingTransport();
         var core = new CapabilityRefreshingCoreDevice("core", transport)
         {
             RefreshedDocument = cappingTo is { } capHz ? DocumentCapping(capHz) : null,
-            UseCoresOwnRead = useCoresOwnRead
+            UseCoresOwnRead = useCoresOwnRead,
+            NeverAnswers = neverAnswers
         };
         core.Connect();
         core.Metadata.Capabilities = new DeviceCapabilities { MaxSamplingRate = BoardCeilingHz };

@@ -146,17 +146,25 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
 
     /// <summary>
     /// The longest time <see cref="HoldRateToCurrentConfigurationCap"/> waits for the capability
-    /// read before it starts against the last cap the device stated (#547).
+    /// read before it refuses the start with <see cref="DeviceBusyException"/> (#547).
     /// </summary>
     /// <remarks>
-    /// An uncontended read takes approximately 1.1 s over USB on Core 1.9.1 (bench Nq1, fw 3.8.0:
-    /// 1,075 ms, 1,126 ms and 1,127 ms), nearly all of it the consumer swap of a text exchange
-    /// (daqifi-core#900). Three seconds keeps more than twice that as margin, so a normal start
-    /// still reads and applies the cap, and it is also Core's own wait for the document's first
-    /// reply. A longer wait is almost always the operation lock: an SD card download holds it for
-    /// all of its duration, which can be minutes.
+    /// <para>
+    /// An uncontended read takes approximately 1.1 s over USB on Core 1.9.1 (bench Nq1: 1,075 ms,
+    /// 1,126 ms and 1,127 ms), nearly all of it the consumer swap of a text exchange
+    /// (daqifi-core#900). A longer wait is almost always the operation lock: an SD card download
+    /// holds it for all of its duration, which can be minutes.
+    /// </para>
+    /// <para>
+    /// Five seconds, not less, because a time-out <i>refuses</i> the start. The limit must outlast
+    /// Core's own handling of a device that is free but does not answer: the consumer swap
+    /// (≈0.8 s) plus Core's 3,000 ms wait for the first reply, after which Core returns
+    /// <c>null</c> and the start continues with a Warning, as it did before #547. A shorter limit
+    /// would end that read first and refuse a start that works today. The margin also covers a
+    /// slower WiFi exchange.
+    /// </para>
     /// </remarks>
-    internal static readonly TimeSpan CapabilityRefreshTimeout = TimeSpan.FromSeconds(3);
+    internal static readonly TimeSpan CapabilityRefreshTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>
     /// Holds the rate about to be handed to <paramref name="coreDevice"/> under the cap the device
@@ -199,7 +207,8 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// <b>When the refresh brings nothing back.</b> Core answers <c>null</c> — it does not throw —
     /// for an unanswered query, an unparseable reply or a schema this parser does not know, and
     /// throws only for a device that is no longer connected or a cancelled read. Both outcomes are
-    /// treated the same here and neither stops the start. Refusing to record over a failed read
+    /// treated the same here and neither stops the start, except a read cancelled by the time limit
+    /// below, which refuses it. Refusing to record over a failed read
     /// would newly block sessions that work today: the document is documented enrichment ("a device
     /// that cannot supply one is fully usable"), and the great majority of sessions run far below
     /// any cap. So the last figure the device stated is applied, the fact that it is not fresh is
@@ -215,10 +224,12 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// download holds that lock for all of its duration. Without a limit, a start during an SD
     /// import froze the window until the download ended. So the read gets
     /// <see cref="CapabilityRefreshTimeout"/>. A read that does not finish in that time is
-    /// cancelled and handled like any other failed read above: the last cap the device stated is
-    /// applied and the start continues. The start command that follows is safe to send while the
-    /// download still holds the device, because Core holds back a plain send until the operation
-    /// that owns the device ends.
+    /// cancelled and the start is <b>refused</b> with <see cref="DeviceBusyException"/>. It is not
+    /// handled like the failed reads above, because here the device is not unable to describe
+    /// itself, only busy: the last cap it stated is usually the inert connect-time zero, so a start
+    /// sent now would carry the chosen rate unchecked, wait behind the download, and be refused by
+    /// the firmware if the channel set cannot sustain it. The user would see LOGGING on and no
+    /// samples. A refusal keeps the toggle off and says to try again when the operation ends.
     /// </para>
     /// <para>
     /// Must be called after the rate has been assigned to <paramref name="coreDevice"/> (Core
@@ -250,14 +261,13 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             readAnswered =
                 Task.Run(() => coreDevice.ReadCapabilityDocumentAsync(refreshToken)).GetAwaiter().GetResult() != null;
         }
-        catch (OperationCanceledException) when (refreshTimeout.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (refreshTimeout.IsCancellationRequested)
         {
-            // Expected when another operation holds the device, so no stack: what is worth
-            // saying is that the limit was reached and the usual cause.
-            AppLogger.Warning(
-                $"Device {DisplayIdentifier} did not answer the capability read within " +
-                $"{CapabilityRefreshTimeout.TotalSeconds:0.#} s. Another operation on the device, such " +
-                "as an SD card download, can hold it for longer than that.");
+            // Refused, not started against the last stated cap: that cap is usually the inert
+            // connect-time zero, and a start queued behind the download at an unsustainable rate
+            // is refused by the firmware after the download, leaving LOGGING on with no samples.
+            // The caller reports the refusal and logs it; see DeviceBusyException.
+            throw new DeviceBusyException(CapabilityRefreshTimeout, ex);
         }
         catch (Exception ex)
         {
@@ -1664,8 +1674,10 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             OnPropertyChanged(nameof(IsLoggingToSdCard));
             OnPropertyChanged(nameof(IsStreaming));
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not DeviceBusyException)
         {
+            // A busy device is an ordinary condition, not a defect: the caller reports and logs
+            // it as a Warning, so it does not reach Sentry (#547).
             AppLogger.Error(ex, $"Failed to enable SD card logging for device {DeviceSerialNo}");
             throw;
         }
