@@ -1,11 +1,8 @@
-using Daqifi.Core.Communication.Messages;
 using Daqifi.Core.Device;
 using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Device;
 using Daqifi.Desktop.Logger;
 using Xunit;
-using ConnectionType = Daqifi.Desktop.Device.ConnectionType;
-using CoreAnalogChannel = Daqifi.Core.Channel.AnalogChannel;
 
 namespace Daqifi.Avalonia.Tests.Device;
 
@@ -31,8 +28,8 @@ namespace Daqifi.Avalonia.Tests.Device;
 /// </para>
 ///
 /// <para>
-/// These tests drive the <em>real</em> decode path: a protobuf frame goes in through the same
-/// <c>ProtobufProtocolHandler</c> the transport uses, and what comes out the far end is read off
+/// These tests drive the <em>real</em> decode path: a protobuf frame goes in through Core's own
+/// stream decode, the one the transport feeds, and what comes out the far end is read off
 /// the channel and off a <see cref="SummaryLogger"/> subscribed to it the way
 /// <c>LoggingManager.HandleChannelUpdate</c> subscribes the app's real loggers. Nothing about the
 /// guard is simulated.
@@ -41,85 +38,70 @@ namespace Daqifi.Avalonia.Tests.Device;
 public class NonFiniteStreamedReadingTests
 {
     /// <summary>
-    /// A concrete <see cref="AbstractStreamingDevice"/> that can be handed a streaming frame
-    /// without a transport behind it.
+    /// The app wrapper over a real Core device, with the frames handed to Core.
     /// </summary>
     /// <remarks>
-    /// <c>HandleInboundMessage</c> is the base class's own seam for "a frame arrived" — the WiFi
-    /// device already calls it — and Core's <c>ProtobufProtocolHandler.HandleAsync</c> routes
-    /// synchronously and returns <c>Task.CompletedTask</c>, so a frame pushed in here is fully
-    /// processed by the time the call returns. That is what makes these tests deterministic
-    /// rather than a poll for something that may never appear.
+    /// Until issue #440 these tests pushed a frame into the wrapper's own decode. The wrapper no
+    /// longer has one: Core decodes the frame and the wrapper publishes Core's samples, so the
+    /// frame now goes to Core (<see cref="CoreDecodingHarness"/>) and the guard is exercised where
+    /// it now lives, on the sample Core hands over.
     /// </remarks>
-    private sealed class StreamingProbeDevice : AbstractStreamingDevice
+    private sealed class StreamingProbe : IDisposable
     {
-        internal StreamingProbeDevice()
+        private readonly CoreDecodingHarness _harness = CoreDecodingHarness.Create(analogPorts: 3);
+
+        internal CoreDecodingHarness.ProbeDevice Device => _harness.Device;
+
+        internal IEnumerable<IChannel> DataChannels => Device.DataChannels.Where(c => c.IsActive);
+
+        internal Action<DeviceMessage>? DeviceMessageDispatched
         {
-            Name = "USB probe";
-            DeviceSerialNo = "SN-PROBE";
-
-            // Wires the real protocol handler; the app calls this once a device is connected.
-            InitializeDeviceState();
-
-            // The stream gate ProcessStreamMessage sits behind. Set directly rather than through
-            // InitializeStreaming, which needs a connected Core device this double has no business
-            // owning — and which is also why the per-session reset of the discard tally is argued
-            // in the PR rather than tested here.
-            IsStreaming = true;
+            set => Device.DeviceMessageDispatched = value;
         }
 
-        public override ConnectionType ConnectionType => ConnectionType.Usb;
-
-        protected override void SendMessage(IOutboundMessage<string> message) =>
-            throw new NotSupportedException();
-
-        /// <summary>
-        /// Stands in for <c>LoggingManager.HandleDeviceMessage</c>'s fan-out to the registered
-        /// loggers. <c>DispatchDeviceMessage</c> is <c>protected virtual</c> for exactly this —
-        /// its own doc says "so tests can intercept the dispatch without the application service
-        /// provider", and the real singleton resolves a DbContext factory off <c>App</c>.
-        /// </summary>
-        internal Action<DeviceMessage>? DeviceMessageDispatched { get; set; }
-
-        protected override void DispatchDeviceMessage(DeviceMessage deviceMessage) =>
-            DeviceMessageDispatched?.Invoke(deviceMessage);
-
-        internal AnalogChannel AddActiveAnalogChannel(int index)
-        {
-            var channel = new AnalogChannel(this, new CoreAnalogChannel(index))
-            {
-                Name = $"AI{index}",
-                IsActive = true
-            };
-
-            DataChannels.Add(channel);
-            return channel;
-        }
+        internal AnalogChannel AddActiveAnalogChannel(int index) => _harness.EnableAnalog(index);
 
         /// <summary>
         /// Delivers one streaming frame carrying firmware-supplied pre-scaled floats, one value
-        /// per active analog channel in index order.
+        /// per active analog channel in index order. The first frame starts the session, after the
+        /// channels are switched on, as the LOGGING toggle does.
         /// </summary>
         internal void ReceiveFloatFrame(uint deviceTicks, params float[] preScaledVolts)
         {
-            var message = new DaqifiOutMessage { MsgTimeStamp = deviceTicks };
-            foreach (var volts in preScaledVolts)
+            if (!Device.IsStreaming)
             {
-                message.AnalogInDataFloat.Add(volts);
+                Device.InitializeStreaming();
             }
 
-            HandleInboundMessage(new MessageReceivedEventArgs(new GenericInboundMessage<object>(message)));
+            _harness.Core.Feed(CoreDecodingHarness.FloatFrame(
+                CoreDecodingHarness.FirstCounter + deviceTicks, preScaledVolts));
         }
+
+        /// <summary>
+        /// Delivers a frame that carries no analog readings — only the DIO port, and no digital
+        /// channel is on — so the device dispatches one more device message and nothing else.
+        /// </summary>
+        internal void ReceiveFrameWithNoReadings(uint deviceTicks)
+        {
+            var frame = CoreDecodingHarness.FloatFrame(CoreDecodingHarness.FirstCounter + deviceTicks);
+            frame.DigitalData = Google.Protobuf.ByteString.CopyFrom(0);
+            _harness.Core.Feed(frame);
+        }
+
+        internal long DiscardedNonFiniteReadings(int channelIndex) =>
+            Device.DiscardedNonFiniteReadings(channelIndex);
+
+        public void Dispose() => _harness.Dispose();
     }
 
     /// <summary>
     /// A summary logger fed from the device the way the app feeds it, on both legs: samples arrive
     /// via <c>AbstractChannel.OnChannelUpdated</c> (which <c>LoggingManager.HandleChannelUpdate</c>
     /// subscribes to and fans out from), and each frame's <see cref="DeviceMessage"/> arrives via
-    /// the dispatch the device already makes at the end of every frame. Republishing on every
-    /// device message so a test does not have to send a thousand frames to see the panel refresh.
+    /// the dispatch the device makes for every frame. Republishing on every device message so a
+    /// test does not have to send a thousand frames to see the panel refresh.
     /// </summary>
-    private static SummaryLogger SummaryFedBy(StreamingProbeDevice device)
+    private static SummaryLogger SummaryFedBy(StreamingProbe device)
     {
         var summary = new SummaryLogger { Enabled = true, SampleSize = 1 };
 
@@ -132,9 +114,20 @@ public class NonFiniteStreamedReadingTests
         return summary;
     }
 
-    /// <summary>The single channel row the flyout would render for the single reporting device.</summary>
-    private static ChannelAcquisitionStatistics TheRow(SummaryLogger summary) =>
-        Assert.Single(Assert.Single(summary.Devices).Snapshot.Channels);
+    /// <summary>
+    /// The single channel row the flyout would render for the single reporting device, once the
+    /// panel has refreshed after the last frame <paramref name="deviceTicks"/> precedes.
+    /// </summary>
+    /// <remarks>
+    /// Core raises a frame's raw message before it decodes that frame's samples, so a refresh on a
+    /// frame's device message covers the frames before it (issue #440). One more frame, with no
+    /// readings, makes the refresh cover every frame the test sent.
+    /// </remarks>
+    private static ChannelAcquisitionStatistics TheRow(SummaryLogger summary, StreamingProbe device, uint deviceTicks)
+    {
+        device.ReceiveFrameWithNoReadings(deviceTicks);
+        return Assert.Single(Assert.Single(summary.Devices).Snapshot.Channels);
+    }
 
     /// <summary>
     /// The value the firmware sent is not a measurement, so it does not become the channel's
@@ -143,7 +136,7 @@ public class NonFiniteStreamedReadingTests
     [Fact]
     public void A_non_finite_reading_never_becomes_the_channel_s_value()
     {
-        var device = new StreamingProbeDevice();
+        using var device = new StreamingProbe();
         var channel = device.AddActiveAnalogChannel(0);
 
         device.ReceiveFloatFrame(1_000, float.NaN);
@@ -165,7 +158,7 @@ public class NonFiniteStreamedReadingTests
     [InlineData(float.NegativeInfinity)]
     public void An_infinite_reading_is_refused_like_a_NaN(float reading)
     {
-        var device = new StreamingProbeDevice();
+        using var device = new StreamingProbe();
         var channel = device.AddActiveAnalogChannel(0);
 
         device.ReceiveFloatFrame(1_000, reading);
@@ -181,7 +174,7 @@ public class NonFiniteStreamedReadingTests
     [Fact]
     public void A_non_finite_reading_costs_its_neighbours_in_the_same_frame_nothing()
     {
-        var device = new StreamingProbeDevice();
+        using var device = new StreamingProbe();
         var first = device.AddActiveAnalogChannel(0);
         var broken = device.AddActiveAnalogChannel(1);
         var last = device.AddActiveAnalogChannel(2);
@@ -200,7 +193,7 @@ public class NonFiniteStreamedReadingTests
     [Fact]
     public void A_channel_reports_again_the_moment_its_readings_do()
     {
-        var device = new StreamingProbeDevice();
+        using var device = new StreamingProbe();
         var channel = device.AddActiveAnalogChannel(0);
 
         device.ReceiveFloatFrame(1_000, float.NaN);
@@ -217,7 +210,7 @@ public class NonFiniteStreamedReadingTests
     [Fact]
     public void The_summary_average_survives_a_non_finite_reading()
     {
-        var device = new StreamingProbeDevice();
+        using var device = new StreamingProbe();
         var channel = device.AddActiveAnalogChannel(0);
         var summary = SummaryFedBy(device);
 
@@ -225,7 +218,7 @@ public class NonFiniteStreamedReadingTests
         device.ReceiveFloatFrame(2_000, float.NaN);
         device.ReceiveFloatFrame(3_000, 4.0f);
 
-        var row = TheRow(summary);
+        var row = TheRow(summary, device, 4_000);
 
         Assert.Equal(3.0, row.MeanValue, precision: 5);
         Assert.Equal(2, row.SampleCount);
@@ -239,7 +232,7 @@ public class NonFiniteStreamedReadingTests
     [Fact]
     public void The_extremes_beside_the_average_stay_correct_too()
     {
-        var device = new StreamingProbeDevice();
+        using var device = new StreamingProbe();
         var channel = device.AddActiveAnalogChannel(0);
         var summary = SummaryFedBy(device);
 
@@ -247,7 +240,7 @@ public class NonFiniteStreamedReadingTests
         device.ReceiveFloatFrame(2_000, float.NaN);
         device.ReceiveFloatFrame(3_000, 4.0f);
 
-        var row = TheRow(summary);
+        var row = TheRow(summary, device, 4_000);
 
         Assert.Equal(2.0, row.MinValue, precision: 5);
         Assert.Equal(4.0, row.MaxValue, precision: 5);
@@ -260,14 +253,14 @@ public class NonFiniteStreamedReadingTests
     [Fact]
     public void A_finite_reading_still_reaches_the_channel_and_the_summary()
     {
-        var device = new StreamingProbeDevice();
+        using var device = new StreamingProbe();
         var channel = device.AddActiveAnalogChannel(0);
         var summary = SummaryFedBy(device);
 
         device.ReceiveFloatFrame(1_000, 1.25f);
 
         Assert.Equal(1.25, channel.ActiveSample!.Value, precision: 5);
-        Assert.Equal(1.25, TheRow(summary).MeanValue, precision: 5);
+        Assert.Equal(1.25, TheRow(summary, device, 2_000).MeanValue, precision: 5);
     }
 
     /// <summary>
@@ -285,7 +278,7 @@ public class NonFiniteStreamedReadingTests
     [Fact]
     public void Each_channel_keeps_its_own_tally_of_discarded_readings()
     {
-        var device = new StreamingProbeDevice();
+        using var device = new StreamingProbe();
         device.AddActiveAnalogChannel(0);
         device.AddActiveAnalogChannel(1);
 
@@ -304,7 +297,7 @@ public class NonFiniteStreamedReadingTests
     [Fact]
     public void A_channel_with_no_bad_readings_has_nothing_tallied()
     {
-        var device = new StreamingProbeDevice();
+        using var device = new StreamingProbe();
         device.AddActiveAnalogChannel(0);
 
         device.ReceiveFloatFrame(1_000, 1.0f);

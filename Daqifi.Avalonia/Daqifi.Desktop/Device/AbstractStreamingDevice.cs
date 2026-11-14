@@ -313,30 +313,6 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     private DeviceState _deviceState = DeviceState.Disconnected;
 
     /// <summary>
-    /// Detection window for leftover frames at stream start, in seconds of device-counter time.
-    /// The device holds the final frame of a stopped session in its transmit path and emits it
-    /// as the first frame of the next session (issue #573); that frame's counter sits one sample
-    /// period (1 s at the minimum 1 Hz rate) after the last counter seen before the stop, while
-    /// a genuine new-session frame is offset by the full stop-to-start gap. The same window also
-    /// bounds the plausible counter advance between two consecutive frames of one session, which
-    /// is how the no-reference first-frame validation tells a leftover from genuine data.
-    /// </summary>
-    private const double STALE_FRAME_WINDOW_SECONDS = 2.5;
-
-    /// <summary>
-    /// Safety cap on leftover-frame discards per stream start so genuine data can never be
-    /// dropped indefinitely (e.g., a stop-to-start gap that aliases the ~86 s counter wrap).
-    /// </summary>
-    private const int MAX_DISCARDED_LEFTOVER_FRAMES = 5;
-
-    /// <summary>
-    /// Fallback device counter frequency in Hz when the device has not reported one.
-    /// Matches the 20 ns tick period assumed by Core's <see cref="TimestampProcessor"/>.
-    /// </summary>
-    private const uint DEFAULT_TIMESTAMP_FREQUENCY = 50_000_000;
-
-
-    /// <summary>
     /// Device-wide PWM frequency shown (and commanded on the first enable) before the user
     /// picks one. The device does not report its frequency usefully — readback echoes the
     /// last request — so the session starts from a mid-range default.
@@ -345,26 +321,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
 
     private int _pwmFrequencyHz = DEFAULT_PWM_FREQUENCY_HZ;
 
-    private readonly ITimestampProcessor _timestampProcessor = new TimestampProcessor();
-
-    // Serializes the reset / apply / process sequence on _timestampProcessor and its
-    // _timestampFrequencyApplied gate. ResetAll runs on the UI thread
-    // (InitializeStreaming / StopStreaming) while SetTimestampFrequency and ProcessTimestamp run on
-    // the transport thread. Without serialization a ResetAll interleaved between the transport
-    // thread's SetTimestampFrequency and its gate write would drop the just-applied frequency yet
-    // leave the gate latched "applied", pinning the session to the 50 MHz fallback (issue #39).
-    // Core's TimestampProcessor is not itself thread-safe, so the lock also guards its
-    // rollover / baseline state against a concurrent reset.
-    private readonly object _timestampProcessorSync = new();
     private List<SdCardFile> _sdCardFiles = [];
-
-    // Leftover-frame detection state (issue #573). The last-seen counter is tracked for every
-    // stream frame — including frames dropped while not streaming — because the leftover frame
-    // emitted at the next start follows the device's last emitted frame by one sample period.
-    private uint _lastSeenDeviceTimestamp;
-    private bool _hasSeenDeviceTimestamp;
-    private volatile bool _checkForLeftoverFrames;
-    private int _discardedLeftoverFrameCount;
 
     // Occurrence counters for the three per-message paths. See ReportStreamProcessingFailure —
     // these exist so a persistent fault is reported with its frequency instead of once per
@@ -389,24 +346,36 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// </remarks>
     private readonly ConcurrentDictionary<int, long> _nonFiniteReadingCounts = new();
 
-    // Whether the device-reported clock frequency has been applied to _timestampProcessor for the
-    // current streaming session. Cleared alongside every ResetAll(), which per Core's contract also
-    // drops per-device frequencies. Without an explicit frequency the processor reconstructs against
-    // its 20 ns fallback tick (50 MHz), compressing the timeline ~16% since current firmware runs the
-    // streaming timestamp timer at 42 MHz. All reads and writes are serialized under
-    // _timestampProcessorSync (issue #39), which supplies the cross-thread ordering and visibility
-    // the bare volatile flag previously could not.
-    private bool _timestampFrequencyApplied;
-
-    // First-frame validation state (issue #573 follow-up). The device's leftover frame survives
-    // a USB disconnect/reconnect, and a freshly connected instance has no counter reference to
-    // recognize it against — so the first frame of the first session is held until the next
-    // frame's counter delta validates the pair as same-session data.
-    private volatile bool _pendingFirstFrameValidation;
-    private DaqifiOutMessage? _heldFirstFrame;
-
     // Protocol handler for automatic message routing
     private IProtocolHandler? _protocolHandler;
+
+    /// <summary>
+    /// The Core channels whose decoded samples this device publishes, each with the handler it
+    /// subscribed. Rebuilt by <see cref="SubscribeToCoreSamples"/> whenever the channel list is
+    /// synchronized from Core, and emptied when Core's events are unsubscribed.
+    /// </summary>
+    /// <remarks>
+    /// Core decodes every stream frame once, on its consumer thread, and raises
+    /// <c>SampleReceived</c> on each enabled channel (issue #440). This device used to run its own
+    /// copy of that decode on the same frame. Locked on itself: the channel list is synchronized
+    /// from Core's <c>ChannelsPopulated</c>, which Core can raise off the UI thread, and the
+    /// subscriptions are dropped on disconnect.
+    /// </remarks>
+    private readonly List<(Daqifi.Core.Channel.IChannel Channel, EventHandler<Daqifi.Core.Channel.SampleReceivedEventArgs> Handler)>
+        _coreSampleSubscriptions = [];
+
+    // The frame the last published sample came from, identified by the host timestamp Core
+    // reconstructed for it (every sample of one frame carries the same one), and the time from the
+    // frame before it to that frame. Feeds DataSample.FirmwareDeltaMs, which the live plot's gap
+    // detector reads. Written only on Core's consumer thread; cleared before each session starts,
+    // which is before Core can decode a frame of it.
+    private bool _hasPublishedFrame;
+    private DateTime _publishedFrameTimestamp;
+    private double? _publishedFrameDeltaMs;
+
+    // The device counter on the last stream frame of this session, for DeviceMessage.Rollover.
+    private bool _hasSeenStreamFrameCounter;
+    private uint _lastStreamFrameCounter;
 
     /// <summary>
     /// The Core streaming device created by the shared <see cref="Connect"/> template,
@@ -720,9 +689,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             // ErrorOccurred/SendFailed bridge binds lazily on first subscribe — see RebindDiagnostics.
             RebindDiagnostics();
 
-            coreDevice.ChannelsPopulated += OnCoreChannelsPopulated;
-            coreDevice.MessageReceived += OnCoreMessageReceived;
-            coreDevice.StatusChanged += OnCoreStatusChanged;
+            SubscribeCoreDeviceEvents(coreDevice);
 
             InitializeDeviceState();
 
@@ -999,12 +966,28 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         RaiseIsConnectedChanged();
     }
 
+    /// <summary>
+    /// Subscribes this wrapper to the Core device events <see cref="Connect"/> relies on. The
+    /// per-channel samples are subscribed separately, by <see cref="SubscribeToCoreSamples"/>,
+    /// because the channel list is rebuilt on every status message.
+    /// </summary>
+    /// <param name="coreDevice">The Core device this wrapper now drives.</param>
+    protected void SubscribeCoreDeviceEvents(CoreStreamingDevice coreDevice)
+    {
+        ArgumentNullException.ThrowIfNull(coreDevice);
+
+        coreDevice.ChannelsPopulated += OnCoreChannelsPopulated;
+        coreDevice.MessageReceived += OnCoreMessageReceived;
+        coreDevice.StatusChanged += OnCoreStatusChanged;
+    }
+
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.UnsubscribeCoreDeviceEvents
     private void UnsubscribeCoreDeviceEvents(CoreStreamingDevice coreDevice)
     {
         coreDevice.ChannelsPopulated -= OnCoreChannelsPopulated;
         coreDevice.MessageReceived -= OnCoreMessageReceived;
         coreDevice.StatusChanged -= OnCoreStatusChanged;
+        UnsubscribeFromCoreSamples();
     }
 
     /// <summary>
@@ -1015,7 +998,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.OnCoreMessageReceived
     private void OnCoreMessageReceived(object? sender, MessageReceivedEventArgs e)
     {
-        HandleInboundMessage(e);
+        OnInboundMessageReceived(this, e);
     }
 
     /// <summary>
@@ -1238,6 +1221,25 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         }
     }
 
+    /// <summary>
+    /// Handles a raw stream frame that Core re-raised after its own frame guards passed it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The frame is not decoded here. Core decodes every frame once and publishes the result per
+    /// channel, and <see cref="PublishCoreSample"/> takes each sample from there (issue #440). Until
+    /// #440 this method ran a second copy of Core's pipeline on the same frame: a timestamp
+    /// processor, a leftover-frame gate, a first-frame hold, and the analog and digital unpacking.
+    /// That copy cost a LINQ sort per frame, and its gate used a 2.5 s window where Core's uses
+    /// 2.5 sample periods, so it discarded the first 5 genuine frames of a quick restart.
+    /// </para>
+    /// <para>
+    /// What stays is what needs only the raw frame: the per-frame <see cref="DeviceMessage"/>
+    /// (the Log Summary flyout counts these and lists their status codes) and the debug-mode
+    /// capture. Core raises the raw frame before it decodes the samples, so neither has Core's
+    /// reconstructed timestamp; both carry the host time of arrival instead.
+    /// </para>
+    /// </remarks>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.OnStreamMessageReceived
     private void OnStreamMessageReceived(DaqifiOutMessage message)
     {
@@ -1250,203 +1252,17 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
 
         if (!IsStreaming || Mode != DeviceMode.StreamToApp)
         {
-            // Track the counter even while not streaming: the device can emit a final frame
-            // after the stop command lands, and the leftover frame at the next start follows
-            // it by one sample period — it must be included in the detection reference.
-            TrackLastSeenDeviceTimestamp(message.MsgTimeStamp);
             return;
         }
 
-        if (_checkForLeftoverFrames)
+        var arrival = DateTime.Now;
+        var rollover = _hasSeenStreamFrameCounter && message.MsgTimeStamp < _lastStreamFrameCounter;
+        _lastStreamFrameCounter = message.MsgTimeStamp;
+        _hasSeenStreamFrameCounter = true;
+
+        if (message.AnalogInData.Count > 0 || message.AnalogInDataFloat.Count > 0)
         {
-            if (IsLeftoverFrameFromPreviousSession(message.MsgTimeStamp))
-            {
-                TrackLastSeenDeviceTimestamp(message.MsgTimeStamp);
-                return;
-            }
-
-            _checkForLeftoverFrames = false;
-        }
-
-        if (_pendingFirstFrameValidation)
-        {
-            ValidateFirstFramesWithoutReference(message);
-            return;
-        }
-
-        ProcessStreamMessage(message);
-    }
-
-    /// <summary>
-    /// Processes a validated streaming frame: computes its timestamp, updates channel samples,
-    /// and dispatches the device message to the logging pipeline.
-    /// </summary>
-    /// <param name="message">The streaming protobuf message to process.</param>
-    // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.ProcessStreamMessage
-    private void ProcessStreamMessage(DaqifiOutMessage message)
-    {
-        TrackLastSeenDeviceTimestamp(message.MsgTimeStamp);
-
-        // Protocol handler already validated this is a streaming message with timestamp
-        // No need to revalidate here
-
-        var deviceId = message.DeviceSn.ToString(CultureInfo.InvariantCulture);
-
-        // Apply the device's real streaming-clock frequency to Core's processor once per session, then
-        // reconstruct this frame's timestamp — the whole sequence under _timestampProcessorSync so a
-        // UI-thread ResetAll (InitializeStreaming / StopStreaming) can neither interleave between the
-        // apply and its gate write (which would strand the session on the 50 MHz fallback, issue #39)
-        // nor race Core's non-thread-safe processor state. Without the frequency the processor
-        // reconstructs against its 20 ns fallback tick (50 MHz) while current firmware runs the timer at
-        // 42 MHz, compressing the reconstructed timeline ~16% and drifting without bound (each timestamp
-        // is the previous plus elapsed ticks). Applied where the device-id key is known to match the one
-        // ProcessTimestamp uses, and re-applied per session because ResetAll() drops per-device
-        // frequencies with the baselines.
-        DateTime messageTimestamp;
-        bool rollover;
-        double? firmwareDeltaMs;
-        lock (_timestampProcessorSync)
-        {
-            if (!_timestampFrequencyApplied && TimestampFrequency != 0)
-            {
-                _timestampProcessor.SetTimestampFrequency(deviceId, TimestampFrequency);
-                _timestampFrequencyApplied = true;
-            }
-
-            // Use Core's TimestampProcessor for rollover handling
-            var timestampResult = _timestampProcessor.ProcessTimestamp(deviceId, message.MsgTimeStamp);
-            messageTimestamp = timestampResult.Timestamp;
-            rollover = timestampResult.WasRollover;
-            // Firmware-measured inter-message delta (immune to TCP jitter); null for the first message.
-            firmwareDeltaMs = timestampResult.IsFirstMessage
-                ? (double?)null
-                : timestampResult.SecondsBetweenMessages * 1000.0;
-        }
-
-        var hasDigitalData = message.DigitalData.Length > 0;
-        // The protocol defines two analog payloads and firmware picks one: AnalogInData (raw
-        // integer ADC counts, scaled here through the channel's calibration) or AnalogInDataFloat
-        // (volts, already scaled by the firmware). This is NOT a transport split, whatever the
-        // comment here used to say — measured on the bench board (Nq1, fw 3.7.2) over USB, its
-        // frames carry AnalogInData with AnalogInDataFloat empty. Both are decoded because the
-        // choice belongs to the firmware, not to us.
-        var hasAnalogData = message.AnalogInData.Count > 0 || message.AnalogInDataFloat.Count > 0;
-
-        // Process analog channels - device sends data in channel index order, not activation order
-        if (hasAnalogData)
-        {
-            try
-            {
-                var activeAnalogChannels = DataChannels.Where(c => c.IsActive && c.Type == ChannelType.Analog)
-                                                      .Cast<AnalogChannel>()
-                                                      .OrderBy(c => c.Index)
-                                                      .ToList();
-
-                // Pre-scaled floats when the frame carries them, raw integer ADC counts otherwise
-                // — see the payload note above. Presence, not transport, is what picks the branch.
-                var hasFloatData = message.AnalogInDataFloat.Count > 0;
-                var dataCount = hasFloatData ? message.AnalogInDataFloat.Count : message.AnalogInData.Count;
-
-                for (var dataIndex = 0; dataIndex < dataCount && dataIndex < activeAnalogChannels.Count; dataIndex++)
-                {
-                    var channel = activeAnalogChannels[dataIndex];
-                    double scaledValue;
-                    if (hasFloatData)
-                    {
-                        // Float values are already voltage-scaled by the firmware — no calibration needed
-                        scaledValue = message.AnalogInDataFloat[dataIndex];
-                    }
-                    else
-                    {
-                        // Raw ADC count — apply channel calibration/scaling via Core
-                        scaledValue = channel.GetScaledValue((int)message.AnalogInData[dataIndex]);
-                    }
-
-                    // A reading that is not a finite number is not a measurement, and it costs far
-                    // more than the one sample it arrived on. Core's per-channel statistics keep a
-                    // running ValueSum, so a single NaN makes the Summary flyout's Average read NaN
-                    // for the rest of the session while Min and Max keep working — one column of a
-                    // row going wrong, which reads as a display bug rather than a bad reading
-                    // (issue #295). The plot takes it as a series point and the exporter writes it
-                    // out. Refusing it here, at the one place a streamed analog value enters the
-                    // app, is what stops it being every consumer's problem to solve separately.
-                    //
-                    // IsFinite, not IsNaN: an infinity poisons a running sum exactly as thoroughly
-                    // and is no more a voltage. That is a different question from the one
-                    // SessionSampleWriter answers at the database door, where the constraint is
-                    // what SQLite can store — and SQLite stores infinities fine.
-                    //
-                    // After the branch, not inside the float one, and that placement is the point.
-                    // The float payload is the unvalidated leg — a protobuf float straight off the
-                    // wire, checked by nobody — while the integer leg goes through Core, which
-                    // substitutes an assumed resolution and sanitizes every calibration
-                    // coefficient, so GetScaledValue is not expected to return a non-finite value.
-                    // But "which leg a board uses" is a firmware decision that changes under us
-                    // (the bench board at fw 3.7.2 uses the integer one), so the invariant worth
-                    // holding is about the value being published, not about where it came from.
-                    // On the integer leg this is defence in depth against a Core regression; on
-                    // the float leg it is the only check there is.
-                    if (!double.IsFinite(scaledValue))
-                    {
-                        ReportNonFiniteReading(channel, scaledValue);
-                        continue;
-                    }
-
-                    var sample = new DataSample(this, channel, messageTimestamp, scaledValue, firmwareDeltaMs);
-                    channel.ActiveSample = sample;
-                }
-
-                if (dataCount != activeAnalogChannels.Count)
-                {
-                    AppLogger.Warning($"[CHANNEL_MAPPING] Analog data count mismatch: received {dataCount} data points for {activeAnalogChannels.Count} active channels");
-                }
-
-                // Send debug data if debug mode is enabled
-                SendDebugData(message, activeAnalogChannels, messageTimestamp);
-            }
-            catch (Exception ex)
-            {
-                ReportStreamProcessingFailure(
-                    ref _analogProcessingFailureCount, ex, "[CHANNEL_MAPPING] Error processing analog channel data");
-            }
-        }
-
-        // Process digital channels. The firmware streams the whole DIO port as a raw pin-state
-        // snapshot — bit N is pin N regardless of which channels are enabled, because the
-        // wire-level DIO enable is port-global, not per pin — so bits are indexed by channel
-        // number, not by position in the active-channel list (issue #663).
-        if (hasDigitalData)
-        {
-            try
-            {
-                var activeDigitalChannels = DataChannels.Where(c => c.IsActive && c.Type == ChannelType.Digital)
-                                                       .OrderBy(c => c.Index)
-                                                       .ToList();
-
-                foreach (var channel in activeDigitalChannels)
-                {
-                    // Output-direction channels display the commanded state, not streamed data
-                    if (channel.Direction != ChannelDirection.Input)
-                    {
-                        continue;
-                    }
-
-                    var byteIndex = channel.Index / 8;
-                    if (channel.Index < 0 || byteIndex >= message.DigitalData.Length)
-                    {
-                        continue; // pin beyond the streamed payload: no sample
-                    }
-
-                    var bit = (message.DigitalData[byteIndex] & (1 << (channel.Index % 8))) != 0;
-                    channel.ActiveSample = new DataSample(
-                        this, channel, messageTimestamp, Convert.ToInt32(bit), firmwareDeltaMs);
-                }
-            }
-            catch (Exception ex)
-            {
-                ReportStreamProcessingFailure(
-                    ref _digitalProcessingFailureCount, ex, "Error processing digital channel data");
-            }
+            SendDebugData(message, arrival);
         }
 
         var deviceMessage = new DeviceMessage
@@ -1454,8 +1270,8 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             DeviceName = Name,
             DeviceSerialNo = message.DeviceSn.ToString(CultureInfo.InvariantCulture),
             DeviceVersion = message.DeviceFwRev,
-            TimestampTicks = messageTimestamp.Ticks,
-            AppTicks = DateTime.Now.Ticks,
+            TimestampTicks = arrival.Ticks,
+            AppTicks = arrival.Ticks,
             DeviceStatus = (int)message.DeviceStatus,
             BatteryStatus = (int)message.BattStatus,
             PowerStatus = (int)message.PwrStatus,
@@ -1479,100 +1295,165 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     }
 
     /// <summary>
-    /// Records the most recent device counter value seen on any stream frame.
+    /// Subscribes to the decoded samples of every Core channel that <paramref name="channels"/>
+    /// wraps, after dropping the subscriptions to the previous set.
     /// </summary>
-    /// <param name="deviceTimestamp">The raw 32-bit counter value from the frame.</param>
-    // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.TrackLastSeenDeviceTimestamp
-    private void TrackLastSeenDeviceTimestamp(uint deviceTimestamp)
+    /// <remarks>
+    /// Called each time the channel list is synchronized from Core. Core replaces its channel
+    /// objects on every status message, and an app channel can be handed a new Core channel
+    /// (<c>ReplaceCoreChannel</c>), so the subscriptions follow the list rather than the wrappers.
+    /// </remarks>
+    /// <param name="channels">The app channels, as just synchronized from Core.</param>
+    private void SubscribeToCoreSamples(IEnumerable<IChannel> channels)
     {
-        _lastSeenDeviceTimestamp = deviceTimestamp;
-        _hasSeenDeviceTimestamp = true;
+        lock (_coreSampleSubscriptions)
+        {
+            UnsubscribeFromCoreSamples();
+
+            foreach (var channel in channels)
+            {
+                Daqifi.Core.Channel.IChannel? coreChannel = channel switch
+                {
+                    AnalogChannel analog => analog.CoreChannel,
+                    DigitalChannel digital => digital.CoreChannel,
+                    _ => null
+                };
+
+                if (coreChannel == null)
+                {
+                    continue;
+                }
+
+                EventHandler<Daqifi.Core.Channel.SampleReceivedEventArgs> handler =
+                    (_, e) => PublishCoreSample(channel, e.Sample);
+                coreChannel.SampleReceived += handler;
+                _coreSampleSubscriptions.Add((coreChannel, handler));
+            }
+        }
+    }
+
+    /// <summary>Drops every subscription <see cref="SubscribeToCoreSamples"/> made.</summary>
+    private void UnsubscribeFromCoreSamples()
+    {
+        lock (_coreSampleSubscriptions)
+        {
+            foreach (var (coreChannel, handler) in _coreSampleSubscriptions)
+            {
+                coreChannel.SampleReceived -= handler;
+            }
+
+            _coreSampleSubscriptions.Clear();
+        }
     }
 
     /// <summary>
-    /// Determines whether a frame received at stream start is a leftover from the previous
-    /// streaming session (issue #573). The device's free-running counter is never reset, so a
-    /// leftover frame sits within one sample period of the last counter value seen before the
-    /// stop, while a genuine new-session frame is offset by the full stop-to-start gap. Modular
-    /// uint subtraction keeps the comparison correct across the ~86 s counter wrap.
+    /// Publishes one sample that Core decoded onto <paramref name="channel"/>'s Core channel as the
+    /// app channel's <see cref="IChannel.ActiveSample"/>, which is what feeds the tiles, the plot,
+    /// the summary and the session writer.
     /// </summary>
-    /// <param name="deviceTimestamp">The raw 32-bit counter value from the frame.</param>
-    /// <returns><c>true</c> if the frame belongs to the previous session and must be discarded.</returns>
-    // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.IsLeftoverFrameFromPreviousSession
-    private bool IsLeftoverFrameFromPreviousSession(uint deviceTimestamp)
+    /// <remarks>
+    /// <para>
+    /// Runs on Core's consumer thread, inside Core's decode of the frame. Nothing may escape from
+    /// here: an exception would stop Core's decode of the rest of the frame, and the other channels
+    /// would lose their samples. So a failure is caught and reported, throttled, as before.
+    /// </para>
+    /// <para>
+    /// The app adds three things to Core's sample. It refuses a non-finite analog reading
+    /// (issue #295), because Core passes NaN and infinity through. It publishes a digital sample
+    /// only on an input-direction channel, because an output channel shows the commanded state;
+    /// Core 1.9.1 already skips output channels, and Core 1.10.0 stops doing so. And it wraps the
+    /// value with the device and channel identity the loggers key on.
+    /// </para>
+    /// </remarks>
+    /// <param name="channel">The app channel that wraps the Core channel the sample came from.</param>
+    /// <param name="coreSample">The sample Core decoded.</param>
+    private void PublishCoreSample(IChannel channel, Daqifi.Core.Channel.IDataSample coreSample)
     {
-        if (!_hasSeenDeviceTimestamp || _discardedLeftoverFrameCount >= MAX_DISCARDED_LEFTOVER_FRAMES)
+        if (!IsStreaming || Mode != DeviceMode.StreamToApp)
         {
-            return false;
-        }
-
-        var timestampFrequency = TimestampFrequency != 0 ? TimestampFrequency : DEFAULT_TIMESTAMP_FREQUENCY;
-        var elapsedSeconds = unchecked(deviceTimestamp - _lastSeenDeviceTimestamp) / (double)timestampFrequency;
-        if (elapsedSeconds >= STALE_FRAME_WINDOW_SECONDS)
-        {
-            return false;
-        }
-
-        _discardedLeftoverFrameCount++;
-        AppLogger.Information(
-            $"Discarded leftover frame from previous streaming session at stream start " +
-            $"(counter advanced {elapsedSeconds:F4}s, discard {_discardedLeftoverFrameCount} of {MAX_DISCARDED_LEFTOVER_FRAMES} max)");
-        return true;
-    }
-
-    /// <summary>
-    /// Validates the leading frames of a session started without a counter reference (the first
-    /// session after connect). The device's leftover frame survives a USB disconnect/reconnect,
-    /// so the first frame cannot be trusted on arrival: it is held until the next frame arrives,
-    /// and released only when the pair's counter delta fits within one session
-    /// (&lt; <see cref="STALE_FRAME_WINDOW_SECONDS"/>). A held frame whose successor implies a
-    /// multi-second jump is a leftover from an earlier session and is discarded, the successor
-    /// becoming the new held candidate — capped at <see cref="MAX_DISCARDED_LEFTOVER_FRAMES"/>
-    /// so genuine data can never be withheld indefinitely. Costs one sample period of latency
-    /// on the first sample of the first session only.
-    /// </summary>
-    /// <param name="message">The streaming frame received while validation is pending.</param>
-    // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.ValidateFirstFramesWithoutReference
-    private void ValidateFirstFramesWithoutReference(DaqifiOutMessage message)
-    {
-        var heldFrame = _heldFirstFrame;
-        if (heldFrame == null)
-        {
-            _heldFirstFrame = message;
-            TrackLastSeenDeviceTimestamp(message.MsgTimeStamp);
             return;
         }
 
-        var timestampFrequency = TimestampFrequency != 0 ? TimestampFrequency : DEFAULT_TIMESTAMP_FREQUENCY;
-        var elapsedSeconds = unchecked(message.MsgTimeStamp - heldFrame.MsgTimeStamp) / (double)timestampFrequency;
-        if (elapsedSeconds >= STALE_FRAME_WINDOW_SECONDS
-            && _discardedLeftoverFrameCount < MAX_DISCARDED_LEFTOVER_FRAMES)
+        var isAnalog = channel.Type == ChannelType.Analog;
+        try
         {
-            _discardedLeftoverFrameCount++;
-            AppLogger.Information(
-                $"Discarded leftover frame at stream start (no counter reference; counter advanced " +
-                $"{elapsedSeconds:F4}s to the next frame, discard {_discardedLeftoverFrameCount} of " +
-                $"{MAX_DISCARDED_LEFTOVER_FRAMES} max)");
-            _heldFirstFrame = message;
-            TrackLastSeenDeviceTimestamp(message.MsgTimeStamp);
-            return;
-        }
+            var firmwareDeltaMs = TrackPublishedFrame(coreSample.Timestamp);
+            var value = coreSample.Value;
 
-        _pendingFirstFrameValidation = false;
-        _heldFirstFrame = null;
-        ProcessStreamMessage(heldFrame);
-        ProcessStreamMessage(message);
+            if (isAnalog)
+            {
+                // A reading that is not a finite number is not a measurement, and it costs far
+                // more than the one sample it arrived on. Core's per-channel statistics keep a
+                // running ValueSum, so a single NaN makes the Summary flyout's Average read NaN
+                // for the rest of the session while Min and Max keep working — one column of a
+                // row going wrong, which reads as a display bug rather than a bad reading
+                // (issue #295). The plot takes it as a series point and the exporter writes it
+                // out. Refusing it here, at the one place a streamed analog value enters the
+                // app, is what stops it being every consumer's problem to solve separately.
+                //
+                // IsFinite, not IsNaN: an infinity poisons a running sum exactly as thoroughly
+                // and is no more a voltage. That is a different question from the one
+                // SessionSampleWriter answers at the database door, where the constraint is
+                // what SQLite can store — and SQLite stores infinities fine.
+                //
+                // Core passes a non-finite value through on both payloads. The float payload is a
+                // protobuf float straight off the wire, checked by nobody; the integer payload is
+                // scaled by Core, which sanitizes its calibration coefficients, so there this is
+                // defence in depth against a Core regression.
+                if (!double.IsFinite(value))
+                {
+                    ReportNonFiniteReading((AnalogChannel)channel, value);
+                    return;
+                }
+            }
+            else if (channel.Direction != ChannelDirection.Input)
+            {
+                // Output-direction channels display the commanded state, not streamed data.
+                return;
+            }
+
+            channel.ActiveSample = new DataSample(this, channel, coreSample.Timestamp, value, firmwareDeltaMs);
+        }
+        catch (Exception ex)
+        {
+            if (isAnalog)
+            {
+                ReportStreamProcessingFailure(
+                    ref _analogProcessingFailureCount, ex, "[CHANNEL_MAPPING] Error processing analog channel data");
+            }
+            else
+            {
+                ReportStreamProcessingFailure(
+                    ref _digitalProcessingFailureCount, ex, "Error processing digital channel data");
+            }
+        }
     }
 
     /// <summary>
-    /// Routes a message through the protocol handler for processing.
-    /// Called by derived classes (e.g., WiFi devices) that receive messages directly from Core's DaqifiDevice.
+    /// Returns the device-clock time from the previous frame to the frame
+    /// <paramref name="frameTimestamp"/> belongs to, in milliseconds, or <c>null</c> for the first
+    /// frame of the session.
     /// </summary>
-    /// <param name="e">The message event args containing the protobuf message.</param>
-    // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.HandleInboundMessage
-    protected void HandleInboundMessage(MessageReceivedEventArgs e)
+    /// <remarks>
+    /// Core reconstructs each frame's timestamp as the previous frame's plus the device-counter
+    /// delta, and stamps every sample of the frame with it. So the difference between two
+    /// consecutive frames' timestamps is the firmware-measured interval, immune to transport
+    /// jitter: the same figure the app's own timestamp processor used to supply.
+    /// </remarks>
+    /// <param name="frameTimestamp">The host timestamp Core reconstructed for the sample's frame.</param>
+    private double? TrackPublishedFrame(DateTime frameTimestamp)
     {
-        OnInboundMessageReceived(this, e);
+        if (_hasPublishedFrame && frameTimestamp == _publishedFrameTimestamp)
+        {
+            return _publishedFrameDeltaMs;
+        }
+
+        _publishedFrameDeltaMs = _hasPublishedFrame
+            ? (frameTimestamp - _publishedFrameTimestamp).TotalMilliseconds
+            : null;
+        _publishedFrameTimestamp = frameTimestamp;
+        _hasPublishedFrame = true;
+        return _publishedFrameDeltaMs;
     }
     #endregion
 
@@ -1914,19 +1795,13 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         // is a text exchange and must not overlap the stream.
         HoldRateToCurrentConfigurationCap(coreStreamingDevice);
 
-        // A session must never anchor its time axis on prior-session data (issue #573).
-        // Reset the timestamp baseline here — StopStreaming's reset is skipped on unplug and
-        // error paths — and arm leftover-frame detection: the device holds the final frame of
-        // the previous session in its transmit path and emits it first when streaming resumes.
-        // With a counter reference (any frame seen on this connection), leftovers are recognized
-        // directly; without one (first session after connect — the device's leftover survives a
-        // disconnect/reconnect), the first frame is held and validated against its successor.
-        lock (_timestampProcessorSync)
-        {
-            _timestampProcessor.ResetAll();
-            _timestampFrequencyApplied = false;
-        }
-        _discardedLeftoverFrameCount = 0;
+        // A session must never anchor its time axis on prior-session data (issue #573). Core owns
+        // that now: StartStreaming below re-anchors its timestamp reconstruction and re-arms its
+        // leftover-frame gate and first-frame hold before it sends the start (issue #440). The
+        // per-frame bookkeeping kept here starts afresh too, before Core can decode a frame.
+        _hasPublishedFrame = false;
+        _publishedFrameDeltaMs = null;
+        _hasSeenStreamFrameCounter = false;
         // Interlocked, because a 64-bit assignment is not guaranteed atomic on a 32-bit
         // runtime and these are written here while a stream handler may still be incrementing.
         Interlocked.Exchange(ref _analogProcessingFailureCount, 0);
@@ -1941,10 +1816,6 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         {
             channel.ResetRejectedScaleResults();
         }
-
-        _checkForLeftoverFrames = _hasSeenDeviceTimestamp;
-        _pendingFirstFrameValidation = !_hasSeenDeviceTimestamp;
-        _heldFirstFrame = null;
 
         coreStreamingDevice.StartStreaming();
         IsStreaming = coreStreamingDevice.IsStreaming;
@@ -2012,15 +1883,14 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// ones are, and the count in the next report is what conveys the true frequency.
     /// </para>
     /// <para>
-    /// The per-session reset races, and that is accepted rather than overlooked. Messages are
-    /// dispatched fire-and-forget (see OnInboundMessageReceived), so a handler already past the
+    /// The per-session reset races, and that is accepted rather than overlooked. Samples and
+    /// frames arrive on Core's consumer thread, so a handler already past the
     /// IsStreaming guard when a restart resets the counters can increment afterwards, numbering
     /// a stale failure as occurrence 1 or pushing the session's real first failure to 2 — where
     /// it is logged locally but not sent until occurrence 10. Closing it properly needs a
     /// stream generation threaded through every dispatched message and checked before
     /// reporting: real work in the per-message path, to make a log line's ordinal exact. The
-    /// counters gate only when to log, never device behaviour or data, and the neighbouring
-    /// _discardedLeftoverFrameCount — which does gate behaviour — is reset the same way.
+    /// counters gate only when to log, never device behaviour or data.
     /// </para>
     /// </remarks>
     private void ReportStreamProcessingFailure(ref long failureCount, Exception ex, string what)
@@ -2051,7 +1921,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     private const int FullyLoggedFailureCount = 10;
 
     /// <summary>
-    /// Reports a reading refused by <see cref="ProcessStreamMessage"/> for not being a finite
+    /// Reports a reading refused by <see cref="PublishCoreSample"/> for not being a finite
     /// number, throttled the way every other per-message report in this class is.
     /// </summary>
     /// <remarks>
@@ -2173,13 +2043,6 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         coreStreamingDevice.StopStreaming();
         IsStreaming = coreStreamingDevice.IsStreaming;
         AppLogger.AddBreadcrumb("streaming", "Streaming stopped");
-
-        // Reset timestamp processor state for clean restart
-        lock (_timestampProcessorSync)
-        {
-            _timestampProcessor.ResetAll();
-            _timestampFrequencyApplied = false;
-        }
 
         foreach (var channel in DataChannels)
         {
@@ -2603,6 +2466,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
 
         DataChannels.Clear();
         DataChannels.AddRange(updatedChannels);
+        SubscribeToCoreSamples(updatedChannels);
     }
 
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.CreateDesktopChannel
@@ -2817,12 +2681,17 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// Creates and sends debug data when in debug mode
     /// </summary>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.SendDebugData
-    private void SendDebugData(DaqifiOutMessage message, List<AnalogChannel> activeChannels, DateTime timestamp)
+    private void SendDebugData(DaqifiOutMessage message, DateTime timestamp)
     {
         if (!IsDebugModeEnabled) return;
 
         try
         {
+            // The device sends analog values in channel-number order, not activation order.
+            var activeChannels = DataChannels.Where(c => c.IsActive && c.Type == ChannelType.Analog)
+                                             .Cast<AnalogChannel>()
+                                             .OrderBy(c => c.Index)
+                                             .ToList();
             var debugData = new DebugDataModel
             {
                 Timestamp = timestamp,
