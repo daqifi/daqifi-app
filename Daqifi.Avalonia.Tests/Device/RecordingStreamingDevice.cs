@@ -208,7 +208,23 @@ internal sealed class RecordingStreamingDevice : IStreamingDevice
 
     public void UpdateSdCardFiles(List<SdCardFile> files) { }
 
-    public void SetFriendlyName(string name) { }
+    /// <summary>Names this device was asked to write, in order (issue #596's tests: a refused name
+    /// must never get this far).</summary>
+    internal List<string> FriendlyNameWrites { get; } = [];
+
+    /// <summary>When set, <see cref="SetFriendlyName"/> throws this instead of recording — what the
+    /// real device does when Core's validator refuses the name.</summary>
+    internal Exception? FriendlyNameRefusal { get; set; }
+
+    public void SetFriendlyName(string name)
+    {
+        if (FriendlyNameRefusal is not null)
+        {
+            throw FriendlyNameRefusal;
+        }
+
+        FriendlyNameWrites.Add(name);
+    }
 
     public void InitializeDeviceState() { }
 

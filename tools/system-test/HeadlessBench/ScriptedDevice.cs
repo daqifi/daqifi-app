@@ -221,7 +221,24 @@ internal sealed class ScriptedDevice : IStreamingDevice
 
     public string DeviceDisplayName => string.IsNullOrEmpty(FriendlyName) ? DeviceSerialNo : FriendlyName;
 
-    public string FriendlyName => string.Empty;
+    /// <summary>Empty unless a state names the device. Settable, and notifying, because the drawer
+    /// seeds its NAME box from it and re-seeds when it changes.</summary>
+    public string FriendlyName
+    {
+        get => _friendlyName;
+        set
+        {
+            _friendlyName = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(DeviceDisplayName));
+        }
+    }
+
+    private string _friendlyName = string.Empty;
+
+    /// <summary>Every name that got past validation and would have been written to the device.
+    /// <c>name-refused</c> asserts this stays empty.</summary>
+    public List<string> FriendlyNameWrites { get; } = [];
 
     public int PwmFrequencyHz { get; set; }
 
@@ -233,7 +250,19 @@ internal sealed class ScriptedDevice : IStreamingDevice
 
     public void StopSdCardLogging() => IsLoggingToSdCard = false;
 
-    public void SetFriendlyName(string name) { }
+    /// <summary>
+    /// Refuses a name the way <c>AbstractStreamingDevice.SetFriendlyName</c> does: its first act
+    /// is Core's <c>ScpiMessageProducer.SetDeviceName</c>, which throws the
+    /// <see cref="ArgumentException"/> whose text issue #596 found in the drawer. Only the
+    /// transport is simulated; the refusal is Core's own.
+    /// </summary>
+    public void SetFriendlyName(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        _ = Daqifi.Core.Communication.Producers.ScpiMessageProducer.SetDeviceName(name);
+        FriendlyNameWrites.Add(name);
+        FriendlyName = name;
+    }
 
     public void InitializeStreaming() { }
 

@@ -94,6 +94,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// </summary>
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.PendingFriendlyName
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SetFriendlyNameCommand))]
     private string? _pendingFriendlyName;
 
     /// <summary>
@@ -1394,7 +1395,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// Mirrors <see cref="UpdateNetworkConfiguration"/>'s guard/status-feedback shape.
     /// </summary>
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.SetFriendlyName
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanSetFriendlyName))]
     public async Task SetFriendlyName()
     {
         FriendlyNameApplied = false;
@@ -1412,7 +1413,17 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             return;
         }
 
-        var name = PendingFriendlyName?.Trim() ?? string.Empty;
+        // Refuse a name the device would refuse before anything is sent, in words the app owns.
+        // SAVE NAME is already disabled for such a name (CanSetFriendlyName); this covers a caller
+        // that executes the command without asking, and keeps the SCPI write unreachable for it.
+        var name = TrimmedPendingFriendlyName;
+        var problem = FriendlyNameRule.Describe(name);
+        if (problem is not null)
+        {
+            FriendlyNameError = problem;
+            return;
+        }
+
         try
         {
             // SetFriendlyName sends SCPI commands synchronously (serial/TCP write); run it off
@@ -1437,10 +1448,21 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         }
         catch (ArgumentException ex)
         {
+            // Only reachable if Core's rule and FriendlyNameRule ever disagree. Never show
+            // ex.Message: it is developer text that ends in "(Parameter 'name')" (issue #596).
             _appLogger.Warning(ex, $"Rejected friendly name '{name}' for device {device.DeviceDisplayName}");
-            FriendlyNameError = ex.Message;
+            FriendlyNameError = FriendlyNameRule.RuleText;
         }
     }
+
+    /// <summary>The drawer's NAME box as it would be sent: trimmed, never null.</summary>
+    private string TrimmedPendingFriendlyName => PendingFriendlyName?.Trim() ?? string.Empty;
+
+    /// <summary>
+    /// SAVE NAME is enabled only for a name the device will accept, so an invalid name cannot be
+    /// submitted. The device checks stay in <see cref="SetFriendlyName"/>, which explains them.
+    /// </summary>
+    private bool CanSetFriendlyName() => FriendlyNameRule.Describe(TrimmedPendingFriendlyName) is null;
 
     /// <summary>
     /// Sets <see cref="PendingFriendlyName"/> without marking the edit buffer dirty. Used to seed
@@ -1469,6 +1491,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         if (!_isSeedingPendingFriendlyName)
         {
             _pendingFriendlyNameDirty = true;
+            // Validate as the user types (issue #596): the drawer says what is wrong while the
+            // name is still in the box, instead of after SAVE NAME. A programmatic seed is the
+            // device's own name, so it is not judged here.
+            FriendlyNameError = FriendlyNameRule.Describe(TrimmedPendingFriendlyName);
         }
     }
 
