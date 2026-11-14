@@ -569,6 +569,143 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         }
     }
 
+    #region Firmware update availability (issue #569)
+    /// <summary>The <see cref="SelectedIndex"/> of the Devices tab in <c>MainWindow.axaml</c>.</summary>
+    internal const int DevicesTabIndex = 3;
+
+    private string _latestFirmwareVersion = string.Empty;
+    private Uri? _latestFirmwareReleaseNotesUri;
+    private string? _pendingFirmwareSectionSerial;
+
+    /// <summary>
+    /// The newest published firmware version, or an empty string until a check has succeeded.
+    /// The Devices drawer shows it beside the installed version.
+    /// </summary>
+    /// <remarks>
+    /// Announced after every check, also when the value did not change: the check records each
+    /// device's comparison (<see cref="RecordFirmwareComparison"/>) before this is written, and
+    /// nothing else announces those results, so this is what tells the drawer to read them again.
+    /// </remarks>
+    // Downstream-only: no upstream counterpart.
+    public string LatestFirmwareVersion => _latestFirmwareVersion;
+
+    /// <summary>The release-notes page of <see cref="LatestFirmwareVersion"/>, or <c>null</c> when it is not known.</summary>
+    // Downstream-only: no upstream counterpart.
+    public Uri? LatestFirmwareReleaseNotesUri => _latestFirmwareReleaseNotesUri;
+
+    /// <summary>
+    /// Raised when <see cref="ShowFirmwareSection"/> asks for a device's FIRMWARE section. A
+    /// Devices pane that is on screen takes the request with <see cref="TakeFirmwareSectionRequest"/>;
+    /// a pane built after the request takes it when it is built.
+    /// </summary>
+    internal event EventHandler? FirmwareSectionRequested;
+
+    /// <summary>
+    /// Records the newest release and announces it. <paramref name="tag"/> is the GitHub release tag
+    /// (for example <c>v3.9.0</c>); the release-notes link is made from it. The coordinator calls
+    /// this at the end of every version check, through <see cref="IFirmwareUpdateHost"/>.
+    /// </summary>
+    /// <remarks>
+    /// The check can resume off the UI thread, so this can run there. It is deliberately not
+    /// marshalled: it writes two reference fields and raises <c>PropertyChanged</c>, and the only
+    /// listener is <c>DevicesPaneViewModel</c>, which only raises <c>PropertyChanged</c> in turn for
+    /// bindings. Avalonia's <c>InpcPropertyAccessorPlugin</c> subscribes through
+    /// <c>WeakEvents.ThreadSafePropertyChanged</c>, which moves the update to the UI thread before it
+    /// sets a target (issue #264) — the same reasoning as <c>DevicesPaneViewModel.OnSelectedDeviceStateChanged</c>.
+    /// The comparison results the drawer then reads are behind a lock.
+    /// </remarks>
+    public void SetLatestFirmwareRelease(string version, string tag)
+    {
+        _latestFirmwareVersion = version ?? string.Empty;
+        _latestFirmwareReleaseNotesUri = string.IsNullOrWhiteSpace(_latestFirmwareVersion) || string.IsNullOrWhiteSpace(tag)
+            ? null
+            : new Uri($"https://github.com/daqifi/daqifi-nyquist-firmware/releases/tag/{Uri.EscapeDataString(tag)}");
+        OnPropertyChanged(nameof(LatestFirmwareReleaseNotesUri));
+        OnPropertyChanged(nameof(LatestFirmwareVersion));
+    }
+
+    /// <summary>
+    /// Opens the Devices tab and asks the Devices pane to open <paramref name="device"/>'s drawer at
+    /// its FIRMWARE section. The tab change also closes the notifications flyout.
+    /// </summary>
+    /// <remarks>
+    /// The request carries the serial, not the device object: a device that reconnected since the
+    /// notification was made is a new wrapper with the same serial.
+    /// </remarks>
+    // Downstream-only: no upstream counterpart.
+    public void ShowFirmwareSection(IStreamingDevice device)
+    {
+        _pendingFirmwareSectionSerial = device.DeviceSerialNo;
+        SelectedIndex = DevicesTabIndex;
+        FirmwareSectionRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    // Keyed by serial with the same rule as DeviceSerials.SameDevice (ordinal, case-insensitive).
+    // Written by the coordinator's version check, which can run off the UI thread; read by the
+    // drawer on the UI thread.
+    private readonly Dictionary<string, FirmwareComparison> _firmwareComparisons =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed record FirmwareComparison(string DeviceVersion, string LatestVersion, bool IsOutdated);
+
+    /// <summary>
+    /// Records what the version check found for <paramref name="device"/>. The result keeps the
+    /// installed version and the newest version it was made with — the values the comparison used,
+    /// which the coordinator passes in, not the device's version read again after the await — so it stops counting when either
+    /// one changes: after a firmware write, or when a newer release appears.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    public void RecordFirmwareComparison(
+        IStreamingDevice device, string installedVersion, string latestVersion, bool isOutdated)
+    {
+        if (string.IsNullOrWhiteSpace(device.DeviceSerialNo)) return;
+        lock (_firmwareComparisons)
+        {
+            _firmwareComparisons[device.DeviceSerialNo] =
+                new FirmwareComparison(installedVersion ?? string.Empty, latestVersion ?? string.Empty, isOutdated);
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="device"/> is older than <see cref="LatestFirmwareVersion"/>: <c>true</c>
+    /// or <c>false</c> from its own completed comparison, or <c>null</c> when no comparison of its
+    /// installed version with the current newest version has completed — not run yet, or failed.
+    /// </summary>
+    /// <remarks>
+    /// Not the device's <c>IsFirmwareOutdated</c> flag: that flag starts <c>false</c>, so it cannot
+    /// tell "current" from "not compared", and a drawer reading it said "up to date" for a device
+    /// that had just connected while another device had already supplied the newest version
+    /// (review of PR #576).
+    /// </remarks>
+    internal bool? FirmwareComparisonFor(IStreamingDevice? device)
+    {
+        if (device == null || string.IsNullOrWhiteSpace(device.DeviceSerialNo) || _latestFirmwareVersion.Length == 0)
+        {
+            return null;
+        }
+
+        FirmwareComparison? result;
+        lock (_firmwareComparisons)
+        {
+            _firmwareComparisons.TryGetValue(device.DeviceSerialNo, out result);
+        }
+
+        return result != null
+               && result.DeviceVersion == (device.DeviceVersion ?? string.Empty)
+               && result.LatestVersion == _latestFirmwareVersion
+            ? result.IsOutdated
+            : null;
+    }
+
+    /// <summary>Returns the serial of the pending FIRMWARE-section request and clears it, or <c>null</c> when none is pending.</summary>
+    internal string? TakeFirmwareSectionRequest()
+    {
+        var serial = _pendingFirmwareSectionSerial;
+        _pendingFirmwareSectionSerial = null;
+        return serial;
+    }
+    #endregion
+
     /// <summary>
     /// The device the header RATE chip describes and the Devices drawer's FREQUENCY slider writes
     /// to: the one the drawer was last opened on, or — before any drawer has been opened — the

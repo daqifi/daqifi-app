@@ -54,6 +54,7 @@ public class FirmwareUpdateCoordinator
     /// </summary>
     private CancellationTokenSource? _firmwareUploadCts;
     private string _latestFirmwareVersion = string.Empty;
+    private string _latestFirmwareTag = string.Empty;
 
     /// <summary>
     /// The retry budget the app spends asking a WiFi module what firmware it carries. Shared with
@@ -195,6 +196,14 @@ public class FirmwareUpdateCoordinator
     /// </summary>
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.LatestFirmwareVersion
     public string LatestFirmwareVersion => _latestFirmwareVersion;
+
+    /// <summary>
+    /// The release tag of <see cref="LatestFirmwareVersion"/> (for example <c>v3.9.0</c>), or an
+    /// empty string if no check has succeeded yet. The drawer makes the release-notes link from it
+    /// (issue #569).
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    public string LatestFirmwareTag => _latestFirmwareTag;
     #endregion
 
     #region Upload firmware and update processes
@@ -1297,10 +1306,19 @@ public class FirmwareUpdateCoordinator
             return;
         }
 
+        // One release for the whole check (review of PR #576): the result, the notice and the
+        // announcement all use what THIS check's lookup found. The shared fields can be rewritten by
+        // another check while this one awaits a comparison. Until the lookup answers, the
+        // announcement repeats the last known release.
+        var latestVersion = _latestFirmwareVersion;
+        var latestTag = _latestFirmwareTag;
         try
         {
             var latestRelease = await _firmwareDownloadService.GetLatestReleaseAsync(includePreRelease: true);
-            _latestFirmwareVersion = latestRelease?.Version.ToString() ?? string.Empty;
+            latestVersion = latestRelease?.Version.ToString() ?? string.Empty;
+            latestTag = latestRelease?.TagName ?? string.Empty;
+            _latestFirmwareVersion = latestVersion;
+            _latestFirmwareTag = latestTag;
 
             if (latestRelease == null)
             {
@@ -1309,17 +1327,19 @@ public class FirmwareUpdateCoordinator
 
             foreach (var device in connectedDevices)
             {
-                var updateCheck = await _firmwareDownloadService.CheckForUpdateAsync(
-                    device.DeviceVersion ?? string.Empty,
-                    includePreRelease: true);
-                var isOutdated = updateCheck.UpdateAvailable;
+                // The installed version this comparison is about, read once, and compared with the
+                // release this check found — nothing is awaited between this read and the record
+                // below, so the result cannot be attached to a version it did not compare.
+                var installedVersion = device.DeviceVersion ?? string.Empty;
+                var isOutdated = IsOlderThan(installedVersion, latestRelease);
                 device.IsFirmwareOutdated = isOutdated;
+                _host.RecordFirmwareComparison(device, installedVersion, latestVersion, isOutdated);
 
                 if (!string.IsNullOrWhiteSpace(device.DeviceSerialNo))
                 {
                     if (isOutdated)
                     {
-                        AddNotification(device, latestRelease.Version.ToString());
+                        AddNotification(device, installedVersion, latestVersion, connectedDevices);
                     }
                     else
                     {
@@ -1332,12 +1352,40 @@ public class FirmwareUpdateCoordinator
         {
             _appLogger.Warning($"Failed to check firmware updates: {ex.Message}");
         }
+        finally
+        {
+            // Every check ends by announcing what it found, whoever started it: the shell on a
+            // connection change, or a firmware run after its write (PR #574). The per-device results
+            // are recorded above, so the announcement is what tells an open drawer to read them —
+            // also when the version did not change, when the lookup found no release (empty
+            // version: the drawer shows the installed version only), and when the check failed
+            // (the last known release, which every result still matches or does not).
+            _host.SetLatestFirmwareRelease(latestVersion, latestTag);
+        }
     }
 
+    /// <summary>
+    /// Whether <paramref name="installedVersion"/> is older than <paramref name="latestRelease"/>:
+    /// the rule of Core 1.9.1's <c>GitHubFirmwareDownloadService.CheckForUpdateAsync</c>, applied to
+    /// the release this check already holds.
+    /// </summary>
+    /// <remarks>
+    /// Core's method takes only the installed version and looks the newest release up again (from a
+    /// cache with a 60-minute lifetime that <c>InvalidateCache</c> clears), so it can compare with a
+    /// different release than the one this check records and shows (review of PR #576). The rule is
+    /// the same as Core's: a version that does not parse counts as older (Core:
+    /// <c>!hasCurrent || latest.Version &gt; deviceVersion</c>), and pre-releases are ordered by
+    /// <see cref="FirmwareVersion"/>'s own comparison, which is what Core's <c>&gt;</c> uses.
+    /// </remarks>
+    internal static bool IsOlderThan(string installedVersion, FirmwareReleaseInfo latestRelease) =>
+        !FirmwareVersion.TryParse(installedVersion, out var installed) || latestRelease.Version > installed;
+
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.AddNotification
-    private void AddNotification(IStreamingDevice device, string latestFirmware)
+    private void AddNotification(
+        IStreamingDevice device, string installedVersion, string latestFirmware,
+        IReadOnlyList<IStreamingDevice> connectedDevices)
     {
-        var message = $"Device With Serial {DeviceSerials.ToDisplay(device.DeviceSerialNo)} has Outdated Firmware. Please Update to Version {latestFirmware}.";
+        var message = OutdatedFirmwareMessage(device, installedVersion, latestFirmware, connectedDevices);
 
         var existingNotification = _host.Notifications.FirstOrDefault(n => n.DeviceSerialNo != null
                                                                         && n.IsFirmwareUpdate
@@ -1345,16 +1393,65 @@ public class FirmwareUpdateCoordinator
 
         if (existingNotification == null)
         {
-            _host.Notifications.Add(new Notifications
-            {
-                DeviceSerialNo = device.DeviceSerialNo,
-                Message = message,
-                IsFirmwareUpdate = true
-            });
+            _host.Notifications.Add(OutdatedFirmwareNotice(device, message));
+        }
+        else if (existingNotification.Message != message)
+        {
+            // The text names the device by its serial only while another connected device has the
+            // same name, and it states the newest version, so it goes stale when a device with the
+            // same name connects or leaves, or a newer release appears (review of PR #576). The
+            // model's text is init-only: put a new notice in the same place.
+            var index = _host.Notifications.IndexOf(existingNotification);
+            _host.Notifications[index] = OutdatedFirmwareNotice(device, message);
         }
 
         _host.RefreshNotificationCount();
     }
+
+    private Notifications OutdatedFirmwareNotice(IStreamingDevice device, string message) => new()
+    {
+        DeviceSerialNo = device.DeviceSerialNo,
+        Message = message,
+        IsFirmwareUpdate = true,
+        // Issue #569: the notification was text only, and the user had to find the update
+        // control without help. The button takes them to it.
+        ActionText = "Update",
+        Action = new CommunityToolkit.Mvvm.Input.RelayCommand(() => _host.ShowFirmwareSection(device)),
+    };
+
+    /// <summary>
+    /// The text of the outdated-firmware notification: the name the user knows the device by, the
+    /// installed version and the newest version (issue #569).
+    /// </summary>
+    /// <remarks>
+    /// The name is the friendly name when the user set one, otherwise the part number — the name
+    /// the device tile shows. The serial is added only when another connected device has the same
+    /// name, because only then does the name not identify the device.
+    /// </remarks>
+    internal static string OutdatedFirmwareMessage(
+        IStreamingDevice device, string installedVersion, string latestFirmware,
+        IReadOnlyList<IStreamingDevice> connectedDevices)
+    {
+        var name = NotificationName(device);
+        var nameIsShared = connectedDevices.Any(other =>
+            !ReferenceEquals(other, device)
+            && !DeviceSerials.SameDevice(other.DeviceSerialNo, device.DeviceSerialNo)
+            && string.Equals(NotificationName(other), name, StringComparison.OrdinalIgnoreCase));
+        if (nameIsShared && !string.IsNullOrWhiteSpace(device.DeviceSerialNo))
+        {
+            // The serial in the form the app shows everywhere else (issue #493).
+            name = $"{name} (serial {DeviceSerials.ToDisplay(device.DeviceSerialNo)})";
+        }
+
+        return string.IsNullOrWhiteSpace(installedVersion)
+            ? $"{name} has old firmware. Version {latestFirmware} is available."
+            : $"{name} has firmware {installedVersion}. Version {latestFirmware} is available.";
+    }
+
+    private static string NotificationName(IStreamingDevice device) =>
+        !string.IsNullOrWhiteSpace(device.FriendlyName) ? device.FriendlyName
+        : !string.IsNullOrWhiteSpace(device.DevicePartNumber) ? device.DevicePartNumber
+        : device.DeviceDisplayName;
 
     /// <summary>
     /// Leaves a record, outliving the run, that the WiFi half did not happen.

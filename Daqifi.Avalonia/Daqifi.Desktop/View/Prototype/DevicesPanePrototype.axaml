@@ -538,8 +538,24 @@
                                     </StackPanel>
                                     <StackPanel Grid.Column="1" Grid.Row="1">
                                         <TextBlock Text="FIRMWARE" Classes="infoLabel"/>
-                                        <TextBlock Text="{Binding SelectedTile.Version}"
-                                                   Classes="infoValue"/>
+                                        <!-- Issue #569: an indication beside the version when a newer one is available. -->
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <TextBlock Text="{Binding SelectedTile.Version}"
+                                                       Classes="infoValue"/>
+                                            <Border Background="#2A1A0A"
+                                                    BorderBrush="{DynamicResource StatusAmber}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="3"
+                                                    Padding="6,1"
+                                                    VerticalAlignment="Center"
+                                                    IsVisible="{Binding SelectedDeviceHasFirmwareUpdate}"
+                                                    ToolTip.Tip="{Binding FirmwareStatusText}">
+                                                <TextBlock Text="UPDATE AVAILABLE"
+                                                           FontSize="9"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource StatusAmber}"/>
+                                            </Border>
+                                        </StackPanel>
                                     </StackPanel>
                                     <!-- WiFi module firmware (USB Nyquist/WINC1500 devices only) — debug-gated. -->
                                     <StackPanel Grid.Column="0" Grid.Row="2" Margin="0,10,0,0">
@@ -771,23 +787,52 @@
                             </StackPanel>
 
                             <!-- FIRMWARE -->
-                            <TextBlock Text="FIRMWARE" Classes="sectionLabel drawerSectionLabel"/>
+                            <TextBlock x:Name="FirmwareSection"
+                                       Text="FIRMWARE"
+                                       Classes="sectionLabel drawerSectionLabel"/>
 
-                            <!-- USB: file picker + upload -->
+                            <!-- Issue #569: the installed version and the newest version, on USB and WiFi alike. -->
+                            <StackPanel Margin="0,0,0,14"
+                                        IsVisible="{Binding FirmwareStatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                                <Border Background="#2A1A0A"
+                                        BorderBrush="{DynamicResource StatusAmber}"
+                                        BorderThickness="1"
+                                        CornerRadius="3"
+                                        Padding="12,10"
+                                        IsVisible="{Binding SelectedDeviceHasFirmwareUpdate}">
+                                    <TextBlock Text="{Binding FirmwareStatusText}"
+                                               AutomationProperties.AutomationId="FirmwareStatusAvailable"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource StatusAmber}"
+                                               TextWrapping="Wrap"/>
+                                </Border>
+                                <StackPanel Orientation="Horizontal"
+                                            IsVisible="{Binding !SelectedDeviceHasFirmwareUpdate}">
+                                    <i:Icon Value="mdi-check-circle-outline"
+                                            FontSize="12"
+                                            Foreground="{DynamicResource StatusGreen}"
+                                            VerticalAlignment="Center"
+                                            Margin="0,0,6,0"
+                                            IsVisible="{Binding SelectedDeviceFirmwareIsCurrent}"/>
+                                    <TextBlock Text="{Binding FirmwareStatusText}"
+                                               AutomationProperties.AutomationId="FirmwareStatus"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource TextSecondary}"
+                                               TextWrapping="Wrap"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <HyperlinkButton Content="{Binding FirmwareReleaseNotesText}"
+                                                 NavigateUri="{Binding FirmwareReleaseNotesUri}"
+                                                 IsVisible="{Binding FirmwareReleaseNotesUri, Converter={x:Static ObjectConverters.IsNotNull}}"
+                                                 FontSize="11"
+                                                 Padding="0"
+                                                 Margin="0,6,0,0"
+                                                 Foreground="{DynamicResource Accent}"/>
+                            </StackPanel>
+
+                            <!-- USB: update button, then the optional file picker -->
                             <StackPanel IsVisible="{Binding SelectedDeviceSupportsFirmwareUpdate}">
-                                <TextBlock Text="FIRMWARE FILE" Classes="infoLabel" Margin="0,0,0,6"/>
-                                <Grid ColumnDefinitions="*,Auto">
-                                    <Border Grid.Column="0" Classes="drawerTextField" Margin="0,0,8,0">
-                                        <TextBox Classes="drawerTextBox"
-                                                 Text="{Binding Shell.FirmwareFilePath, Mode=TwoWay}"/>
-                                    </Border>
-                                    <Button Grid.Column="1"
-                                            Theme="{StaticResource PillButton}"
-                                            Content="BROWSE"
-                                            Command="{Binding Shell.BrowseForFirmwareCommand}"/>
-                                </Grid>
-
-                                <TextBlock Text="PROGRESS" Classes="infoLabel" Margin="0,16,0,6"/>
+                                <TextBlock Text="PROGRESS" Classes="infoLabel" Margin="0,0,0,6"/>
                                 <Grid ColumnDefinitions="*,Auto">
                                     <ProgressBar Grid.Column="0"
                                                  Height="10"
@@ -799,9 +844,25 @@
                                                  Value="{Binding Shell.UploadFirmwareProgress}"/>
                                     <Button Grid.Column="1"
                                             Theme="{StaticResource AccentPillButton}"
-                                            Content="UPDATE"
+                                            Content="{Binding UpdateFirmwareButtonText}"
+                                            AutomationProperties.AutomationId="UpdateFirmwareButton"
                                             Margin="8,0,0,0"
                                             Command="{Binding Shell.UploadFirmwareCommand}"/>
+                                </Grid>
+
+                                <!-- Issue #569: below the button and marked optional, because an empty box
+                                     is the usual path - it downloads the newest release. -->
+                                <TextBlock Text="OR USE A FIRMWARE FILE (OPTIONAL)" Classes="infoLabel" Margin="0,16,0,6"/>
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <Border Grid.Column="0" Classes="drawerTextField" Margin="0,0,8,0">
+                                        <TextBox Classes="drawerTextBox"
+                                                 PlaceholderText="Leave empty for the newest release"
+                                                 Text="{Binding Shell.FirmwareFilePath, Mode=TwoWay}"/>
+                                    </Border>
+                                    <Button Grid.Column="1"
+                                            Theme="{StaticResource PillButton}"
+                                            Content="BROWSE"
+                                            Command="{Binding Shell.BrowseForFirmwareCommand}"/>
                                 </Grid>
 
                                 <!-- WiFi module firmware (Nyquist/WINC1500 devices only) — debug-gated:

@@ -40,6 +40,7 @@ public partial class DevicesPanePrototype : UserControl
             var shell = (TopLevel.GetTopLevel(this) as Window)?.DataContext as DaqifiViewModel;
             DataContext = new DevicesPaneViewModel(shell);
         }
+        FollowFirmwareSectionRequests();
         base.OnAttachedToVisualTree(e);
     }
 
@@ -62,10 +63,48 @@ public partial class DevicesPanePrototype : UserControl
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnDetachedFromVisualTree(e);
+        if (DataContext is DevicesPaneViewModel pane)
+        {
+            pane.FirmwareSectionShown -= OnFirmwareSectionShown;
+        }
         if (DataContext is IDisposable disposable)
         {
             disposable.Dispose();
             DataContext = null;
         }
+    }
+
+    /// <summary>
+    /// Subscribes to the view model's FIRMWARE-section requests (issue #569), and serves the one it
+    /// took while it was being built, before this subscription existed.
+    /// </summary>
+    private void FollowFirmwareSectionRequests()
+    {
+        if (DataContext is not DevicesPaneViewModel pane) return;
+        pane.FirmwareSectionShown += OnFirmwareSectionShown;
+        if (pane.TakeFirmwareScrollRequest()) ScrollToFirmwareSection();
+    }
+
+    private void OnFirmwareSectionShown(object? sender, EventArgs e)
+    {
+        if ((sender as DevicesPaneViewModel)?.TakeFirmwareScrollRequest() == true) ScrollToFirmwareSection();
+    }
+
+    /// <summary>
+    /// Scrolls the drawer so the FIRMWARE section starts at the top of its view (issue #569). The
+    /// drawer has only now become visible, so this waits for the layout pass that measures it.
+    /// </summary>
+    private void ScrollToFirmwareSection()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            var section = this.FindControl<TextBlock>("FirmwareSection");
+            if (section == null) return;
+            // A rectangle one viewport tall from the label down, so the label lands at the top of
+            // the view and not at its bottom edge with the controls under it out of sight.
+            var viewer = global::Avalonia.VisualTree.VisualExtensions.FindAncestorOfType<ScrollViewer>(section);
+            var viewportHeight = viewer?.Viewport.Height ?? 0;
+            section.BringIntoView(new Rect(0, 0, section.Bounds.Width, Math.Max(section.Bounds.Height, viewportHeight)));
+        }, DispatcherPriority.Loaded);
     }
 }
