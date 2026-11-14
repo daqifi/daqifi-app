@@ -29,6 +29,19 @@ public partial class PlotLogger : ObservableObject, ILogger
     private readonly Stopwatch _stopwatch = new();
     private readonly DispatcherTimer _renderTimer;
     private long _lastUpdateMilliSeconds;
+
+    /// <summary>
+    /// What the last redraw cost the UI thread, in milliseconds, as <see cref="RedrawCostMs"/>
+    /// estimates it. Read by <see cref="IsRedrawDue"/>.
+    /// </summary>
+    private double _lastRedrawCostMs;
+
+    /// <summary>The render tick's own work on its last redraw, in milliseconds.</summary>
+    private double _lastTickWorkMs;
+
+    /// <summary>When the render timer last ticked (stopwatch ms), and whether that tick redrew.</summary>
+    private long _lastTickMs = -1;
+    private bool _lastTickRedrew;
     private long _lastStatsMilliSeconds;
 
     /// <summary>
@@ -118,8 +131,46 @@ public partial class PlotLogger : ObservableObject, ILogger
     /// </summary>
     internal const int MAX_PENDING_SAMPLES = 1 << 18;
 
-    /// <summary>Whether enough time has passed since the last redraw for another one.</summary>
-    internal static bool IsRedrawDue(long nowMs, long lastRedrawMs) => nowMs - lastRedrawMs >= REDRAW_INTERVAL_MS;
+    /// <summary>The render timer's interval, in milliseconds: about 60 ticks a second.</summary>
+    internal const long RENDER_TIMER_INTERVAL_MS = 16;
+
+    /// <summary>
+    /// How many times its own cost a redraw waits before the next one (issue #595). A redraw that
+    /// costs the UI thread C milliseconds is followed by at least 3C of other work, so the live plot
+    /// takes at most about a third of the UI thread and input, layout and the other panes stay
+    /// responsive. Below about 13 ms a redraw, <see cref="REDRAW_INTERVAL_MS"/> still sets the pace.
+    /// </summary>
+    internal const long REDRAW_COST_FACTOR = 3;
+
+    /// <summary>
+    /// The longest the redraw budget may space two redraws, in milliseconds: the plot keeps moving at
+    /// four frames a second or more, even when one redraw is very expensive.
+    /// </summary>
+    internal const long MAX_REDRAW_INTERVAL_MS = 250;
+
+    /// <summary>
+    /// Whether enough time has passed since the last redraw for another one. The interval is
+    /// <see cref="REDRAW_INTERVAL_MS"/>, stretched to <see cref="REDRAW_COST_FACTOR"/> times what the
+    /// last redraw cost the UI thread, and never past <see cref="MAX_REDRAW_INTERVAL_MS"/>.
+    /// </summary>
+    internal static bool IsRedrawDue(long nowMs, long lastRedrawMs, double lastRedrawCostMs = 0) =>
+        nowMs - lastRedrawMs >= RedrawIntervalMs(lastRedrawCostMs);
+
+    /// <summary>The interval <see cref="IsRedrawDue"/> applies for a given last redraw cost.</summary>
+    internal static long RedrawIntervalMs(double lastRedrawCostMs) =>
+        Math.Clamp((long)Math.Ceiling(lastRedrawCostMs * REDRAW_COST_FACTOR), REDRAW_INTERVAL_MS, MAX_REDRAW_INTERVAL_MS);
+
+    /// <summary>
+    /// Estimates what a redraw cost the UI thread from how late the next render-timer tick came.
+    /// OxyPlot does most of a redraw after the tick returns: the view lays out, clears its canvas and
+    /// builds a shape for every stretch of every line. None of that is visible to this class, but it
+    /// all delays the next tick, which is due <see cref="RENDER_TIMER_INTERVAL_MS"/> later. Any other
+    /// UI-thread work counts too, which is the point: a busy UI thread gets fewer redraws.
+    /// </summary>
+    /// <param name="tickGapMs">Time from the redrawing tick to the next tick.</param>
+    /// <param name="tickWorkMs">The redrawing tick's own work: the drain and the model update.</param>
+    internal static double RedrawCostMs(long tickGapMs, double tickWorkMs) =>
+        Math.Max(0, tickGapMs - RENDER_TIMER_INTERVAL_MS) + tickWorkMs;
 
     /// <summary>Whether the plot-stats summary is due a recompute. Strictly greater, as upstream's tick was.</summary>
     internal static bool IsStatsDue(long nowMs, long lastStatsMs) => nowMs - lastStatsMs > STATS_INTERVAL_MS;
@@ -330,7 +381,7 @@ public partial class PlotLogger : ObservableObject, ILogger
         // invalidates, so nothing renders, so render-priority jobs stay parked).
         _renderTimer = new DispatcherTimer(DispatcherPriority.Normal)
         {
-            Interval = TimeSpan.FromMilliseconds(16)
+            Interval = TimeSpan.FromMilliseconds(RENDER_TIMER_INTERVAL_MS)
         };
         _renderTimer.Tick += CompositionTargetRendering;
         _renderTimer.Start();
@@ -581,10 +632,19 @@ public partial class PlotLogger : ObservableObject, ILogger
         }
 
         var now = _stopwatch.ElapsedMilliseconds;
-        if (!IsRedrawDue(now, _lastUpdateMilliSeconds))
+        if (_lastTickRedrew && _lastTickMs >= 0)
+        {
+            _lastRedrawCostMs = RedrawCostMs(now - _lastTickMs, _lastTickWorkMs);
+        }
+
+        _lastTickMs = now;
+        _lastTickRedrew = false;
+        if (!IsRedrawDue(now, _lastUpdateMilliSeconds, _lastRedrawCostMs))
         {
             return;
         }
+
+        var tickStart = Stopwatch.GetTimestamp();
 
         bool addedSeries;
         lock (PlotModel.SyncRoot)
@@ -617,6 +677,7 @@ public partial class PlotLogger : ObservableObject, ILogger
             {
                 _hasNewData = false;
                 PlotModel.InvalidatePlot(true);
+                _lastTickRedrew = true;
             }
 
             if (IsStatsDue(now, _lastStatsMilliSeconds))
@@ -636,6 +697,8 @@ public partial class PlotLogger : ObservableObject, ILogger
 
             _lastUpdateMilliSeconds = now;
         }
+
+        _lastTickWorkMs = Stopwatch.GetElapsedTime(tickStart).TotalMilliseconds;
 
         // Raised outside the lock, like every other change notification here.
         if (addedSeries)

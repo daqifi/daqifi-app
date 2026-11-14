@@ -33,15 +33,6 @@ internal static partial class HeadlessBench
     /// <summary>Set by <c>--all-ai</c>: turn on every analog input, not only the first one.</summary>
     private static bool _allAi;
 
-    /// <summary>
-    /// Makes <see cref="Pump"/> fire due <c>DispatcherTimer</c>s, as the app's real dispatcher loop
-    /// does. Headless, nothing fires them: <c>Dispatcher.RunJobs</c> only runs queued jobs, and a
-    /// timer is promoted to a job only after some other job runs. On an idle UI the live plot's 16 ms
-    /// render timer then almost never ticks, so the plot never redraws during a stream and a load
-    /// test measures nothing. Posting one empty job per pump lets the dispatcher promote the due
-    /// timers. Only the load rows set it, so every other row keeps the pump it was written against.
-    /// </summary>
-    private static bool _pumpFiresTimers;
 
     /// <summary>Channels and rate <see cref="StatePlotIngest"/> feeds: the bench Nq1's 16 analog
     /// inputs at the 3518 Hz cap it publishes for that channel set — the load #595 was found at.</summary>
@@ -207,7 +198,6 @@ internal static partial class HeadlessBench
     /// </summary>
     private static void RunPlotIngestRow(Window main, DaqifiViewModel shell)
     {
-        _pumpFiresTimers = true;
         shell.SelectedIndex = LiveGraphTabIndex;
         PumpFor(TimeSpan.FromMilliseconds(500));
 

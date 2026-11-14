@@ -31,6 +31,39 @@ public class LivePlotCadenceTests
         Assert.True(PlotLogger.REDRAW_INTERVAL_MS <= 100,
             $"REDRAW_INTERVAL_MS is {PlotLogger.REDRAW_INTERVAL_MS} ms; the live plot should redraw at least 10 times a second.");
 
+    /// <summary>
+    /// The redraw budget (issue #595): a redraw that costs the UI thread C ms is followed by at least
+    /// 3C ms of other work, between the 40 ms floor and the 250 ms ceiling. With 16 channels a redraw
+    /// costs tens of milliseconds, and a fixed 20 fps then kept the UI thread busy most of the time.
+    /// </summary>
+    [Theory]
+    [InlineData(0, 40)]       // nothing measured yet: the normal cadence
+    [InlineData(10, 40)]      // a cheap redraw: still the normal cadence
+    [InlineData(20, 60)]
+    [InlineData(50, 150)]
+    [InlineData(83.4, 250)]   // just past the ceiling: held to it
+    [InlineData(5000, 250)]   // a pathological redraw still leaves the plot moving at 4 fps
+    public void An_expensive_redraw_spaces_the_next_one(double costMs, long expectedIntervalMs) =>
+        Assert.Equal(expectedIntervalMs, PlotLogger.RedrawIntervalMs(costMs));
+
+    /// <summary>
+    /// The cost is read from how late the next 16 ms timer tick came, plus the tick's own work:
+    /// OxyPlot lays out and builds its canvas shapes after the tick returns, out of this class's sight.
+    /// </summary>
+    [Theory]
+    [InlineData(16, 0.5, 0.5)]    // the next tick came on time: only the tick's own work
+    [InlineData(10, 0.5, 0.5)]    // early (timer jitter) never reads as negative
+    [InlineData(66, 1.0, 51.0)]   // the redraw held the UI thread 50 ms past the next tick
+    public void The_redraw_cost_is_how_late_the_next_tick_came(long gapMs, double tickWorkMs, double expected) =>
+        Assert.Equal(expected, PlotLogger.RedrawCostMs(gapMs, tickWorkMs), 3);
+
+    [Fact]
+    public void A_redraw_that_cost_50_ms_is_not_due_again_for_150_ms()
+    {
+        Assert.False(PlotLogger.IsRedrawDue(149, 0, 50));
+        Assert.True(PlotLogger.IsRedrawDue(150, 0, 50));
+    }
+
     [Theory]
     [InlineData(1000, 0, false)]
     [InlineData(1001, 0, true)]

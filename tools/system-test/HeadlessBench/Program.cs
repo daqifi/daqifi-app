@@ -2310,7 +2310,12 @@ internal static partial class HeadlessBench
         for (var i = 0; i < 4; i++)
         {
             var sw = Stopwatch.StartNew();
-            if (_pumpFiresTimers) { Dispatcher.UIThread.Post(static () => { }, DispatcherPriority.Background); }
+            // Fire the DispatcherTimers that are due, as the app's real dispatcher loop does. RunJobs
+            // only runs queued jobs, and a timer becomes a job only after some other job has run, so
+            // on an idle UI the live plot's 16 ms render timer almost never ticked here: the plot did
+            // not redraw during a stream, and since #595 it would not even take in its samples. One
+            // empty job per pump lets the dispatcher promote whatever timers are due.
+            Dispatcher.UIThread.Post(static () => { }, DispatcherPriority.Background);
             Dispatcher.UIThread.RunJobs();
             PumpLatenciesMs.Add(sw.Elapsed.TotalMilliseconds);
             AvaloniaHeadlessPlatform.ForceRenderTimerTick();
@@ -2387,7 +2392,7 @@ internal static partial class HeadlessBench
                     case "--rate": _rate = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--seconds": _seconds = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--scripted": _scripted = Next(); break;
-                    case "--all-ai": _allAi = _pumpFiresTimers = true; break;
+                    case "--all-ai": _allAi = true; break;
                     default: Console.WriteLine($"unknown argument '{args[i]}'"); return false;
                 }
             }
