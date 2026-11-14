@@ -1002,11 +1002,19 @@ public class FirmwareUpdateCoordinator
             return;
         }
 
+        // One release for the whole check (review of PR #576): the result, the notice and the
+        // announcement all use what THIS check's lookup found. The shared fields can be rewritten by
+        // another check while this one awaits a comparison. Until the lookup answers, the
+        // announcement repeats the last known release.
+        var latestVersion = _latestFirmwareVersion;
+        var latestTag = _latestFirmwareTag;
         try
         {
             var latestRelease = await _firmwareDownloadService.GetLatestReleaseAsync(includePreRelease: true);
-            _latestFirmwareVersion = latestRelease?.Version.ToString() ?? string.Empty;
-            _latestFirmwareTag = latestRelease?.TagName ?? string.Empty;
+            latestVersion = latestRelease?.Version.ToString() ?? string.Empty;
+            latestTag = latestRelease?.TagName ?? string.Empty;
+            _latestFirmwareVersion = latestVersion;
+            _latestFirmwareTag = latestTag;
 
             if (latestRelease == null)
             {
@@ -1015,18 +1023,22 @@ public class FirmwareUpdateCoordinator
 
             foreach (var device in connectedDevices)
             {
+                // The installed version this comparison is about, read once: the device can report
+                // a new version while the comparison is pending, and the result must not be
+                // attached to a version it did not compare.
+                var installedVersion = device.DeviceVersion ?? string.Empty;
                 var updateCheck = await _firmwareDownloadService.CheckForUpdateAsync(
-                    device.DeviceVersion ?? string.Empty,
+                    installedVersion,
                     includePreRelease: true);
                 var isOutdated = updateCheck.UpdateAvailable;
                 device.IsFirmwareOutdated = isOutdated;
-                _host.RecordFirmwareComparison(device, _latestFirmwareVersion, isOutdated);
+                _host.RecordFirmwareComparison(device, installedVersion, latestVersion, isOutdated);
 
                 if (!string.IsNullOrWhiteSpace(device.DeviceSerialNo))
                 {
                     if (isOutdated)
                     {
-                        AddNotification(device, latestRelease.Version.ToString(), connectedDevices);
+                        AddNotification(device, installedVersion, latestVersion, connectedDevices);
                     }
                     else
                     {
@@ -1047,15 +1059,16 @@ public class FirmwareUpdateCoordinator
             // also when the version did not change, when the lookup found no release (empty
             // version: the drawer shows the installed version only), and when the check failed
             // (the last known release, which every result still matches or does not).
-            _host.SetLatestFirmwareRelease(_latestFirmwareVersion, _latestFirmwareTag);
+            _host.SetLatestFirmwareRelease(latestVersion, latestTag);
         }
     }
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.AddNotification
     private void AddNotification(
-        IStreamingDevice device, string latestFirmware, IReadOnlyList<IStreamingDevice> connectedDevices)
+        IStreamingDevice device, string installedVersion, string latestFirmware,
+        IReadOnlyList<IStreamingDevice> connectedDevices)
     {
-        var message = OutdatedFirmwareMessage(device, latestFirmware, connectedDevices);
+        var message = OutdatedFirmwareMessage(device, installedVersion, latestFirmware, connectedDevices);
 
         var existingNotification = _host.Notifications.FirstOrDefault(n => n.DeviceSerialNo != null
                                                                         && n.IsFirmwareUpdate
@@ -1099,7 +1112,8 @@ public class FirmwareUpdateCoordinator
     /// name, because only then does the name not identify the device.
     /// </remarks>
     internal static string OutdatedFirmwareMessage(
-        IStreamingDevice device, string latestFirmware, IReadOnlyList<IStreamingDevice> connectedDevices)
+        IStreamingDevice device, string installedVersion, string latestFirmware,
+        IReadOnlyList<IStreamingDevice> connectedDevices)
     {
         var name = NotificationName(device);
         var nameIsShared = connectedDevices.Any(other =>
@@ -1112,9 +1126,9 @@ public class FirmwareUpdateCoordinator
             name = $"{name} (serial {DeviceSerials.ToDisplay(device.DeviceSerialNo)})";
         }
 
-        return string.IsNullOrWhiteSpace(device.DeviceVersion)
+        return string.IsNullOrWhiteSpace(installedVersion)
             ? $"{name} has old firmware. Version {latestFirmware} is available."
-            : $"{name} has firmware {device.DeviceVersion}. Version {latestFirmware} is available.";
+            : $"{name} has firmware {installedVersion}. Version {latestFirmware} is available.";
     }
 
     private static string NotificationName(IStreamingDevice device) =>

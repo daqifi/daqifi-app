@@ -108,7 +108,7 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
         var justConnected = Nq1("9090539562006014105", installed);
         pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(justConnected));
 
-        shell.RecordFirmwareComparison(justConnected, "3.9.0", outdated);
+        shell.RecordFirmwareComparison(justConnected, installed, "3.9.0", outdated);
         shell.SetLatestFirmwareRelease("3.9.0", "v3.9.0");
 
         Assert.Equal(expected, pane.FirmwareStatusText);
@@ -124,7 +124,7 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
         var shell = new DaqifiViewModel(new NullDialogService());
         var pane = Track(new DevicesPaneViewModel(shell));
         shell.SetLatestFirmwareRelease("3.9.0", "v3.9.0");
-        shell.RecordFirmwareComparison(Nq1("9090539562006014104", "3.8.0"), "3.9.0", isOutdated: true);
+        shell.RecordFirmwareComparison(Nq1("9090539562006014104", "3.8.0"), "3.8.0", "3.9.0", isOutdated: true);
 
         var afterTheWrite = Nq1("9090539562006014104", "3.9.0");
         pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(afterTheWrite));
@@ -256,7 +256,7 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
         var pane = Track(new DevicesPaneViewModel(shell));
         var device = Nq1("9090539562006014104", "3.8.0");
         shell.SetLatestFirmwareRelease("3.9.0", "v3.9.0");
-        shell.RecordFirmwareComparison(device, "3.9.0", isOutdated: true);
+        shell.RecordFirmwareComparison(device, "3.8.0", "3.9.0", isOutdated: true);
         pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(device));
         Assert.True(pane.SelectedDeviceHasFirmwareUpdate);
 
@@ -309,6 +309,39 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
         Assert.False(pane.SelectedDeviceFirmwareIsCurrent);
         Assert.Equal("Installed 3.9.0.", pane.FirmwareStatusText);
         Assert.Null(pane.FirmwareReleaseNotesUri);
+    }
+
+    /// <summary>
+    /// Review of PR #576 (third finding): the device reports a new installed version while its
+    /// comparison is pending. The old result (made for 3.8.0) must not be attached to 3.9.0; the
+    /// drawer shows the installed version only, not "Version 3.9.0 is available" for a device on 3.9.0.
+    /// </summary>
+    [Fact]
+    public async Task A_version_reported_during_the_check_does_not_take_the_old_result()
+    {
+        var shell = new DaqifiViewModel(new NullDialogService());
+        var pane = Track(new DevicesPaneViewModel(shell));
+        var device = Nq1("9090539562006014104", "3.8.0");
+        pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(device));
+        var downloads = new OutdatedFirmwareNotificationTests.LatestIs390DownloadService
+        {
+            WhileComparing = () => { device.DeviceVersion = "3.9.0"; return Task.CompletedTask; }
+        };
+        var coordinator = new FirmwareUpdateCoordinator(
+            new ShellWithDevices(shell, device),
+            new OutdatedFirmwareNotificationTests.NoFlashUpdateService(),
+            downloads,
+            NullLogger<FirmwareUpdateService>.Instance,
+            new RecordingAppLogger(),
+            Path.Combine(Path.GetTempPath(), "daqifi-569-direct-check", Guid.NewGuid().ToString("N")),
+            wifiUpdateModeSettleDelay: TimeSpan.Zero,
+            canFlashWifiModule: false);
+
+        await coordinator.RefreshFirmwareUpdatesAsync();
+        shell.SetLatestFirmwareRelease("3.9.0", "v3.9.0");
+
+        Assert.False(pane.SelectedDeviceHasFirmwareUpdate);
+        Assert.Equal("Installed 3.9.0.", pane.FirmwareStatusText);
     }
 
     /// <summary>The shell itself is a host whose announcement reaches the drawer, not the interface's default no-op.</summary>
@@ -440,8 +473,8 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
         public void ShowFirmwareError(string message) { }
         public void ShowFirmwareUpdateSucceeded() { }
         public Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-        public void RecordFirmwareComparison(IStreamingDevice d, string latestVersion, bool isOutdated) =>
-            shell.RecordFirmwareComparison(d, latestVersion, isOutdated);
+        public void RecordFirmwareComparison(IStreamingDevice d, string installedVersion, string latestVersion, bool isOutdated) =>
+            shell.RecordFirmwareComparison(d, installedVersion, latestVersion, isOutdated);
         public void SetLatestFirmwareRelease(string version, string tag) => shell.SetLatestFirmwareRelease(version, tag);
     }
 
@@ -453,7 +486,7 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
         var device = Nq1("9090539562006014104", installed);
         // What the version check records for each device, against 3.9.0, before it announces the
         // newest release.
-        shell.RecordFirmwareComparison(device, "3.9.0", outdated);
+        shell.RecordFirmwareComparison(device, installed, "3.9.0", outdated);
         pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(device));
         return (shell, pane, device);
     }

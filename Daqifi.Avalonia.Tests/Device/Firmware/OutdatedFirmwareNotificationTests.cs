@@ -231,7 +231,7 @@ public class OutdatedFirmwareNotificationTests : IDisposable
         await CreateCoordinator().RefreshFirmwareUpdatesAsync();
 
         Assert.Equal(
-            [(outdated, "3.9.0", true), (current, "3.9.0", false)],
+            [(outdated, "3.8.0", "3.9.0", true), (current, "3.9.0", "3.9.0", false)],
             _host.Comparisons);
     }
 
@@ -250,6 +250,60 @@ public class OutdatedFirmwareNotificationTests : IDisposable
 
         Assert.Equal("3.9.0", coordinator.LatestFirmwareVersion);
         Assert.Empty(_host.Comparisons);
+    }
+    /// <summary>
+    /// Review of PR #576 (third finding): the device reports a new installed version while its
+    /// comparison is pending. The notice must state the version that was compared.
+    /// </summary>
+    [Fact]
+    public async Task The_notice_states_the_version_that_was_compared_not_one_reported_during_the_check()
+    {
+        var device = Nq1("9090539562006014104", "3.8.0");
+        _host.SetConnectedDevices(device);
+        _downloads.WhileComparing = () => { device.DeviceVersion = "3.9.0"; return Task.CompletedTask; };
+
+        await CreateCoordinator().RefreshFirmwareUpdatesAsync();
+
+        Assert.Equal("Nq1 has firmware 3.8.0. Version 3.9.0 is available.", Assert.Single(_host.Notifications).Message);
+    }
+
+    /// <summary>
+    /// A second check finds a newer release while the first one is still comparing. The first check's
+    /// result must carry the release its own lookup found, not the one the second check left behind.
+    /// </summary>
+    [Fact]
+    public async Task A_result_carries_the_release_that_its_own_lookup_found()
+    {
+        var device = Nq1("9090539562006014104", "3.8.0");
+        _host.SetConnectedDevices(device);
+        var coordinator = CreateCoordinator();
+        var once = true;
+        _downloads.WhileComparing = async () =>
+        {
+            if (!once) return;
+            once = false;
+            _downloads.Latest = Release(3, 10, 0);
+            await coordinator.RefreshFirmwareUpdatesAsync();
+        };
+
+        await coordinator.RefreshFirmwareUpdatesAsync();
+
+        // The second (inner) check finishes first; the first check's result comes after it.
+        Assert.Equal("3.10.0", _host.Comparisons[0].Latest);
+        Assert.Equal("3.9.0", _host.Comparisons[1].Latest);
+    }
+
+    /// <summary>The recorded installed version is the one compared, even when the device reports another during the check.</summary>
+    [Fact]
+    public async Task The_result_records_the_installed_version_that_was_compared()
+    {
+        var device = Nq1("9090539562006014104", "3.8.0");
+        _host.SetConnectedDevices(device);
+        _downloads.WhileComparing = () => { device.DeviceVersion = "3.9.0"; return Task.CompletedTask; };
+
+        await CreateCoordinator().RefreshFirmwareUpdatesAsync();
+
+        Assert.Equal((device, "3.8.0", "3.9.0", true), Assert.Single(_host.Comparisons));
     }
     #endregion
 
@@ -278,7 +332,7 @@ public class OutdatedFirmwareNotificationTests : IDisposable
 
         public List<DesktopStreamingDevice> FirmwareSectionRequests { get; } = [];
 
-        public List<(DesktopStreamingDevice Device, string Latest, bool IsOutdated)> Comparisons { get; } = [];
+        public List<(DesktopStreamingDevice Device, string Installed, string Latest, bool IsOutdated)> Comparisons { get; } = [];
 
         public void SetConnectedDevices(params DesktopStreamingDevice[] devices) => _connected = [.. devices];
 
@@ -299,8 +353,9 @@ public class OutdatedFirmwareNotificationTests : IDisposable
         public void ShowFirmwareUpdateSucceeded() { }
         public Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
         public void ShowFirmwareSection(DesktopStreamingDevice device) => FirmwareSectionRequests.Add(device);
-        public void RecordFirmwareComparison(DesktopStreamingDevice device, string latestVersion, bool isOutdated) =>
-            Comparisons.Add((device, latestVersion, isOutdated));
+        public void RecordFirmwareComparison(
+            DesktopStreamingDevice device, string installedVersion, string latestVersion, bool isOutdated) =>
+            Comparisons.Add((device, installedVersion, latestVersion, isOutdated));
     }
 
     /// <summary>
@@ -322,15 +377,25 @@ public class OutdatedFirmwareNotificationTests : IDisposable
             bool includePreRelease = false, CancellationToken cancellationToken = default) =>
             Task.FromResult<FirmwareReleaseInfo?>(NoRelease ? null : Latest);
 
-        public Task<FirmwareUpdateCheckResult> CheckForUpdateAsync(
-            string deviceVersionString, bool includePreRelease = false, CancellationToken cancellationToken = default) =>
-            ThrowOnCheck
-                ? throw new HttpRequestException("firmware release lookup failed")
-                : Task.FromResult(new FirmwareUpdateCheckResult
-                {
-                    UpdateAvailable = deviceVersionString != Latest.Version.ToString(),
-                    LatestRelease = Latest
-                });
+        /// <summary>
+        /// Runs while a comparison is pending — after its answer is decided, before it is returned —
+        /// so a test can change the world under a check that is still running.
+        /// </summary>
+        public Func<Task>? WhileComparing { get; set; }
+
+        public async Task<FirmwareUpdateCheckResult> CheckForUpdateAsync(
+            string deviceVersionString, bool includePreRelease = false, CancellationToken cancellationToken = default)
+        {
+            if (ThrowOnCheck) throw new HttpRequestException("firmware release lookup failed");
+            var latest = Latest;
+            var result = new FirmwareUpdateCheckResult
+            {
+                UpdateAvailable = deviceVersionString != latest.Version.ToString(),
+                LatestRelease = latest
+            };
+            if (WhileComparing != null) await WhileComparing();
+            return result;
+        }
 
         public Task<(string ExtractedPath, string Version)?> DownloadWifiFirmwareAsync(
             string destinationDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default) =>

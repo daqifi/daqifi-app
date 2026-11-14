@@ -638,17 +638,19 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
     /// <summary>
     /// Records what the version check found for <paramref name="device"/>. The result keeps the
-    /// installed version and the newest version it was made with, so it stops counting when either
+    /// installed version and the newest version it was made with — the values the comparison used,
+    /// which the coordinator passes in, not the device's version read again after the await — so it stops counting when either
     /// one changes: after a firmware write, or when a newer release appears.
     /// </summary>
     // Downstream-only: no upstream counterpart.
-    public void RecordFirmwareComparison(IStreamingDevice device, string latestVersion, bool isOutdated)
+    public void RecordFirmwareComparison(
+        IStreamingDevice device, string installedVersion, string latestVersion, bool isOutdated)
     {
         if (string.IsNullOrWhiteSpace(device.DeviceSerialNo)) return;
         lock (_firmwareComparisons)
         {
             _firmwareComparisons[device.DeviceSerialNo] =
-                new FirmwareComparison(device.DeviceVersion ?? string.Empty, latestVersion ?? string.Empty, isOutdated);
+                new FirmwareComparison(installedVersion ?? string.Empty, latestVersion ?? string.Empty, isOutdated);
         }
     }
 
