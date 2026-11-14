@@ -400,7 +400,10 @@ public class OutdatedFirmwareNotificationTests : IDisposable
         public DesktopStreamingDevice? DeviceBeingUpdated { set { } }
         public void RefreshNotificationCount() { }
         public void ShowFirmwareError(string message) { }
-        public void ShowFirmwareUpdateSucceeded() { }
+        public void ShowFirmwareUpdateSucceeded(string message) { }
+        // No test here reaches a firmware write, so the prompt is never asked; refuse if it is.
+        public Task<bool> ConfirmFirmwareUpdateAsync(string title, string message, CancellationToken cancellationToken) =>
+            Task.FromResult(false);
         public Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
         public void ShowFirmwareSection(DesktopStreamingDevice device) => FirmwareSectionRequests.Add(device);
         public void RecordFirmwareComparison(

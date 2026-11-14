@@ -502,7 +502,10 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
         public IStreamingDevice? DeviceBeingUpdated { set { } }
         public void RefreshNotificationCount() => _shell.RefreshNotificationCount();
         public void ShowFirmwareError(string message) { }
-        public void ShowFirmwareUpdateSucceeded() { }
+        public void ShowFirmwareUpdateSucceeded(string message) { }
+        // The version check never asks for a write; refuse if anything does.
+        public Task<bool> ConfirmFirmwareUpdateAsync(string title, string message, CancellationToken cancellationToken) =>
+            Task.FromResult(false);
         public Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
         public void RecordFirmwareComparison(IStreamingDevice d, string installedVersion, string latestVersion, bool isOutdated) =>
             shell.RecordFirmwareComparison(d, installedVersion, latestVersion, isOutdated);
