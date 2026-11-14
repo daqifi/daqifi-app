@@ -102,6 +102,33 @@ public sealed class SessionSampleWriterDurabilityTests : IDisposable
     }
 
     /// <summary>
+    /// An app update restarts the app, so it waits while <see cref="SessionSampleWriter.HasUnsavedSamples"/>
+    /// is true (#503). It must stay true while a failed batch is held for retry, which lives outside
+    /// the buffer, and clear once that batch lands.
+    /// </summary>
+    [Fact]
+    public void Unsaved_samples_are_reported_until_they_land()
+    {
+        using var writer = NewWriter();
+        Assert.False(writer.HasUnsavedSamples);
+
+        _contexts.FailCreates = true;
+        writer.Add(Sample(1.5));
+        Assert.True(writer.HasUnsavedSamples);
+
+        // Long enough for the consumer to take the sample and fail its commit at least once.
+        Thread.Sleep(600);
+        Assert.True(writer.HasUnsavedSamples);
+
+        _contexts.FailCreates = false;
+        writer.WaitForIdle(TimeSpan.FromSeconds(10));
+
+        Assert.False(writer.HasUnsavedSamples);
+        using var context = Verification();
+        Assert.Single(context.Samples);
+    }
+
+    /// <summary>
     /// The durability contract in one test: a batch whose commit fails is not lost, and when the
     /// database comes back it lands EXACTLY once.
     ///

@@ -501,6 +501,12 @@ public sealed class SessionSampleWriter : IDisposable
     private bool IsDrained() => _buffer.Count == 0 && !_consumerBusy && _pendingRetryCount == 0;
 
     /// <summary>
+    /// True while samples are buffered, being written, or held for a retry after a failed commit.
+    /// An app update waits on this: restarting now would lose them (#503).
+    /// </summary>
+    public bool HasUnsavedSamples => !IsDrained();
+
+    /// <summary>
     /// Suspends the background consumer thread so no new database connections are opened.
     /// Must be followed by <see cref="ResumeConsumer"/>.
     /// </summary>

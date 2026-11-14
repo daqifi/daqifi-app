@@ -663,6 +663,9 @@ public partial class DatabaseLogger : ObservableObject, ILogger, IDisposable
     // @port: Daqifi.Desktop.Logger.DatabaseLogger.WaitForIdle
     public void WaitForIdle(TimeSpan timeout) => _sampleWriter.WaitForIdle(timeout);
 
+    /// <inheritdoc cref="SessionSampleWriter.HasUnsavedSamples"/>
+    public bool HasUnsavedSamples => _sampleWriter.HasUnsavedSamples;
+
     /// <summary>
     /// Suspends the background consumer thread so no new database connections are opened.
     /// Must be followed by <see cref="ResumeConsumer"/>.

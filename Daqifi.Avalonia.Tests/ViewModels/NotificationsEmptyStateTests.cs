@@ -21,9 +21,8 @@ namespace Daqifi.Avalonia.Tests.ViewModels;
 /// <para>That last point is the one with teeth. <c>HasNotifications</c> is computed, so if it fails
 /// to notify the flyout keeps whichever half it drew first — an empty state stranded over a list
 /// that has items in it, which is a worse bug than the blank panel this issue is about. It is
-/// deliberately NOT derived from <c>NotificationCount</c>: <c>UpdateUi</c> assigns that property the
-/// *version*-notification count straight off <c>VersionNotification</c>, so it can differ from the
-/// list's own Count, and two sites add to the list without touching it at all
+/// deliberately NOT derived from <c>NotificationCount</c>: several sites add to the list without
+/// touching that property, so it can lag the list's own Count
 /// (<see cref="AddingWithoutTouchingNotificationCount_StillNotifies"/> is that case).</para>
 /// </summary>
 [Collection(AppHostCollection.Name)]

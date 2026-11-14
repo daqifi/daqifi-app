@@ -10,7 +10,6 @@ using Daqifi.Desktop.Common.Loggers;
 using System.IO;
 using System.Xml.Linq;
 using System.Collections.ObjectModel;
-using Daqifi.Desktop.UpdateVersion;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -138,7 +137,18 @@ public partial class LoggingManager : ObservableObject
                     // The list row updates automatically when SampleCount is
                     // set, since LoggingSession is INotifyPropertyChanged.
                     var sessionToFinalize = Session;
-                    _ = Task.Run(() => PersistSessionSampleCount(sessionToFinalize));
+                    Interlocked.Increment(ref _sessionsBeingSaved);
+                    _ = Task.Run(() =>
+                    {
+                        try
+                        {
+                            PersistSessionSampleCount(sessionToFinalize);
+                        }
+                        finally
+                        {
+                            Interlocked.Decrement(ref _sessionsBeingSaved);
+                        }
+                    });
                 }
                 else
                 {
@@ -307,6 +317,17 @@ public partial class LoggingManager : ObservableObject
     // constructor create an instance without an App at all. Lazy<T>'s default mode is
     // ExecutionAndPublication, so the one-instance guarantee is unchanged.
     private static readonly Lazy<LoggingManager> _instance = new(() => new LoggingManager());
+
+    private int _sessionsBeingSaved;
+
+    /// <summary>
+    /// True after logging stops until the session is fully saved: its buffered samples written and
+    /// its sample count recorded, both of which run in the background. An app update waits on this,
+    /// since restarting would lose that data (#503).
+    /// </summary>
+    public bool IsSavingSession =>
+        Volatile.Read(ref _sessionsBeingSaved) > 0
+        || Loggers?.OfType<DatabaseLogger>().Any(l => l.HasUnsavedSamples) == true;
 
     // Chains to the constructor below rather than repeating its body. That also keeps this file's
     // warning count where it was: CS8618 is reported once per constructor that does NOT chain, so
@@ -792,13 +813,6 @@ public partial class LoggingManager : ObservableObject
     public void AddLogger(ILogger logger)
     {
         Loggers.Add(logger);
-    }
-
-    // @port: Daqifi.Desktop.Logger.LoggingManager.CheckApplicationVersion
-    public async Task CheckApplicationVersion(VersionNotification versionNotification)
-    {
-        await versionNotification.CheckForUpdatesAsync();
-        OnPropertyChanged("NotificationCount");
     }
 
     // @port: Daqifi.Desktop.Logger.LoggingManager.LoadPersistedLoggingSessions

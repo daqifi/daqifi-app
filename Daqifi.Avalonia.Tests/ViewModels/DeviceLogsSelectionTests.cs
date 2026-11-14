@@ -321,4 +321,27 @@ public sealed class DeviceLogsSelectionTests : IDisposable
         _registered.Add(device);
     }
     #endregion
+
+    /// <summary>
+    /// A refresh finishing on one device must not report the pane idle while an import on another
+    /// still runs: an app update waits on <see cref="DeviceLogsViewModel.IsBusy"/> (#503).
+    /// </summary>
+    [Fact]
+    public void OverlappingOperations_StayBusyUntilTheLastEnds()
+    {
+        var vm = OpenPane(withCombo: false);
+
+        vm.BeginBusy();                 // import starts
+        vm.BusyMessage = "Importing";
+        vm.BeginBusy();                 // a refresh starts
+        vm.EndBusy();                   // the refresh ends
+
+        Assert.True(vm.IsBusy);
+        Assert.Equal("Importing", vm.BusyMessage);
+
+        vm.EndBusy();                   // the import ends
+
+        Assert.False(vm.IsBusy);
+        Assert.Equal(string.Empty, vm.BusyMessage);
+    }
 }
