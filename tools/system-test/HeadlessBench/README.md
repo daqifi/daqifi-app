@@ -167,6 +167,31 @@ reading is delivered by assigning `ActiveSample` — the same property the strea
 so `LoggingManager`, the live plot and the database writer are all really running when
 `drop-mid-stream` pulls the link. What is simulated is exactly the transport.
 
+### `--all-ai` and `--scripted plot-ingest` — the live-plot load rows (#595)
+
+```bash
+# Board: every analog input on, the rate at the device's cap, then stop and disconnect.
+dotnet run --project tools/system-test/HeadlessBench/HeadlessBench.csproj --no-restore -- \
+  --port /dev/cu.usbmodem1101 --rate 22000 --seconds 180 --all-ai --out "/tmp/hb-load-$(date +%H%M%S)"
+# No board: 16 channels at 3518 Hz fed straight into the live plot from a producer thread.
+dotnet run --project tools/system-test/HeadlessBench/HeadlessBench.csproj --no-restore -- \
+  --scripted plot-ingest --seconds 30 --out "/tmp/hb-ingest-$(date +%H%M%S)"
+```
+
+`--all-ai` adds `STREAM-LOAD/limits`: sample loss by the device's own timestamps on the counted
+channel, the UI frame maximum while streaming, and what one live-plot redraw costs. It ends the run
+after streaming, with every analog input turned off again, because the rows after it rename the
+board and drive its pins. `plot-ingest` (`GRAPH-INGEST/limits`) measures the longest
+`PlotLogger.Log` call while the UI thread holds the plot lock for 2 s on purpose; before #595 the
+call waited the whole 2 s, which on a board is the USB reader stopping. It is not in CI's list,
+because its timings depend on the machine's load.
+
+A *frame* here is one dispatcher drain plus the render tick after it. Avalonia lays out, and OxyPlot
+draws, on the render tick, so the older "UI pump" number (the drain alone) never sees the plot's draw.
+And since #595 `Pump` posts one empty job per drain: headless, `RunJobs` only runs queued jobs and a
+`DispatcherTimer` is promoted to a job only after some other job runs, so on an idle UI the live
+plot's 16 ms render timer almost never ticked and the plot never took in its samples.
+
 ### `DAQIFI_RESTORE_NAME` — putting a board's name back
 
 ```bash
