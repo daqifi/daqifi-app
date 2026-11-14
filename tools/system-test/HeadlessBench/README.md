@@ -182,7 +182,8 @@ dotnet run --project tools/system-test/HeadlessBench/HeadlessBench.csproj --no-r
 channel, the UI frame maximum while streaming, and what one live-plot redraw costs. It ends the run
 after streaming, with every analog input turned off again, because the rows after it rename the
 board and drive its pins. `plot-ingest` (`GRAPH-INGEST/limits`) measures the longest
-`PlotLogger.Log` call while the UI thread holds the plot lock for 2 s on purpose; before #595 the
+`PlotLogger.Log` call while the UI thread holds the plot lock for 2 s on purpose; `--hold-ui N` does
+the same on a board run, for N seconds halfway through the stream (over 10 s is what lost samples); before #595 the
 call waited the whole 2 s, which on a board is the USB reader stopping. It is not in CI's list,
 because its timings depend on the machine's load.
 

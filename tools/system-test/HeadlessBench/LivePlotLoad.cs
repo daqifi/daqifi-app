@@ -83,6 +83,30 @@ internal static partial class HeadlessBench
             .Select(i => $"{FrameLatenciesMs[i]:F0} ms at {(i - from) * seconds / count:F1} s"));
     }
 
+    /// <summary>Set by <c>--hold-ui N</c>: halfway through the stream, the UI thread holds the live
+    /// plot's lock for N seconds, the long UI job of #595. The firmware gives up on a host that has
+    /// not read for 10 s, so N over 10 is the case that lost samples before the fix.</summary>
+    private static int _holdUiSeconds;
+
+    /// <summary>STREAM-AI's window: <c>--seconds</c> of pumping, with the <c>--hold-ui</c> hold in
+    /// the middle of it when one was asked for.</summary>
+    private static void PumpStreamWindow(DaqifiViewModel shell)
+    {
+        if (_holdUiSeconds <= 0 || shell.Plotter is null)
+        {
+            PumpFor(TimeSpan.FromSeconds(_seconds));
+            return;
+        }
+
+        PumpFor(TimeSpan.FromSeconds(_seconds / 2.0));
+        Console.WriteLine($"[INFO] holding the live plot's lock on the UI thread for {_holdUiSeconds} s");
+        lock (shell.Plotter.PlotModel.SyncRoot)
+        {
+            Thread.Sleep(TimeSpan.FromSeconds(_holdUiSeconds));
+        }
+        PumpFor(TimeSpan.FromSeconds(_seconds / 2.0));
+    }
+
     /// <summary>The rest of the analog inputs, through the tile command a user clicks.</summary>
     private static void EnableEveryOtherAnalogInput(ChannelsPaneViewModel pane, IChannel first)
     {

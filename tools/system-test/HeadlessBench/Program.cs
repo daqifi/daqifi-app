@@ -401,7 +401,7 @@ internal static partial class HeadlessBench
             // all (#281).
             var commandedRate = device.StreamingFrequency;
             var streamPumpsFrom = FrameLatenciesMs.Count;
-            if (started) { PumpFor(TimeSpan.FromSeconds(_seconds)); }
+            if (started) { PumpStreamWindow(shell); }
             var streamPumpsTo = FrameLatenciesMs.Count;
             var redraw = started ? MeasureLiveRedraw(main) : default;
             var window = first is null ? 0 : (DateTime.UtcNow - first.Value).TotalSeconds;
@@ -2393,6 +2393,7 @@ internal static partial class HeadlessBench
                     case "--seconds": _seconds = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--scripted": _scripted = Next(); break;
                     case "--all-ai": _allAi = true; break;
+                    case "--hold-ui": _holdUiSeconds = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                     default: Console.WriteLine($"unknown argument '{args[i]}'"); return false;
                 }
             }

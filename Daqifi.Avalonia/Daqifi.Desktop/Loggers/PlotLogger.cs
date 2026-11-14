@@ -127,7 +127,8 @@ public partial class PlotLogger : ObservableObject, ILogger
     /// for a long time, the oldest pending samples are dropped from the PLOT (never from the session
     /// database, which has its own queue). This keeps memory and the next drain bounded however long
     /// the UI stalls: 262,144 samples is 4.6 s of 16 channels at 3518 Hz, more than one full live
-    /// window (5,000 points a series), and a few milliseconds of work to drain.
+    /// window (5,000 points a series). A full queue costs one drain of about 0.7 s, measured on the
+    /// bench board after a 20 s UI stall; the usual drain, one redraw interval's worth, is far less.
     /// </summary>
     internal const int MAX_PENDING_SAMPLES = 1 << 18;
 
@@ -445,7 +446,7 @@ public partial class PlotLogger : ObservableObject, ILogger
     /// <remarks>
     /// The work is bounded: it takes at most the samples that were queued when it started, so a
     /// producer that never pauses cannot keep the UI thread here, and the queue itself never holds
-    /// more than <see cref="MAX_PENDING_SAMPLES"/>, so one drain is a few milliseconds at most.
+    /// more than <see cref="MAX_PENDING_SAMPLES"/>.
     /// </remarks>
     private int DrainPendingSamplesLocked(out bool addedSeries)
     {
