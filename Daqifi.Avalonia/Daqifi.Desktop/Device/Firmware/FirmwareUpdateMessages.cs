@@ -1,6 +1,5 @@
 // Downstream-only: no upstream counterpart. Issue #570.
 
-using System.IO;
 using Daqifi.Core.Firmware;
 
 namespace Daqifi.Desktop.Device.Firmware;
@@ -47,52 +46,34 @@ public static class FirmwareUpdateMessages
     };
 
     /// <summary>
-    /// The text of the success dialog: it names the device, the version it has now, and the
-    /// version it had before.
+    /// The text of the success dialog: it names the device, the version the device reports after
+    /// its restart, and the version it had before.
     /// </summary>
     /// <param name="deviceName">The name the user knows the device by.</param>
     /// <param name="oldVersion">The firmware the device had before the update; empty if unknown.</param>
-    /// <param name="newVersion">
-    /// The version that was written. Empty for a manual upload of a <c>.hex</c> file, whose version
-    /// the app cannot know — <paramref name="firmwareFilePath"/> names the file instead.
+    /// <param name="reportedVersion">
+    /// The version the device reported after its restart. Empty when the device did not report
+    /// one: the text then says that the new version is unknown. It never names a release that the
+    /// app looked up, because that release can differ from the one that was written.
     /// </param>
-    /// <param name="firmwareFilePath">The file the user selected for a manual upload; empty otherwise.</param>
-    public static string UpdateSucceeded(
-        string deviceName,
-        string? oldVersion,
-        string? newVersion,
-        string? firmwareFilePath = null)
+    public static string UpdateSucceeded(string deviceName, string? oldVersion, string? reportedVersion)
     {
         var device = string.IsNullOrWhiteSpace(deviceName) ? "The device" : deviceName.Trim();
-        var hasOld = !string.IsNullOrWhiteSpace(oldVersion);
-        var hasNew = !string.IsNullOrWhiteSpace(newVersion);
+        var old = oldVersion?.Trim() ?? string.Empty;
+        var reported = reportedVersion?.Trim() ?? string.Empty;
+        var oldSentence = old.Length > 0 ? $" The old version was {old}." : string.Empty;
 
-        string installed;
-        if (hasNew)
+        if (reported.Length == 0)
         {
-            installed = $"{device} now has firmware {newVersion!.Trim()}.";
-        }
-        else if (!string.IsNullOrWhiteSpace(firmwareFilePath))
-        {
-            installed = $"{device} now has the firmware from {Path.GetFileName(firmwareFilePath.Trim())}.";
-        }
-        else
-        {
-            installed = $"{device} has new firmware.";
+            return $"{device} has new firmware. The new version is unknown, because the device did not report it.{oldSentence}";
         }
 
-        if (!hasOld)
+        if (string.Equals(old, reported, StringComparison.OrdinalIgnoreCase))
         {
-            return installed;
+            return $"{device} now has firmware {reported}. This is the same version as before.";
         }
 
-        var old = oldVersion!.Trim();
-        if (hasNew && string.Equals(old, newVersion!.Trim(), StringComparison.OrdinalIgnoreCase))
-        {
-            return $"{installed} This is the same version as before.";
-        }
-
-        return $"{installed} The old version was {old}.";
+        return $"{device} now has firmware {reported}.{oldSentence}";
     }
 
     /// <summary>

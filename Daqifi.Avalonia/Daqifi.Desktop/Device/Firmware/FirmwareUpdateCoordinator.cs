@@ -244,10 +244,8 @@ public class FirmwareUpdateCoordinator
             var isManualUpload = !string.IsNullOrWhiteSpace(_host.FirmwareFilePath);
 
             // Read before the flash for the success dialog (issue #570): the device still reports
-            // the version it had, and the finally clears FirmwareFilePath.
+            // the version it had.
             var previousVersion = serialStreamingDevice.DeviceVersion;
-            var manualFirmwarePath = isManualUpload ? _host.FirmwareFilePath : null;
-            string? installedVersion = null;
 
             _appLogger.AddBreadcrumb("firmware", $"Firmware update started for {serialStreamingDevice.Name}");
 
@@ -286,7 +284,6 @@ public class FirmwareUpdateCoordinator
                     GetFirmwareDownloadDirectory(),
                     includePreRelease: true,
                     cancellationToken: cancellationToken);
-                installedVersion = await GetDownloadedFirmwareVersionAsync(cancellationToken);
             }
             else
             {
@@ -307,24 +304,50 @@ public class FirmwareUpdateCoordinator
                 _host.FirmwareUpdateStatusText = FirmwareUpdateMessages.DescribeState(report.State);
             });
 
-            // Suspend the watcher's HID discovery for just the PIC32 flash: the connected device reboots
-            // into the bootloader here, and the watcher must not grab it out from under this flasher.
-            // Existing holds on OTHER sitting bootloaders stay alive.
-            var watcherLease = _watcher != null ? await _watcher.SuspendDiscoveryAsync() : null;
-            await using (watcherLease)
+            // The success dialog names the version the device reports AFTER its restart (issue #570),
+            // not a release the app looked up: a second lookup can name a different release from the
+            // one that was written. After the jump to the application, Core reconnects this same
+            // device and reads its status, which fills Metadata.FirmwareVersion — but only when the
+            // status carries a version. Clearing it here means that a value read after the flash
+            // came from the restarted device; an empty value means "the device did not say", and
+            // never the version from before the restart. The wrapper's DeviceVersion (the tile)
+            // is a separate copy and is not touched until Core reads the device again.
+            var versionBeforeFlash = coreDevice.Metadata.FirmwareVersion;
+            coreDevice.Metadata.FirmwareVersion = string.Empty;
+            try
             {
-                // Resolve the connected device's location BEFORE it reboots into the bootloader — its
-                // future HID device path doesn't exist yet, but its physical USB location is stable
-                // across the mode transition (issue #655). Passing it lets Core's post-reboot bootloader
-                // search target the exact physical device even if another bootloader is sitting held.
-                await _firmwareUpdateService.UpdateFirmwareAsync(
-                    coreDevice,
-                    effectiveFirmwarePath,
-                    pic32Progress,
-                    targetDevicePath: null,
-                    targetLocationKey: serialStreamingDevice.LocationKey,
-                    cancellationToken);
+                // Suspend the watcher's HID discovery for just the PIC32 flash: the connected device
+                // reboots into the bootloader here, and the watcher must not grab it out from under
+                // this flasher. Existing holds on OTHER sitting bootloaders stay alive.
+                var watcherLease = _watcher != null ? await _watcher.SuspendDiscoveryAsync() : null;
+                await using (watcherLease)
+                {
+                    // Resolve the connected device's location BEFORE it reboots into the bootloader —
+                    // its future HID device path doesn't exist yet, but its physical USB location is
+                    // stable across the mode transition (issue #655). Passing it lets Core's
+                    // post-reboot bootloader search target the exact physical device even if another
+                    // bootloader is sitting held.
+                    await _firmwareUpdateService.UpdateFirmwareAsync(
+                        coreDevice,
+                        effectiveFirmwarePath,
+                        pic32Progress,
+                        targetDevicePath: null,
+                        targetLocationKey: serialStreamingDevice.LocationKey,
+                        cancellationToken);
+                }
             }
+            catch
+            {
+                // A run that stopped before the restart leaves the device's old value in place.
+                if (string.IsNullOrEmpty(coreDevice.Metadata.FirmwareVersion))
+                {
+                    coreDevice.Metadata.FirmwareVersion = versionBeforeFlash;
+                }
+
+                throw;
+            }
+
+            var reportedVersion = coreDevice.Metadata.FirmwareVersion;
 
             if (!isManualUpload)
             {
@@ -342,8 +365,7 @@ public class FirmwareUpdateCoordinator
             _host.ShowFirmwareUpdateSucceeded(FirmwareUpdateMessages.UpdateSucceeded(
                 FirmwareUpdateMessages.DeviceNameFor(serialStreamingDevice),
                 previousVersion,
-                installedVersion,
-                manualFirmwarePath));
+                reportedVersion));
         }
         catch (OperationCanceledException)
         {
@@ -983,32 +1005,6 @@ public class FirmwareUpdateCoordinator
         var firmwareDirectory = Path.Combine(_firmwareDataDirectory, "Firmware", "PIC32");
         Directory.CreateDirectory(firmwareDirectory);
         return firmwareDirectory;
-    }
-
-    /// <summary>
-    /// The version of the package <see cref="IFirmwareDownloadService.DownloadLatestFirmwareAsync"/>
-    /// just downloaded, for the success dialog (issue #570). Null if it cannot be read.
-    /// </summary>
-    /// <remarks>
-    /// Asked with the same <c>includePreRelease: true</c> as the download, so both read the same
-    /// release; Core caches the release list, so this sends no second request. A failure here
-    /// costs only the version in a dialog text, never the update, so it is logged and swallowed.
-    /// Cancellation is not swallowed: it must still stop the run.
-    /// </remarks>
-    private async Task<string?> GetDownloadedFirmwareVersionAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            var release = await _firmwareDownloadService.GetLatestReleaseAsync(
-                includePreRelease: true,
-                cancellationToken);
-            return release?.Version.ToString();
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _appLogger.Warning($"Could not read the downloaded firmware version: {ex.Message}");
-            return null;
-        }
     }
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.GetWifiDownloadDirectory

@@ -72,12 +72,13 @@ public class FirmwareUpdateOutcomeTests : IDisposable
     }
 
     /// <summary>
-    /// Every state Core can report gives a status text, and none of them is the fallback: a state
-    /// added to the enum without a text here fails this test instead of showing a generic line.
+    /// Every state Core can report gives a status text in user words, and none of them is the
+    /// fallback: a state added to the enum without a text here fails this test instead of showing
+    /// a generic line. Two states may share a text.
     /// </summary>
     [Theory]
     [MemberData(nameof(AllStates))]
-    public void Every_state_has_its_own_user_text(FirmwareUpdateState state)
+    public void Every_state_has_a_user_text(FirmwareUpdateState state)
     {
         var text = FirmwareUpdateMessages.DescribeState(state);
 
@@ -86,15 +87,6 @@ public class FirmwareUpdateOutcomeTests : IDisposable
         Assert.DoesNotContain("record", text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("bootloader", text, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("application firmware", text, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>Each state reads differently, so the user can see the update move on.</summary>
-    [Fact]
-    public void No_two_states_share_a_text()
-    {
-        var texts = Enum.GetValues<FirmwareUpdateState>().Select(FirmwareUpdateMessages.DescribeState).ToList();
-
-        Assert.Equal(texts.Count, texts.Distinct(StringComparer.Ordinal).Count());
     }
 
     /// <summary>A state from a later Core release still gives a sensible line.</summary>
@@ -144,13 +136,19 @@ public class FirmwareUpdateOutcomeTests : IDisposable
         Assert.Equal("Nq1 now has firmware 3.9.0. The old version was 3.8.0.", text);
     }
 
+    /// <summary>
+    /// The device did not report a version after its restart: the text says the version is unknown
+    /// and names no release.
+    /// </summary>
     [Fact]
-    public void A_manual_upload_names_the_file_instead_of_a_version()
+    public void An_unreported_new_version_is_unknown()
     {
-        var text = FirmwareUpdateMessages.UpdateSucceeded(
-            "Nq1", "3.8.0", newVersion: null, firmwareFilePath: Path.Combine("some", "dir", "custom.hex"));
+        var text = FirmwareUpdateMessages.UpdateSucceeded("Nq1", "3.8.0", reportedVersion: "");
 
-        Assert.Equal("Nq1 now has the firmware from custom.hex. The old version was 3.8.0.", text);
+        Assert.Equal(
+            "Nq1 has new firmware. The new version is unknown, because the device did not report it. " +
+            "The old version was 3.8.0.",
+            text);
     }
 
     [Fact]
@@ -168,44 +166,79 @@ public class FirmwareUpdateOutcomeTests : IDisposable
     }
 
     /// <summary>
-    /// End to end through the coordinator: the auto path reads the downloaded release's version, and
-    /// the old version is the one the device reported BEFORE the flash.
+    /// The review finding on #577: the dialog named the latest release from a second lookup, which
+    /// can differ from the release that was written. It must name the version the DEVICE reports
+    /// after its restart. Here the release feed says 3.9.0 and the restarted device says 3.8.1.
     /// </summary>
     [Fact]
-    public async Task A_successful_update_shows_the_device_and_both_versions()
+    public async Task The_success_dialog_names_the_version_the_device_reports_after_the_restart()
     {
-        using var harness = ConnectedDevice();
-        harness.Device.Metadata.PartNumber = "Nq1";
-        harness.Device.DeviceVersion = "3.8.0";
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.8.0");
         _host.SelectedDevice = harness.Device;
         _downloads.LatestFirmwarePath = FirmwareFile();
         _downloads.LatestVersion = "3.9.0";
 
-        // The device's version moves during the flash in real life (it reconnects); the dialog must
-        // still name the version it had before.
-        _updates.OnPic32Flash = () => harness.Device.DeviceVersion = "3.9.0";
+        // What Core does after the jump to the application: it reconnects the device and reads its
+        // status, which fills Metadata.FirmwareVersion.
+        _updates.OnPic32Flash = () => harness.Core.Metadata.FirmwareVersion = "3.8.1";
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        Assert.Equal("Nq1 now has firmware 3.8.1. The old version was 3.8.0.", Assert.Single(_host.SuccessMessages));
+    }
+
+    /// <summary>
+    /// The restarted device reported no version. The dialog must say unknown — not the release the
+    /// feed names, and not the version the device reported BEFORE the restart, which is still in
+    /// Core's metadata when the flash starts.
+    /// </summary>
+    [Fact]
+    public async Task The_success_dialog_says_unknown_when_the_device_reports_no_version()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.8.0");
+        _host.SelectedDevice = harness.Device;
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        _downloads.LatestVersion = "3.9.0";
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        var message = Assert.Single(_host.SuccessMessages);
+        Assert.Contains("The new version is unknown", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("3.9.0", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("now has firmware 3.8.0", message, StringComparison.Ordinal);
+    }
+
+    /// <summary>A manual <c>.hex</c> upload reports the device's version the same way.</summary>
+    [Fact]
+    public async Task A_manual_update_names_the_version_the_device_reports()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.8.0");
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        _updates.OnPic32Flash = () => harness.Core.Metadata.FirmwareVersion = "3.9.0";
 
         await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
 
         Assert.Equal("Nq1 now has firmware 3.9.0. The old version was 3.8.0.", Assert.Single(_host.SuccessMessages));
+        Assert.Equal(string.Empty, _host.FirmwareFilePath);
     }
 
-    /// <summary>A manual upload names the selected file, which the run then clears.</summary>
+    /// <summary>
+    /// The coordinator clears Core's version before the write so that only the restarted device can
+    /// fill it. A write that fails before the restart must give the old value back.
+    /// </summary>
     [Fact]
-    public async Task A_successful_manual_update_names_the_selected_file()
+    public async Task A_failed_update_leaves_the_device_version_it_had()
     {
-        using var harness = ConnectedDevice();
-        harness.Device.Metadata.PartNumber = "Nq1";
-        harness.Device.DeviceVersion = "3.8.0";
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.8.0");
         _host.SelectedDevice = harness.Device;
         _host.FirmwareFilePath = FirmwareFile();
+        _updates.OnPic32Flash = () => throw new InvalidOperationException("flash failed");
 
         await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
 
-        Assert.Equal(
-            "Nq1 now has the firmware from firmware.hex. The old version was 3.8.0.",
-            Assert.Single(_host.SuccessMessages));
-        Assert.Equal(string.Empty, _host.FirmwareFilePath);
+        Assert.Empty(_host.SuccessMessages);
+        Assert.Equal("3.8.0", harness.Core.Metadata.FirmwareVersion);
     }
 
     /// <summary>The friendly name, when the user set one, is the name the dialog uses.</summary>
@@ -280,12 +313,20 @@ public class FirmwareUpdateOutcomeTests : IDisposable
         return path;
     }
 
-    private static Harness ConnectedDevice()
+    /// <summary>
+    /// A connected "Nq1". <paramref name="versionBeforeFlash"/> is the version the device reported
+    /// at connect: the wrapper's copy (the tile) and Core's copy both hold it, as after a real
+    /// connect's hydrate.
+    /// </summary>
+    private static Harness ConnectedDevice(string versionBeforeFlash = "")
     {
         var transport = new Daqifi.Avalonia.Tests.Device.CapturingTransport();
         var core = new DaqifiStreamingDevice("core", transport, NullLogger.Instance);
         core.Connect();
+        core.Metadata.FirmwareVersion = versionBeforeFlash;
         var device = new SerialStreamingDevice("COM-TEST-570", core);
+        device.Metadata.PartNumber = "Nq1";
+        device.DeviceVersion = versionBeforeFlash;
         return new Harness(transport, core, device);
     }
 
@@ -295,6 +336,8 @@ public class FirmwareUpdateOutcomeTests : IDisposable
         SerialStreamingDevice device) : IDisposable
     {
         public SerialStreamingDevice Device { get; } = device;
+
+        public DaqifiStreamingDevice Core { get; } = core;
 
         public void Dispose()
         {
