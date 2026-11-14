@@ -50,7 +50,9 @@
                     HorizontalAlignment="Center" VerticalAlignment="Center" />
           </Border>
           <TextBlock Text="NO LOGGED SESSIONS" Classes="emptyTitle" />
-          <TextBlock Text="Streamed sessions you log on this device appear here."
+          <!-- Names the control that records (#597). The old line promised logging the phone
+               could not do; now Live Graph has a Record switch, and SD imports land here too. -->
+          <TextBlock Text="Turn on Record to APP LOGS in Live Graph, then stream. Recorded and imported sessions appear here."
                      Classes="emptyBody" />
         </StackPanel>
 

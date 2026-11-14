@@ -107,7 +107,60 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ShowChannelSelector))]
     [NotifyPropertyChangedFor(nameof(ShowDeviceList))]
+    [NotifyPropertyChangedFor(nameof(StreamButtonText))]
+    [NotifyPropertyChangedFor(nameof(ShowRecordStyle))]
     private bool _isStreaming;
+
+    /// <summary>
+    /// The user's choice to record the next stream into APP LOGS (#597). Read when the stream
+    /// starts; the switch is in the pre-stream picker, so it cannot change during a stream.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(StreamButtonText))]
+    [NotifyPropertyChangedFor(nameof(ShowRecordStyle))]
+    private bool _recordStream;
+
+    /// <summary>
+    /// True while the running stream is being recorded into an app logging session.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(StreamButtonText))]
+    [NotifyPropertyChangedFor(nameof(ShowRecordStyle))]
+    private bool _isRecording;
+
+    /// <summary>
+    /// What the last recording produced: the saved session, or why nothing was saved. Shown as a
+    /// banner until the next stream starts, so the user knows where the data went.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasRecordingOutcome))]
+    private string _recordingOutcome = "";
+
+    /// <summary>True when the last recording saved a session; false when it saved nothing.</summary>
+    [ObservableProperty]
+    private bool _recordingSaved;
+
+    public bool HasRecordingOutcome => RecordingOutcome.Length > 0;
+
+    /// <summary>
+    /// The stream button's label, which says whether the tap records: the user must never think
+    /// a stream is being kept when it is not (#597).
+    /// </summary>
+    public string StreamButtonText => IsStreaming
+        ? (IsRecording ? "Stop recording" : "Stop streaming")
+        : (RecordStream ? "Start recording" : "Start streaming");
+
+    /// <summary>
+    /// The stream button turns record-red when the tap starts a recording, and while one runs.
+    /// </summary>
+    public bool ShowRecordStyle => IsStreaming ? IsRecording : RecordStream;
+
+    /// <summary>
+    /// Opens and closes the app logging session a recorded stream writes to. A seam only because
+    /// the test project has no app host for <c>LoggingManager.Instance</c>; nothing in the app
+    /// assigns it.
+    /// </summary>
+    internal IMobileStreamRecorder Recorder = new LoggingManagerStreamRecorder();
 
     // Middle-pane visibility (mutually exclusive by state): scan-result device
     // list before connecting, channel + rate selector once connected, live plot
@@ -598,6 +651,26 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             }
 
             device.StreamingFrequency = SampleRate;
+
+            // Open the recording session AFTER the rate is set (the session stores it as device
+            // metadata) and BEFORE the device streams, so the first sample is recorded too. This is
+            // the order the desktop LOGGING toggle uses: LoggingManager.Active, then the start.
+            RecordingOutcome = "";
+            if (RecordStream)
+            {
+                var failure = Recorder.Start(analog);
+                if (failure != null)
+                {
+                    AppLogger.Instance.AddBreadcrumb(
+                        "logging", "Mobile recording could not start", BreadcrumbLevel.Error);
+                    StopCountingSamples();
+                    Status = failure;
+                    return;
+                }
+                IsRecording = true;
+                AppLogger.Instance.AddBreadcrumb("logging", "Mobile recording started");
+            }
+
             device.InitializeStreaming();
         }
         catch (Exception ex)
@@ -606,6 +679,9 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
                 "streaming", $"Start streaming failed: {ex.GetType().Name}", BreadcrumbLevel.Error);
             Status = $"Start streaming failed: {ex.Message}";
             StopStream();
+            // StopStream ends a recording only through the IsStreaming change, and IsStreaming
+            // never became true here.
+            EndRecording();
             return;
         }
         IsStreaming = device.IsStreaming;
@@ -614,6 +690,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             // Armed above, but the device never entered streaming — don't leave subscriptions
             // on channels for a stream that is not running.
             StopCountingSamples();
+            EndRecording();
         }
         if (IsStreaming)
         {
@@ -629,8 +706,38 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
                 ConnectionManager.ActiveChannelCount(device));
         }
         Status = IsStreaming
-            ? $"Streaming {analog.Count} channel(s) @ {SampleRate} Hz"
+            ? $"{(IsRecording ? "Recording" : "Streaming")} {analog.Count} channel(s) @ {SampleRate} Hz"
             : "Device did not enter streaming.";
+    }
+
+    /// <summary>
+    /// A recording lasts exactly as long as its stream. Every path that ends a stream sets
+    /// <see cref="IsStreaming"/> false — Stop, the watchdog, a lost stream, a lost connection and
+    /// <see cref="Dispose"/> — so the session is closed here, once, rather than on each path.
+    /// </summary>
+    /// <remarks>
+    /// Each of those paths stops the device before it clears the flag, so the samples still in
+    /// flight at the stop are recorded.
+    /// </remarks>
+    partial void OnIsStreamingChanged(bool value)
+    {
+        if (!value) { EndRecording(); }
+    }
+
+    /// <summary>
+    /// Closes the recording session, if one is open, and says what it produced. Idempotent.
+    /// </summary>
+    private void EndRecording()
+    {
+        if (!IsRecording) { return; }
+        IsRecording = false;
+        var saved = Recorder.Stop();
+        RecordingSaved = saved != null;
+        RecordingOutcome = saved != null
+            ? $"{saved} saved. Open Logged Data > APP LOGS to see it."
+            : "No samples arrived, so no session was saved.";
+        AppLogger.Instance.AddBreadcrumb(
+            "logging", saved != null ? $"Mobile recording saved as {saved}" : "Mobile recording kept no samples");
     }
 
     /// <summary>

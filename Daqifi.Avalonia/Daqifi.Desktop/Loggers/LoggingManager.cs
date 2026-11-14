@@ -659,6 +659,52 @@ public partial class LoggingManager : ObservableObject
         OnPropertyChanged(nameof(SubscribedChannels));
     }
 
+    /// <summary>
+    /// Subscribes <paramref name="channel"/>, first dropping any subscription to a DIFFERENT
+    /// instance of the same device channel (same serial number and name).
+    /// </summary>
+    /// <remarks>
+    /// Downstream-only (mobile, #597). <see cref="Subscribe"/> treats a channel as subscribed when
+    /// any entry has its serial number and name, so an instance left over from an earlier
+    /// connection to the same board makes it a no-op: the new instance is never wired, and a
+    /// recording of it keeps no samples. The desktop clears those leftovers when a device leaves
+    /// (<c>DaqifiViewModel.UpdateUi</c>, "ConnectedDevices"); the mobile shell has no such hook,
+    /// so it replaces them here instead. <see cref="Unsubscribe"/> cannot do it, because it
+    /// matches only an ACTIVE entry and a dead device's channels need not be active.
+    /// </remarks>
+    public void SubscribeReplacingStale(IChannel channel)
+    {
+        var removed = false;
+        lock (_subscribedChannelsSync)
+        {
+            var current = _subscribedChannels;
+            var stale = current
+                .Where(x => !ReferenceEquals(x, channel)
+                            && x.DeviceSerialNo == channel.DeviceSerialNo
+                            && x.Name == channel.Name)
+                .ToList();
+            if (stale.Count > 0)
+            {
+                foreach (var old in stale)
+                {
+                    old.OnChannelUpdated -= HandleChannelUpdate;
+                }
+
+                var updated = new List<IChannel>(current);
+                updated.RemoveAll(x => stale.Any(s => ReferenceEquals(s, x)));
+                Volatile.Write(ref _subscribedChannels, updated.AsReadOnly());
+                removed = true;
+            }
+        }
+
+        if (removed)
+        {
+            OnPropertyChanged(nameof(SubscribedChannels));
+        }
+
+        Subscribe(channel);
+    }
+
     // @port: Daqifi.Desktop.Logger.LoggingManager.Unsubscribe
     public void Unsubscribe(IChannel channel)
     {
