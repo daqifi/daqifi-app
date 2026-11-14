@@ -332,9 +332,14 @@ public class FirmwareUploadAffordanceTests : IDisposable
             IProgress<int>? progress = null,
             CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 
+        /// <summary>
+        /// A release to name in the prompt. The coordinator resolves one before it confirms an
+        /// auto-update (issue #564), and stops with no release; the package itself is still "none".
+        /// </summary>
         public Task<FirmwareReleaseInfo?> GetLatestReleaseAsync(
             bool includePreRelease = false,
-            CancellationToken cancellationToken = default) => Task.FromResult<FirmwareReleaseInfo?>(null);
+            CancellationToken cancellationToken = default) => Task.FromResult<FirmwareReleaseInfo?>(
+                new FirmwareReleaseInfo { Version = default, TagName = "v0.0.0-test", IsPreRelease = false });
 
         public Task<FirmwareReleaseInfo?> GetLatestWifiReleaseAsync(CancellationToken cancellationToken = default)
             => Task.FromResult<FirmwareReleaseInfo?>(null);
