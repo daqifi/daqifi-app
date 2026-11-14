@@ -273,7 +273,7 @@
                                        Foreground="{DynamicResource TextPrimary}"
                                        FontSize="{DynamicResource FontSizeSmall}" FontWeight="SemiBold"/>
                           </Border>
-                          <TextBlock Text="{Binding DeviceSerialNo}"
+                          <TextBlock Text="{Binding DeviceSerialNo, Converter={StaticResource SerialDisplay}}"
                                      Foreground="{DynamicResource TextTertiary}"
                                      FontSize="{DynamicResource FontSizeSmall}"
                                      VerticalAlignment="Center"/>
@@ -402,7 +402,7 @@
                             <TextBlock Text="{Binding Name}"
                                        Foreground="{DynamicResource TextPrimary}"
                                        FontSize="{DynamicResource FontSizeCaption}" FontWeight="SemiBold"/>
-                            <TextBlock Text="{Binding SerialNo}"
+                            <TextBlock Text="{Binding SerialNo, Converter={StaticResource SerialDisplay}}"
                                        Foreground="{DynamicResource TextTertiary}"
                                        FontSize="{DynamicResource FontSizeSmall}"
                                        VerticalAlignment="Center"/>

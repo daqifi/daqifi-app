@@ -1191,7 +1191,7 @@ public class FirmwareUpdateCoordinator
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.AddNotification
     private void AddNotification(IStreamingDevice device, string latestFirmware)
     {
-        var message = $"Device With Serial {device.DeviceSerialNo} has Outdated Firmware. Please Update to Version {latestFirmware}.";
+        var message = $"Device With Serial {DeviceSerials.ToDisplay(device.DeviceSerialNo)} has Outdated Firmware. Please Update to Version {latestFirmware}.";
 
         var existingNotification = _host.Notifications.FirstOrDefault(n => n.DeviceSerialNo != null
                                                                         && n.IsFirmwareUpdate

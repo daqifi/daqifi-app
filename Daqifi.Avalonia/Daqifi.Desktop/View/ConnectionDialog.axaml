@@ -246,7 +246,7 @@
                                                 <TextBlock Text="{Binding IpAddress}"
                                                            FontSize="10" Foreground="{StaticResource TextSecondary}"
                                                            Margin="0,3,0,0"/>
-                                                <TextBlock Text="{Binding DeviceSerialNo}"
+                                                <TextBlock Text="{Binding DeviceSerialNo, Converter={StaticResource SerialDisplay}}"
                                                            FontSize="10" Foreground="{StaticResource TextTertiary}"/>
                                             </StackPanel>
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
@@ -364,7 +364,7 @@
                                                 <TextBlock Text="{Binding PortName}"
                                                            FontSize="10" Foreground="{StaticResource TextSecondary}"
                                                            Margin="0,3,0,0"/>
-                                                <TextBlock Text="{Binding DeviceSerialNo}"
+                                                <TextBlock Text="{Binding DeviceSerialNo, Converter={StaticResource SerialDisplay}}"
                                                            FontSize="10" Foreground="{StaticResource TextTertiary}"/>
                                             </StackPanel>
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
