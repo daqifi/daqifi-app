@@ -512,6 +512,19 @@ captures once and verifies against the one for the current host, failing on a ch
 screen, a missing one, and one the baseline does not list (`shasum -c` only checks the
 names it was given, so the extra-file direction is checked separately).
 
+Thirty-six of the forty screens were re-recorded 2026-11-14 (macOS 26.5, Apple silicon, .NET SDK
+10.0.302) for the visual-consistency change (#613, #618, #619). Three causes, one recording:
+`FluentTheme` now has a palette whose `Accent` is the brand `#119EDA`, so every stock toggle,
+radio, slider and progress bar moved off Fluent's `#0078D7` (#613); the top bar on both heads
+uses outline glyphs and capital labels, and every desktop and Device Logs screen draws that bar
+(#618); and the phone portrait bottom bar has icons and an active indicator (#619). The four
+unchanged screens are the `dialog-connect-*` captures: the connect dialog draws its own Accent
+pills and has no stock accent control, which is the measurement that the palette moved only
+what it was meant to. The pre-change capture reproduced the then-committed manifest on all
+forty, and five `--determinism` runs agreed on all forty after the change; the hashes are from
+run 1. Two earlier attempts on a loaded host (load average 6-15, a sibling perf benchmark
+running) failed on the known `desktop-min-7` 379/380 drawer race and saved nothing.
+
 `dialog-connect-usb-idle` and `dialog-connect-usb-error` were re-recorded 2026-11-10 (macOS 26.5,
 Apple silicon, .NET SDK 10.0.302) for #493, which shows a device serial in the 16-digit hex form
 `*IDN?` reports instead of the stored decimal. They are the only two screens in this manifest that

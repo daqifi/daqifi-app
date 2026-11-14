@@ -1281,6 +1281,19 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.CloseAppSettings
     private void CloseAppSettings() => IsAppSettingsOpen = false;
 
+    // The close buttons of the three SplitView flyouts (#613). They were ToggleButtons bound
+    // two-way to these flags, which is why each sat in its checked, accent-filled state while
+    // its flyout was open. A plain Button needs a command, and each clears only its own flag,
+    // exactly as unchecking the toggle did.
+    [RelayCommand]
+    private void CloseNotifications() => IsNotificationsOpen = false;
+
+    [RelayCommand]
+    private void CloseLiveGraphSettings() => IsLiveGraphSettingsOpen = false;
+
+    [RelayCommand]
+    private void CloseLogSummary() => IsLogSummaryOpen = false;
+
     [RelayCommand]
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.DisconnectDevice
     private void DisconnectDevice(IStreamingDevice? deviceToDisconnect)

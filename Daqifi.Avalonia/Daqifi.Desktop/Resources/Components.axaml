@@ -7,6 +7,33 @@
         Merged into App.Styles; keyed pill ControlThemes live in Shell.axaml.
     -->
 
+    <!--
+        Icons (#618). One family, Material Design Icons (mdi-*), and one style: OUTLINE.
+        Use the -outline glyph whenever MDI has one; a glyph with no outline form (chip,
+        sd, console, import, close, crosshairs) is drawn as a line icon already. One glyph
+        means one action, app-wide:
+
+          Action                          Glyph
+          Live Graph (nav)                mdi-chart-timeline-variant
+          Logged Data (nav)               mdi-database-outline
+          Channels (nav)                  mdi-hub-outline
+          Devices (nav)                   mdi-chip
+          Profiles (nav)                  mdi-tune-variant
+          App settings (top bar)          mdi-cog-outline
+          Debug mode (top bar)            mdi-bug-outline
+          Debug console (top bar)         mdi-console
+          Help (top bar)                  mdi-help-circle-outline
+          Notifications (top bar)         mdi-bell-outline
+          Plot settings (graph toolbar)   mdi-chart-box-outline
+          Log summary (graph toolbar)     mdi-clipboard-pulse-outline
+          Save plot as image              mdi-image-outline
+          Settings of one row             mdi-cog-outline (small, inside the row)
+          Delete                          mdi-trash-can-outline
+          Close a panel                   mdi-close
+
+        Search the .axaml files for a glyph before you give it a second meaning.
+    -->
+
     <!-- Pane content column: caps width + centers so a wide landscape / tablet
          window shows a readable centered column (like the desktop content area)
          instead of edge-to-edge-stretched fields and full-width buttons. In

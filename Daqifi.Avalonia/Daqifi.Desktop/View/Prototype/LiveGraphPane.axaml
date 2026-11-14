@@ -340,14 +340,17 @@
                         <Button Theme="{StaticResource PlotIconButton}"
                                 Command="{Binding OpenLiveGraphSettingsCommand}"
                                 ToolTip.Tip="Plot settings">
-                            <i:Icon Value="mdi-cog"
+                            <!-- Own glyphs for Plot settings and Log summary (#618): they
+                                 were the gear and the bug, which the top bar 300 px above
+                                 already uses for app Settings and Debug mode. -->
+                            <i:Icon Value="mdi-chart-box-outline"
                                     FontSize="14"
                                     Foreground="{DynamicResource TextSecondary}"/>
                         </Button>
                         <Button Theme="{StaticResource PlotIconButton}"
                                 Command="{Binding OpenLogSummaryCommand}"
                                 ToolTip.Tip="Log summary (debug)">
-                            <i:Icon Value="mdi-bug"
+                            <i:Icon Value="mdi-clipboard-pulse-outline"
                                     FontSize="14"
                                     Foreground="{DynamicResource TextSecondary}"/>
                         </Button>
