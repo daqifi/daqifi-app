@@ -3,6 +3,7 @@ using Daqifi.Core.Communication.Messages;
 using Daqifi.Core.Device;
 using Daqifi.Core.Device.Capabilities;
 using Daqifi.Desktop.Device;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using AppDigitalChannel = Daqifi.Desktop.Channel.DigitalChannel;
 using CoreDigitalChannel = Daqifi.Core.Channel.DigitalChannel;
@@ -85,6 +86,88 @@ public class PwmFrequencyFloorTests
         Assert.Equal(ChannelDirection.Input, wrapper.Direction);
     }
 
+    /// <summary>
+    /// Review of PR #592: a frequency stored before the device's floor was known (here, set while
+    /// no Core device was attached) must not reach Core below the floor when PWM is enabled. Core
+    /// 1.10.0 would refuse it, and the enable would stop there with the error only in the log. This
+    /// drives a real Core device over a capturing transport and reads what reached the wire.
+    /// </summary>
+    [Fact]
+    public void Enabling_PWM_sends_the_floor_when_the_stored_frequency_is_below_it()
+    {
+        var transport = new CapturingTransport();
+        var core = new DaqifiStreamingDevice("TestDevice", transport, NullLogger.Instance);
+        try
+        {
+            core.Connect();
+            var status = new DaqifiOutMessage
+            {
+                DevicePn = "Nq1",
+                DeviceFwRev = "3.9.0",
+                AnalogInPortNum = 16,
+                AnalogInRes = 4095,
+                DigitalPortNum = 16
+            };
+            core.Metadata.UpdateFromProtobuf(status);
+            core.PopulateChannelsFromStatus(status);
+            core.Metadata.ApplyCapabilityDocument(FloorDocument(AdvertisedFloorHz));
+            Assert.Equal(AdvertisedFloorHz, core.PwmFrequencyFloorHz);
+
+            var device = new AttachableDevice();
+            device.PwmFrequencyHz = 8; // No Core device yet, so the fixed 6 Hz floor applies.
+            Assert.Equal(8, device.PwmFrequencyHz);
+            device.Attach(core);
+
+            var coreChannel = core.Channels.OfType<IDigitalChannel>().First(c => c.IsPwmCapable);
+            var channel = new AppDigitalChannel(device, coreChannel);
+            transport.ClearSent();
+
+            device.SetChannelPwmEnabled(channel, true);
+
+            var enable = $"PWM:CHannel:ENable {coreChannel.ChannelNumber},1";
+            Assert.True(transport.WaitForSentText(enable, TimeSpan.FromSeconds(5)), transport.SentText);
+            Assert.Contains($",{AdvertisedFloorHz}", FrequencyCommands(transport.SentText));
+            Assert.DoesNotContain(",8", FrequencyCommands(transport.SentText));
+            Assert.Equal(AdvertisedFloorHz, device.PwmFrequencyHz);
+            Assert.True(coreChannel.IsPwmEnabled);
+        }
+        finally
+        {
+            transport.CloseStream();
+            core.Dispose();
+            transport.Dispose();
+        }
+    }
+
+    private static string FrequencyCommands(string sent) =>
+        string.Join('\n', sent.Split('\n').Where(line => line.StartsWith("PWM:CHannel:FREQuency", StringComparison.Ordinal)));
+
+    private static CapabilityDocument FloorDocument(int floorHz) => new()
+    {
+        SchemaVersion = 2,
+        Channels =
+        [
+            new CapabilityChannel
+            {
+                Id = 0,
+                Kind = CapabilityChannelKind.DigitalIo,
+                SupportsPwm = true,
+                PwmMinimumFrequencyHz = floorHz
+            }
+        ]
+    };
+
+    /// <summary>A wrapper whose Core device is attached by the test, already connected.</summary>
+    private sealed class AttachableDevice : AbstractStreamingDevice
+    {
+        public override ConnectionType ConnectionType => ConnectionType.Usb;
+
+        public void Attach(DaqifiStreamingDevice core) => CoreDevice = core;
+
+        protected override void SendMessage(IOutboundMessage<string> message) =>
+            throw new NotSupportedException();
+    }
+
     private static FloorCoreDevice CoreDeviceOn(string firmware, int floorHz) =>
         new("core") { Firmware = firmware, FloorHz = floorHz };
 
@@ -113,20 +196,7 @@ public class PwmFrequencyFloorTests
 
             Metadata.UpdateFromProtobuf(status);
             PopulateChannelsFromStatus(status);
-            Metadata.ApplyCapabilityDocument(new CapabilityDocument
-            {
-                SchemaVersion = 2,
-                Channels =
-                [
-                    new CapabilityChannel
-                    {
-                        Id = 0,
-                        Kind = CapabilityChannelKind.DigitalIo,
-                        SupportsPwm = true,
-                        PwmMinimumFrequencyHz = FloorHz
-                    }
-                ]
-            });
+            Metadata.ApplyCapabilityDocument(FloorDocument(FloorHz));
 
             return Task.CompletedTask;
         }
