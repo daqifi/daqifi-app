@@ -5,6 +5,7 @@
 
 using System.IO;
 using System.IO.Ports;
+using Daqifi.Core.Device;
 using Daqifi.Core.Firmware;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.Device.SerialDevice;
@@ -138,6 +139,13 @@ public class FirmwareUpdateCoordinator
     /// the same way <see cref="_wifiUpdateModeSettleDelay"/> is overridable.
     /// </summary>
     private readonly bool _canFlashWifiModule;
+
+    /// <summary>
+    /// Reads the version from a fresh status reply of the restarted device; <c>null</c> when it is
+    /// not known. See <see cref="PostRestartFirmwareVersion"/> for why this is not
+    /// <c>Metadata.FirmwareVersion</c>.
+    /// </summary>
+    private readonly Func<DaqifiDevice, CancellationToken, Task<string?>> _readPostRestartVersion;
     #endregion
 
     #region Constructor
@@ -165,6 +173,11 @@ public class FirmwareUpdateCoordinator
     /// <see cref="CanFlashWifiModule"/>; tests pass both values so the platform decision is covered
     /// on either side without needing two operating systems.
     /// </param>
+    /// <param name="readPostRestartVersion">
+    /// Reads the firmware version from a fresh status reply of the restarted device, or returns
+    /// <c>null</c> when it is not known. Null uses <see cref="PostRestartFirmwareVersion.ReadAsync"/>;
+    /// tests pass a fake so the reading is set without a device (issues #566 and #570).
+    /// </param>
     public FirmwareUpdateCoordinator(
         IFirmwareUpdateHost host,
         IFirmwareUpdateService firmwareUpdateService,
@@ -174,7 +187,8 @@ public class FirmwareUpdateCoordinator
         string firmwareDataDirectory,
         TimeSpan? wifiUpdateModeSettleDelay = null,
         IBootloaderWatcher? watcher = null,
-        bool? canFlashWifiModule = null)
+        bool? canFlashWifiModule = null,
+        Func<DaqifiDevice, CancellationToken, Task<string?>>? readPostRestartVersion = null)
     {
         _host = host ?? throw new ArgumentNullException(nameof(host));
         _firmwareUpdateService = firmwareUpdateService ?? throw new ArgumentNullException(nameof(firmwareUpdateService));
@@ -185,6 +199,8 @@ public class FirmwareUpdateCoordinator
         _wifiUpdateModeSettleDelay = wifiUpdateModeSettleDelay ?? DefaultWifiUpdateModeSettleDelay;
         _watcher = watcher;
         _canFlashWifiModule = canFlashWifiModule ?? CanFlashWifiModule;
+        _readPostRestartVersion = readPostRestartVersion
+            ?? ((device, token) => PostRestartFirmwareVersion.ReadAsync(device, cancellationToken: token));
     }
     #endregion
 
@@ -320,12 +336,14 @@ public class FirmwareUpdateCoordinator
                     cancellationToken);
             }
 
+            var reportedVersion = await _readPostRestartVersion(coreDevice, cancellationToken);
+
             if (!isManualUpload)
             {
                 await UpdateWifiModuleAsync(serialStreamingDevice, cancellationToken);
             }
 
-            RecheckFirmwareAfterWrite(serialStreamingDevice, coreDevice);
+            RecheckFirmwareAfterWrite(serialStreamingDevice, reportedVersion);
             refreshReleasesAfterRun = true;
 
             _host.IsUploadComplete = true;
@@ -399,27 +417,35 @@ public class FirmwareUpdateCoordinator
     /// same here as in the full check.
     /// </para>
     /// <para>
-    /// The device's version is taken from Core's metadata. Core re-reads the device's status when it
-    /// wakes the board after the reset, so its metadata carries the version the device booted with.
-    /// The wrapper normally hears that through <c>ChannelsPopulated</c>, but this must not depend on
-    /// that event having run first, or it compares the version from before the restart.
+    /// The device's version is <paramref name="reportedVersion"/>: the version in a fresh status
+    /// reply of the restarted device, read by <see cref="_readPostRestartVersion"/> once the write
+    /// has returned. It is NOT <c>Metadata.FirmwareVersion</c>. Core keeps that field when a reply
+    /// omits the version, and Core can complete the write even when its initialization after the
+    /// reconnect fails — so the field can still hold the version from before the write, and
+    /// comparing it would keep the obsolete notification with nothing to show it was stale.
     /// </para>
     /// <para>
     /// Both directions are settled, not only removal: a manual <c>.hex</c> can install an OLDER
-    /// image, and the notification must then stay, or come back. When no release has been recorded,
-    /// or the device reports no version (or one that does not parse), nothing is changed — there
-    /// is nothing honest to compare, and the separate refresh will settle it.
+    /// image, and the notification must then stay, or come back.
+    /// </para>
+    /// <para>
+    /// When the version is not known (<paramref name="reportedVersion"/> is <c>null</c>), nothing
+    /// changes: not <c>DeviceVersion</c>, not <c>IsFirmwareOutdated</c>, not the notification. The
+    /// same holds when no release has been recorded, or a version does not parse. The refresh after
+    /// the run then reads the wrapper's <c>DeviceVersion</c>, which is still the old value, so it
+    /// keeps the notification too: "unknown" is never turned into a guess in either direction.
     /// </para>
     /// </summary>
     private void RecheckFirmwareAfterWrite(
         SerialStreamingDevice serialStreamingDevice,
-        Daqifi.Core.Device.DaqifiDevice coreDevice)
+        string? reportedVersion)
     {
-        var restartedVersion = coreDevice.Metadata.FirmwareVersion;
-        if (string.IsNullOrWhiteSpace(restartedVersion))
+        if (string.IsNullOrWhiteSpace(reportedVersion))
         {
             return;
         }
+
+        var restartedVersion = reportedVersion;
 
         serialStreamingDevice.DeviceVersion = restartedVersion;
 

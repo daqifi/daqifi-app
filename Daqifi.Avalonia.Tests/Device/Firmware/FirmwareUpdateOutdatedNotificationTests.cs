@@ -30,11 +30,19 @@ namespace Daqifi.Avalonia.Tests.Device.Firmware;
 /// </para>
 ///
 /// <para>
+/// The device's version after the restart comes from a fresh status reply of the restarted device
+/// (<see cref="PostRestartFirmwareVersion"/>), not from Core's stored <c>Metadata.FirmwareVersion</c>,
+/// which Core keeps when a reply omits the version. Most tests set that reading through the
+/// coordinator's <c>readPostRestartVersion</c> seam; the stub flash leaves Core's metadata at the
+/// OLD version unless a test says otherwise, so every removal test also shows the stored value is
+/// not what is read. Two tests use the real reader against a Core device that answers the status
+/// request (<see cref="StatusReplyingCoreDevice"/>).
+/// </para>
+///
+/// <para>
 /// The device is the app's real <see cref="SerialStreamingDevice"/> over a real, connected Core
 /// device. Each test first runs the real connect-time check, which is what records the release and
-/// raises the notification in the app. The PIC32 flash is a stub that does what the restart does to
-/// Core's metadata: it writes the version the board boots with. It does NOT touch the wrapper, which
-/// is the case where the wrapper has not yet heard Core's <c>ChannelsPopulated</c>.
+/// raises the notification in the app.
 /// </para>
 /// </summary>
 public class FirmwareUpdateOutdatedNotificationTests : IDisposable
@@ -50,12 +58,13 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     private readonly FakeHost _host = new();
     private readonly ReleaseDownloadService _downloads;
     private readonly RestartingUpdateService _updates = new();
+    private readonly ReportedVersionReader _reader = new();
     private readonly RecordingAppLogger _logger = new();
     private readonly string _dataDirectory =
         Path.Combine(Path.GetTempPath(), "daqifi-firmware-outdated-tests", Guid.NewGuid().ToString("N"));
 
     private readonly Daqifi.Avalonia.Tests.Device.CapturingTransport _transport = new();
-    private readonly DaqifiStreamingDevice _core;
+    private readonly StatusReplyingCoreDevice _core;
     private readonly SerialStreamingDevice _device;
     private readonly FirmwareUpdateCoordinator _coordinator;
 
@@ -64,7 +73,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         _downloads = new ReleaseDownloadService(_host, Latest);
         _host.CountLookups = () => _downloads.LatestReleaseQueries;
 
-        _core = new DaqifiStreamingDevice("core", _transport, NullLogger.Instance);
+        _core = new StatusReplyingCoreDevice(_transport);
         _core.Connect();
         _device = new SerialStreamingDevice("COM-TEST-566", _core);
 
@@ -72,23 +81,32 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         _host.ConnectedDevices.Add(_device);
         _updates.Core = _core;
 
-        // canFlashWifiModule: false and a device with no WINC module keep the WiFi step out of these
-        // tests: it returns at once for a device without the module, so only the PIC32 half, the
-        // comparison and the post-run refresh run.
-        _coordinator = new FirmwareUpdateCoordinator(
-            _host,
+        _coordinator = CreateCoordinator(_reader.ReadAsync);
+    }
+
+    /// <summary>
+    /// <c>canFlashWifiModule: false</c> and a device with no WINC module keep the WiFi step out of
+    /// these tests: it returns at once for a device without the module, so only the PIC32 half, the
+    /// version read, the comparison and the post-run refresh run. A null reader is the production
+    /// default, <see cref="PostRestartFirmwareVersion.ReadAsync"/>.
+    /// </summary>
+    private FirmwareUpdateCoordinator CreateCoordinator(
+        Func<DaqifiDevice, CancellationToken, Task<string?>>? readPostRestartVersion) =>
+        new(_host,
             _updates,
             _downloads,
             NullLogger<FirmwareUpdateService>.Instance,
             _logger,
             _dataDirectory,
             wifiUpdateModeSettleDelay: TimeSpan.Zero,
-            canFlashWifiModule: false);
-    }
+            canFlashWifiModule: false,
+            readPostRestartVersion: readPostRestartVersion);
 
     public void Dispose()
     {
         _downloads.ReleaseHungLookups();
+        _reader.ReleaseHungReads();
+        _core.StopAnswering();
 
         // Release the parked reader first, as CurrentRateCapEnforcementTests does, so Core's
         // teardown does not spend its consumer-join bound on every run.
@@ -113,7 +131,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     {
         await ConnectOn(Previous);
         _downloads.LatestFirmwarePath = FirmwareFile();
-        _updates.VersionAfterRestart = Latest;
+        _reader.Reported = Latest;
 
         await RunUpdate();
 
@@ -133,7 +151,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     {
         await ConnectOn(Previous);
         _downloads.LatestFirmwarePath = FirmwareFile();
-        _updates.VersionAfterRestart = Latest;
+        _reader.Reported = Latest;
 
         await RunUpdate();
 
@@ -151,7 +169,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     {
         await ConnectOn(Previous);
         _downloads.LatestFirmwarePath = FirmwareFile();
-        _updates.VersionAfterRestart = Latest;
+        _reader.Reported = Latest;
         _downloads.Lookup = LookupMode.Hang;
 
         await RunUpdate();
@@ -173,7 +191,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     {
         await ConnectOn(Previous);
         _downloads.LatestFirmwarePath = FirmwareFile();
-        _updates.VersionAfterRestart = Latest;
+        _reader.Reported = Latest;
         _downloads.Lookup = LookupMode.Throw;
 
         await RunUpdate();
@@ -194,7 +212,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     {
         await ConnectOn(Previous);
         _downloads.LatestFirmwarePath = FirmwareFile();
-        _updates.VersionAfterRestart = Latest;
+        _reader.Reported = Latest;
         var lookupsBefore = _downloads.LatestReleaseQueries;
 
         await RunUpdate();
@@ -213,7 +231,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     {
         await ConnectOn(Previous);
         _downloads.LatestFirmwarePath = FirmwareFile();
-        _updates.VersionAfterRestart = Latest;
+        _reader.Reported = Latest;
         _downloads.Publish("3.10.0");
 
         await RunUpdate();
@@ -234,7 +252,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     {
         await ConnectOn(Previous);
         _host.FirmwareFilePath = FirmwareFile();
-        _updates.VersionAfterRestart = Latest;
+        _reader.Reported = Latest;
 
         await RunUpdate();
 
@@ -255,7 +273,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     {
         await ConnectOn(Latest);
         _host.FirmwareFilePath = FirmwareFile();
-        _updates.VersionAfterRestart = Previous;
+        _reader.Reported = Previous;
         _downloads.Lookup = LookupMode.Hang;
 
         await RunUpdate();
@@ -278,7 +296,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     {
         await ConnectOn(Older);
         _host.FirmwareFilePath = FirmwareFile();
-        _updates.VersionAfterRestart = Previous;
+        _reader.Reported = Previous;
 
         await RunUpdate();
 
@@ -289,23 +307,122 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     }
 
     /// <summary>
-    /// When Core has no version after the reset (the board never answered), nothing is guessed:
-    /// the wrapper keeps the version it had and the notification is left as it was.
+    /// The review finding on head <c>2a59dcb</c>: the version must come from the restarted device.
+    /// Core's stored metadata still says 3.8.0 (a reply without a version, or an initialization that
+    /// failed after the reconnect, leaves it there); the fresh reply says 3.9.0. The fresh reply wins.
     /// </summary>
     [Fact]
-    public async Task An_empty_version_after_the_restart_changes_nothing()
+    public async Task A_fresh_reply_is_used_while_metadata_still_holds_the_old_version()
     {
         await ConnectOn(Previous);
         _downloads.LatestFirmwarePath = FirmwareFile();
-        _updates.VersionAfterRestart = string.Empty;
+        _reader.Reported = Latest;
         _downloads.Lookup = LookupMode.Hang;
 
         await RunUpdate();
 
+        Assert.Equal(Previous, _core.Metadata.FirmwareVersion);
+        Assert.Equal(1, _reader.Reads);
+        Assert.Equal(Latest, _device.DeviceVersion);
+        Assert.False(_device.IsFirmwareOutdated);
+        Assert.Equal(0, _host.FirmwareNotificationsWhenSucceeded);
+        Assert.Equal(0, _host.NotificationCount);
+    }
+
+    /// <summary>
+    /// "Unknown" stays unknown: when the restarted device's version is not known, nothing changes —
+    /// even though Core's metadata holds the newest version, which a guess would have trusted. The
+    /// refresh after the run reads the wrapper's still-old version and keeps the notification too.
+    /// </summary>
+    [Fact]
+    public async Task An_unknown_version_changes_nothing_even_when_metadata_has_the_new_one()
+    {
+        await ConnectOn(Previous);
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        _reader.Reported = null;
+        _updates.MetadataAfterRestart = Latest;
+
+        await RunUpdate();
+
         Assert.True(_host.UpdateSucceeded);
+        Assert.Equal(Latest, _core.Metadata.FirmwareVersion);
+        Assert.Equal(1, _host.FirmwareNotificationsWhenSucceeded);
+        Assert.True(_host.WasOutdatedWhenSucceeded);
+
+        // After the refresh that followed the run, too.
         Assert.Equal(Previous, _device.DeviceVersion);
         Assert.True(_device.IsFirmwareOutdated);
         Assert.Single(_host.Notifications, n => n.IsFirmwareUpdate);
+        Assert.Equal(1, _host.NotificationCount);
+    }
+
+    /// <summary>
+    /// The version read runs on the run's token, so Cancel during the wait ends the run as cancelled
+    /// rather than leaving it to time out.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_during_the_version_read_ends_the_run_as_cancelled()
+    {
+        await ConnectOn(Previous);
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        _reader.HangUntilCancelled = true;
+
+        var run = _coordinator.UploadFirmwareAsync();
+        await _reader.WaitUntilReadingAsync(RunTimeout);
+        _coordinator.CancelUpload();
+        await run.WaitAsync(RunTimeout);
+
+        Assert.Equal("Firmware update canceled.", _host.FirmwareUpdateStatusText);
+        Assert.False(_host.UpdateSucceeded);
+        Assert.False(_host.IsFirmwareUploading);
+        Assert.True(_device.IsFirmwareOutdated);
+        Assert.Single(_host.Notifications, n => n.IsFirmwareUpdate);
+    }
+
+    /// <summary>
+    /// End to end with the production reader: the restarted device answers the status request with
+    /// 3.9.0 while Core's metadata still says 3.8.0. Nothing in the coordinator is faked but the flash.
+    /// </summary>
+    [Fact]
+    public async Task With_the_device_reader_a_reply_with_the_new_version_removes_the_notice()
+    {
+        var coordinator = CreateCoordinator(readPostRestartVersion: null);
+        await ConnectOn(Previous, coordinator);
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        _downloads.Lookup = LookupMode.Hang;
+        var responder = _core.AnswerNextStatusRequestWith(
+            new DaqifiOutMessage { DeviceFwRev = Latest });
+
+        await coordinator.UploadFirmwareAsync().WaitAsync(RunTimeout);
+
+        await responder.WaitAsync(RunTimeout);
+        Assert.Equal(1, _core.RepliesDelivered);
+        Assert.False(_device.IsFirmwareOutdated);
+        Assert.Equal(0, _host.FirmwareNotificationsWhenSucceeded);
+    }
+
+    /// <summary>
+    /// End to end with the production reader, the review's own case: the reply has no version, and
+    /// Core's metadata holds a value (here the newest). The result is unknown, so the notice stays.
+    /// </summary>
+    [Fact]
+    public async Task With_the_device_reader_a_reply_without_a_version_keeps_the_notice()
+    {
+        var coordinator = CreateCoordinator(readPostRestartVersion: null);
+        await ConnectOn(Previous, coordinator);
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        _downloads.Lookup = LookupMode.Hang;
+        _updates.MetadataAfterRestart = Latest;
+        var responder = _core.AnswerNextStatusRequestWith(
+            new DaqifiOutMessage { DevicePn = "Nq1" });
+
+        await coordinator.UploadFirmwareAsync().WaitAsync(RunTimeout);
+
+        await responder.WaitAsync(RunTimeout);
+        Assert.Equal(1, _core.RepliesDelivered);
+        Assert.Equal(Latest, _core.Metadata.FirmwareVersion);
+        Assert.True(_device.IsFirmwareOutdated);
+        Assert.Equal(1, _host.FirmwareNotificationsWhenSucceeded);
     }
 
     /// <summary>
@@ -328,7 +445,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
             IsFirmwareUpdate = true
         });
         _downloads.LatestFirmwarePath = FirmwareFile();
-        _updates.VersionAfterRestart = Latest;
+        _reader.Reported = Latest;
         _downloads.Lookup = LookupMode.Hang;
 
         await RunUpdate();
@@ -346,7 +463,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     {
         await ConnectOn(Previous);
         _downloads.LatestFirmwarePath = FirmwareFile();
-        _updates.VersionAfterRestart = Latest;
+        _reader.Reported = Latest;
         _updates.FailFlash = true;
         var lookupsBefore = _downloads.LatestReleaseQueries;
 
@@ -363,15 +480,16 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     /// Connects the device on <paramref name="version"/> and runs the real connect-time check, which
     /// records the latest release and raises or clears the notification, as the app does.
     /// </summary>
-    private async Task ConnectOn(string version)
+    private async Task ConnectOn(string version, FirmwareUpdateCoordinator? coordinator = null)
     {
+        coordinator ??= _coordinator;
         _device.DeviceSerialNo = Serial;
         _device.DeviceVersion = version;
         _core.Metadata.FirmwareVersion = version;
 
-        await _coordinator.RefreshFirmwareUpdatesAsync();
+        await coordinator.RefreshFirmwareUpdatesAsync();
 
-        Assert.Equal(Latest, _coordinator.LatestFirmwareVersion);
+        Assert.Equal(Latest, coordinator.LatestFirmwareVersion);
     }
 
     /// <summary>Runs the update, failing the test rather than hanging if the run never completes.</summary>
@@ -490,9 +608,43 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     }
 
     /// <summary>
-    /// PIC32 update service that flashes nothing. In place of the flash it does what the restart
-    /// does to Core's metadata — the board comes back reporting <see cref="VersionAfterRestart"/>
-    /// — or throws, for the failure path.
+    /// The coordinator's <c>readPostRestartVersion</c> seam: returns <see cref="Reported"/> (null is
+    /// "not known"), or waits until the run's token is cancelled.
+    /// </summary>
+    private sealed class ReportedVersionReader
+    {
+        private readonly TaskCompletionSource _reading = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly CancellationTokenSource _release = new();
+
+        public string? Reported { get; set; }
+
+        public bool HangUntilCancelled { get; set; }
+
+        public int Reads { get; private set; }
+
+        public Task WaitUntilReadingAsync(TimeSpan timeout) => _reading.Task.WaitAsync(timeout);
+
+        public void ReleaseHungReads() => _release.Cancel();
+
+        public async Task<string?> ReadAsync(DaqifiDevice device, CancellationToken cancellationToken)
+        {
+            Reads++;
+            _reading.TrySetResult();
+
+            if (HangUntilCancelled)
+            {
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _release.Token);
+                await Task.Delay(Timeout.InfiniteTimeSpan, linked.Token);
+            }
+
+            return Reported;
+        }
+    }
+
+    /// <summary>
+    /// PIC32 update service that flashes nothing. By default it leaves Core's metadata as it was —
+    /// the case where nothing after the reconnect updated it. <see cref="MetadataAfterRestart"/>
+    /// overwrites it instead. It throws, for the failure path.
     /// </summary>
     private sealed class RestartingUpdateService : IFirmwareUpdateService
     {
@@ -500,7 +652,8 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
 
         public DaqifiStreamingDevice? Core { get; set; }
 
-        public string VersionAfterRestart { get; set; } = string.Empty;
+        /// <summary>What the flash leaves in Core's metadata; null leaves it unchanged.</summary>
+        public string? MetadataAfterRestart { get; set; }
 
         public bool FailFlash { get; set; }
 
@@ -528,7 +681,11 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
                 throw new InvalidOperationException("Simulated flash failure.");
             }
 
-            Core!.Metadata.FirmwareVersion = VersionAfterRestart;
+            if (MetadataAfterRestart != null)
+            {
+                Core!.Metadata.FirmwareVersion = MetadataAfterRestart;
+            }
+
             return Task.CompletedTask;
         }
 
