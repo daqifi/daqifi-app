@@ -72,7 +72,11 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
             new RecordingAppLogger(),
             _dataDirectory,
             wifiUpdateModeSettleDelay: TimeSpan.Zero,
-            canFlashWifiModule: false);
+            canFlashWifiModule: false,
+            // The version read after the write (issue #570) asks the device for a status reply. The
+            // devices here never answer, so the real reader would wait its full timeout in every
+            // run that writes. These facts are about the prompt and the write, not that read.
+            readPostRestartVersion: (_, _) => Task.FromResult<string?>(null));
 
     #region The write starts only after the user confirms
     /// <summary>
@@ -400,9 +404,14 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
     {
         await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
 
+        // The first paragraph is the version text of issue #570 (here the reader gives no version, so
+        // "unknown"); the WiFi instruction of issue #564 follows after an empty line.
+        var device = Assert.IsAssignableFrom<Daqifi.Desktop.Device.IStreamingDevice>(_host.SelectedDevice);
         var message = Assert.Single(_host.SuccessMessages);
         Assert.Equal(
-            "Firmware update completed successfully.\n\n" + FirmwareUpdateCoordinator.WifiSettingsMayBeErasedInstruction,
+            FirmwareUpdateMessages.UpdateSucceeded(
+                FirmwareUpdateMessages.DeviceNameFor(device), device.DeviceVersion, reportedVersion: null)
+            + "\n\n" + FirmwareUpdateCoordinator.WifiSettingsMayBeErasedInstruction,
             message);
         Assert.EndsWith(FirmwareUpdateCoordinator.WifiSettingsMayBeErasedInstruction, Assert.Single(_host.Notifications).Message);
     }

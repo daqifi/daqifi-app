@@ -24,7 +24,51 @@ public partial class DevicesPanePrototype : UserControl
     public DevicesPanePrototype()
     {
         InitializeComponent();
+        FirmwareRunPanel.PropertyChanged += OnFirmwareRunPanelPropertyChanged;
     }
+
+    /// <summary>
+    /// Scrolls the firmware status line and CANCEL UPDATE into view when an update starts
+    /// (issue #570). They are the items below the UPDATE button and are visible only during an
+    /// update, so they appear below the visible area of a drawer that is scrolled to show that
+    /// button at its bottom edge — and the cancel button is the only safe control to stop an update.
+    /// </summary>
+    /// <remarks>
+    /// Posted, so it runs after the binding update that made the panel visible, and it runs a
+    /// layout pass first: until one runs, the panel and the scroll extent can still have their old
+    /// sizes, and a scroll computed from them is wrong. Nothing guarantees that the render timer's
+    /// layout pass comes before a posted job.
+    /// <para>
+    /// The rectangle includes <see cref="FirmwareRunBottomClearance"/> below the panel, so the
+    /// button does not sit on the bottom edge of the drawer. A panel that is already fully visible
+    /// with that clearance does not move the drawer. Only the hidden-to-visible change acts, so the
+    /// scroll position is the user's again for the rest of the update.
+    /// </para>
+    /// </remarks>
+    private void OnFirmwareRunPanelPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+    {
+        if (e.Property != IsVisibleProperty || e.NewValue is not true)
+        {
+            return;
+        }
+
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                if (!FirmwareRunPanel.IsEffectivelyVisible)
+                {
+                    return;
+                }
+
+                FirmwareRunPanel.UpdateLayout();
+                FirmwareRunPanel.BringIntoView(
+                    new Rect(FirmwareRunPanel.Bounds.Size).Inflate(new Thickness(0, 0, 0, FirmwareRunBottomClearance)));
+            },
+            DispatcherPriority.Loaded);
+    }
+
+    /// <summary>Space kept below CANCEL UPDATE when it is scrolled into view, in pixels.</summary>
+    private const double FirmwareRunBottomClearance = 16;
 
     // Upstream swaps the VM in on Loaded. Avalonia raises Loaded at DispatcherPriority.Loaded,
     // BELOW Render, so the pane was laid out and presented for a frame with the host's

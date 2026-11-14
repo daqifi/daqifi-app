@@ -24,7 +24,9 @@
     <Grid Margin="20" Background="{StaticResource Surface}"
           RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,*">
 
-        <i:Icon Grid.Row="0" Grid.Column="0" Value="mdi-alert-circle-check-outline"
+        <!-- A plain check mark (issue #570). The old mdi-alert-circle-check-outline drew an
+             exclamation mark with a small check mark, which reads as a warning. -->
+        <i:Icon Grid.Row="0" Grid.Column="0" Value="mdi-check-circle-outline"
                 FontSize="40"
                 HorizontalAlignment="Center" VerticalAlignment="Top"
                 Foreground="{StaticResource StatusGreen}"/>
@@ -34,7 +36,7 @@
                  ScrollViewer.VerticalScrollBarVisibility="Auto" BorderThickness="0" Background="Transparent"
                  FontSize="14" VerticalAlignment="Center" Foreground="{StaticResource TextPrimary}"/>
 
-        <Button Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Content="Ok" Click="btnOk_Click"
+        <Button Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Content="OK" Click="btnOk_Click"
                 IsDefault="True" Width="80" Height="30" Margin="0,20,0,0"
                 HorizontalAlignment="Right"/>
     </Grid>
