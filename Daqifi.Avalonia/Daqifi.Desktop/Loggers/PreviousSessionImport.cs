@@ -210,8 +210,9 @@ public sealed class PreviousSessionImport
                    "(SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID), " +
                    "(SELECT MAX(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) " +
                    $"FROM old.Sessions o WHERE {complete} AND {HasSamples} " +
-                   // A failed copy still here was kept on purpose (see RemoveFailedImports); it
-                   // must not stop a complete copy.
+                   // A failed copy must never stop a complete copy. With ProvedCopy none can: a
+                   // proved one was deleted just above, and an unproved one never matches. The
+                   // status check stays as a guard, so no test can fail without it.
                    $"AND NOT EXISTS (SELECT 1 FROM main.Sessions m WHERE m.Status <> {(int)SessionStatus.ImportFailed} AND {copyOf}) ORDER BY o.ID"))
         using (var reader = read.ExecuteReader())
         {
