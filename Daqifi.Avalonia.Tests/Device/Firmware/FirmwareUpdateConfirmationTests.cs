@@ -630,6 +630,27 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
     }
 
     /// <summary>
+    /// What a tab change did before the lookup existed still holds, now through the preparation's
+    /// token: an open prompt (here a manual upload, which has no lookup) closes, and the command ends.
+    /// </summary>
+    [Fact]
+    public async Task Leaving_the_devices_tab_closes_an_open_prompt_on_the_real_view_model()
+    {
+        var shell = ShellOnDevicesTab();
+        shell.FirmwareFilePath = FirmwareFile();
+
+        var run = shell.UploadFirmwareCommand.ExecuteAsync(null);
+        Assert.True(shell.FirmwareUpdateConfirm.IsOpen);
+        shell.SelectedIndex = 0;
+        await run.WaitAsync(Timeout);
+
+        Assert.False(shell.FirmwareUpdateConfirm.IsOpen);
+        Assert.False(shell.UploadFirmwareCommand.IsRunning);
+        Assert.Equal(0, _downloads.LookupCount);
+        Assert.Equal(0, _updates.Pic32FlashCount);
+    }
+
+    /// <summary>
     /// A shell over this test's services, with the device selected and the Devices tab showing —
     /// the state the drawer's UPDATE button is clicked in. An auto-update, so the lookup runs.
     /// </summary>
