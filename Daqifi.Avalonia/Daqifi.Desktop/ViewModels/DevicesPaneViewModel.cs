@@ -314,7 +314,7 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
     private void SetLoggingMode(string? mode)
     {
         // The shell setter takes the label, drives device SwitchMode, and
-        // refuses changes mid-session — we just forward the click.
+        // refuses a change while a session is ON (#536) — we just forward the click.
         if (string.IsNullOrEmpty(mode) || _shell == null) return;
         _shell.SelectedLoggingMode = mode;
     }
