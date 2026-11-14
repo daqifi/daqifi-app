@@ -102,8 +102,9 @@ public interface IFirmwareUpdateHost
     /// so the coordinator stays free of WPF dependencies.
     /// </summary>
     /// <param name="message">
-    /// The dialog text. The coordinator writes it, so it can carry what the user must do next, such as
-    /// set the WiFi settings again (issue #564).
+    /// The dialog text. The coordinator writes it because only the coordinator knows the device,
+    /// the version it had and the version it has now (issue #570), and so it can carry what the
+    /// user must do next, such as set the WiFi settings again (issue #564).
     /// </param>
     // @port: Daqifi.Desktop.Device.Firmware.IFirmwareUpdateHost.ShowFirmwareUpdateSucceeded
     void ShowFirmwareUpdateSucceeded(string message);

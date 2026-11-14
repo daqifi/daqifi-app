@@ -230,15 +230,34 @@
                     <Rectangle Grid.Column="0" Fill="{Binding StripeBrush}"/>
                     <Grid Grid.Column="1" Margin="14,12,12,12" RowDefinitions="Auto,*,Auto">
 
-                        <!-- Name + connection chip -->
-                        <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+                        <!-- Name + UPDATING pill + connection chip -->
+                        <Grid Grid.Row="0" ColumnDefinitions="*,Auto,Auto">
                             <TextBlock Grid.Column="0"
                                        Text="{Binding Name}"
                                        FontFamily="Consolas"
                                        FontSize="18"
                                        FontWeight="Medium"
                                        Foreground="{DynamicResource TextPrimary}"/>
+                            <!-- Visible only while a firmware update runs on this device (issue #570).
+                                 An Auto column with a hidden child has no width, so the chip does
+                                 not move when the pill is hidden. -->
                             <Border Grid.Column="1"
+                                    Background="#2A1A0A"
+                                    BorderBrush="{DynamicResource StatusAmber}"
+                                    BorderThickness="1"
+                                    CornerRadius="3"
+                                    Padding="6,2"
+                                    Margin="0,0,6,0"
+                                    VerticalAlignment="Center"
+                                    IsVisible="{Binding IsUpdatingFirmware}"
+                                    AutomationProperties.AutomationId="DeviceTileUpdatingPill"
+                                    ToolTip.Tip="A firmware update is running on this device. Do not disconnect it.">
+                                <TextBlock Text="UPDATING"
+                                           FontSize="9"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource StatusAmber}"/>
+                            </Border>
+                            <Border Grid.Column="2"
                                     Background="#141821"
                                     BorderBrush="{Binding StripeBrush}"
                                     BorderThickness="1"
@@ -880,20 +899,29 @@
                                     owned by the success/failure dialogs and by HasErrorOccured /
                                     IsUploadComplete. CanCancelFirmwareUpload reads the same flag, so
                                     the button is enabled for exactly as long as it is visible.
-                                -->
-                                <TextBlock Text="{Binding Shell.FirmwareUpdateStatusText}"
-                                           IsVisible="{Binding Shell.IsFirmwareUploading}"
-                                           FontSize="11"
-                                           TextWrapping="Wrap"
-                                           Margin="0,12,0,0"
-                                           Foreground="{DynamicResource TextSecondary}"/>
 
-                                <Button Theme="{StaticResource PillButton}"
-                                        Content="CANCEL UPDATE"
-                                        HorizontalAlignment="Left"
-                                        Margin="0,8,0,0"
-                                        IsVisible="{Binding Shell.IsFirmwareUploading}"
-                                        Command="{Binding Shell.CancelFirmwareUploadCommand}"/>
+                                    One panel holds both, so the code-behind can scroll the pair into
+                                    view when an update starts (issue #570). They are the last items
+                                    of the section and appear only then; with the UPDATE button at
+                                    the bottom edge of the drawer, they appeared below the visible
+                                    area and CANCEL UPDATE was cut off. The panel adds no space when
+                                    it is hidden.
+                                -->
+                                <StackPanel x:Name="FirmwareRunPanel"
+                                            IsVisible="{Binding Shell.IsFirmwareUploading}">
+                                    <TextBlock Text="{Binding Shell.FirmwareUpdateStatusText}"
+                                               FontSize="11"
+                                               TextWrapping="Wrap"
+                                               Margin="0,12,0,0"
+                                               Foreground="{DynamicResource TextSecondary}"/>
+
+                                    <Button Theme="{StaticResource PillButton}"
+                                            Content="CANCEL UPDATE"
+                                            HorizontalAlignment="Left"
+                                            Margin="0,8,0,0"
+                                            AutomationProperties.AutomationId="CancelFirmwareUpdateButton"
+                                            Command="{Binding Shell.CancelFirmwareUploadCommand}"/>
+                                </StackPanel>
                             </StackPanel>
 
                             <!-- WiFi: informational message -->

@@ -5,6 +5,7 @@
 
 using System.IO;
 using System.IO.Ports;
+using Daqifi.Core.Device;
 using Daqifi.Core.Firmware;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.Device.SerialDevice;
@@ -138,6 +139,13 @@ public class FirmwareUpdateCoordinator
     /// the same way <see cref="_wifiUpdateModeSettleDelay"/> is overridable.
     /// </summary>
     private readonly bool _canFlashWifiModule;
+
+    /// <summary>
+    /// Reads the firmware version from a status reply that the device sends after the write
+    /// (issue #570). Production: <see cref="PostRestartFirmwareVersion.ReadAsync"/>. Overridable so
+    /// unit tests can give the reply without a device. Shared with #566 by design.
+    /// </summary>
+    private readonly Func<DaqifiDevice, CancellationToken, Task<string?>> _readPostRestartVersion;
     #endregion
 
     #region Constructor
@@ -165,6 +173,11 @@ public class FirmwareUpdateCoordinator
     /// <see cref="CanFlashWifiModule"/>; tests pass both values so the platform decision is covered
     /// on either side without needing two operating systems.
     /// </param>
+    /// <param name="readPostRestartVersion">
+    /// Overrides how the version is read from the restarted device. Null uses
+    /// <see cref="PostRestartFirmwareVersion.ReadAsync"/>. The result is null when the version is
+    /// not known.
+    /// </param>
     public FirmwareUpdateCoordinator(
         IFirmwareUpdateHost host,
         IFirmwareUpdateService firmwareUpdateService,
@@ -174,7 +187,8 @@ public class FirmwareUpdateCoordinator
         string firmwareDataDirectory,
         TimeSpan? wifiUpdateModeSettleDelay = null,
         IBootloaderWatcher? watcher = null,
-        bool? canFlashWifiModule = null)
+        bool? canFlashWifiModule = null,
+        Func<DaqifiDevice, CancellationToken, Task<string?>>? readPostRestartVersion = null)
     {
         _host = host ?? throw new ArgumentNullException(nameof(host));
         _firmwareUpdateService = firmwareUpdateService ?? throw new ArgumentNullException(nameof(firmwareUpdateService));
@@ -185,6 +199,8 @@ public class FirmwareUpdateCoordinator
         _wifiUpdateModeSettleDelay = wifiUpdateModeSettleDelay ?? DefaultWifiUpdateModeSettleDelay;
         _watcher = watcher;
         _canFlashWifiModule = canFlashWifiModule ?? CanFlashWifiModule;
+        _readPostRestartVersion = readPostRestartVersion
+            ?? ((device, token) => PostRestartFirmwareVersion.ReadAsync(device, cancellationToken: token));
     }
     #endregion
 
@@ -252,6 +268,10 @@ public class FirmwareUpdateCoordinator
             _host.FirmwareUpdateStatusText = "Preparing firmware update...";
             _host.DeviceBeingUpdated = _host.SelectedDevice;
 
+            // Read before the flash for the success dialog (issue #570): the device still reports
+            // the version it had.
+            var previousVersion = serialStreamingDevice.DeviceVersion;
+
             _appLogger.AddBreadcrumb("firmware", $"Firmware update started for {serialStreamingDevice.Name}");
 
             // Quiesce inside the try so a fault here still runs the finally (which clears
@@ -303,13 +323,13 @@ public class FirmwareUpdateCoordinator
                 throw new FileNotFoundException("Firmware file path is invalid or does not exist.", effectiveFirmwarePath);
             }
 
+            // The status line is made from the report's State, in user words (issue #570). Core's
+            // CurrentOperation is its own engineering text ("Programming record 4587 of 54957") and
+            // goes to no screen; the progress bar shows the amount.
             var pic32Progress = new Progress<FirmwareUpdateProgress>(report =>
             {
                 _host.UploadFirmwareProgress = Math.Clamp((int)Math.Round(report.PercentComplete), 0, 100);
-                if (!string.IsNullOrWhiteSpace(report.CurrentOperation))
-                {
-                    _host.FirmwareUpdateStatusText = report.CurrentOperation;
-                }
+                _host.FirmwareUpdateStatusText = FirmwareUpdateMessages.DescribeState(report.State);
             });
 
             // Suspend the watcher's HID discovery for just the PIC32 flash: the connected device reboots
@@ -331,16 +351,45 @@ public class FirmwareUpdateCoordinator
                     cancellationToken);
             }
 
+            // The success dialog names the version the device reports AFTER its restart (issue #570):
+            // from one status reply that the restarted device sends, not from Core's shared metadata,
+            // which keeps an earlier value when a reply has no version. Null means "not known". The
+            // run's token ends the wait at once on Cancel. Shared with #566 by design (same block).
+
+            // The write has completed. A Cancel during this read must not report the run as
+            // canceled: the device is already written. The version is then unknown (issues #566, #570).
+            string? reportedVersion;
+            try
+            {
+                reportedVersion = await _readPostRestartVersion(coreDevice, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                reportedVersion = null;
+            }
+
             if (!isManualUpload)
             {
                 await UpdateWifiModuleAsync(serialStreamingDevice, cancellationToken);
             }
 
             _host.IsUploadComplete = true;
+
+            // A full bar after the run reads as "something is still at 100 %" and invites a second
+            // write of the same version (issue #570). The finished run is the dialog's to report.
+            _host.UploadFirmwareProgress = 0;
+            _host.UploadWiFiProgress = 0;
+
             NotifyWifiSettingsMayBeErased(serialStreamingDevice);
             _appLogger.AddBreadcrumb("firmware", "Firmware update completed");
+
+            // The device and both versions (issue #570), then what the user must do next (issue #564).
             _host.ShowFirmwareUpdateSucceeded(
-                "Firmware update completed successfully.\n\n" + WifiSettingsMayBeErasedInstruction);
+                FirmwareUpdateMessages.UpdateSucceeded(
+                    FirmwareUpdateMessages.DeviceNameFor(serialStreamingDevice),
+                    previousVersion,
+                    reportedVersion)
+                + "\n\n" + WifiSettingsMayBeErasedInstruction);
         }
         catch (OperationCanceledException)
         {
