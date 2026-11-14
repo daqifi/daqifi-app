@@ -1,0 +1,276 @@
+name: Release
+
+# Builds the Windows installer from a version tag and attaches it to that tag's GitHub Release
+# (#344). Until this existed, the only releases were zips built by hand on one machine, which an
+# updater must never be pointed at: its whole job is to fetch and run a build nobody is watching.
+#
+# What one run publishes for the tag (one MSI, plus what the updater reads):
+#
+#   DAQiFi-<version>-win-x64.msi       the installer. Whole PC by default, "just me" on offer;
+#                                      silent installs need ALLUSERS=1 for the whole PC (#480)
+#   Daqifi.App-<version>-full.nupkg    the package the in-app updater downloads (#343)
+#   releases.win.json, RELEASES        the feed Velopack's GithubSource reads from each release
+#
+# vpk also builds Daqifi.App-win-Setup.exe. It is deliberately NOT uploaded: the plan in #480
+# is one installer, and two would mean two install locations to support.
+#
+# macOS and Linux are not here yet: each needs its own packaging decisions (notarisation, the
+# AppImage update story), tracked on #344.
+#
+# Pack identity is permanent once shipped. packId Daqifi.App decides the install folder
+# (Program Files\Daqifi.App) and the updater's identity; changing it later strands every
+# installed copy on its old version. It is also deliberately not "DAQiFi", so an uninstall can
+# never reach the WPF app's Program Files\DAQiFi folder, and the MSI's uninstall cleanup, which
+# deletes %LOCALAPPDATA%\<packId>, can never reach the app's data in %LOCALAPPDATA%\DAQiFi.
+
+on:
+  push:
+    tags: ['v*']
+  # Re-run for an existing tag, say after fixing the workflow itself. The tag is checked out,
+  # never the branch the run was started from, so what ships is still exactly the tagged tree.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build, e.g. v3.4.0 or v3.4.0-beta.1'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # Pinned, and matched to the Velopack PackageReference in Daqifi.Avalonia.Desktop.csproj
+  # (checked below): the packer and the library that reads its output must agree on the
+  # package format.
+  #
+  # A prerelease on purpose. 1.2.161's MSI deleted %LOCALAPPDATA%\<packTitle> on every
+  # uninstall AND every upgrade, and with the title DAQiFi that is the app's data folder
+  # (reproduced on a real PC, #480). 1.3.39 keys that cleanup off the pack ID instead
+  # (velopack b40a2781d, 9e559166d), allows same-version MSI upgrades, and limits uninstall
+  # cleanup to the install being removed. Once any MSI ships, its removal steps run again on
+  # every later upgrade from it, so the first MSI must already be built with the fix.
+  VPK_VERSION: '1.3.39-g8d2844f'
+  PACK_ID: Daqifi.App
+  PACK_TITLE: DAQiFi
+
+jobs:
+  version:
+    name: Tag matches the app version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+      msi_version: ${{ steps.check.outputs.msi_version }}
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      # Fully qualified: given a bare name, actions/checkout prefers a BRANCH of that name over
+      # the tag, so a branch called v3.4.0 would be checked out instead of the tag v3.4.0.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
+
+      # The commit that was validated. The build job checks out this SHA rather than a name, so
+      # it builds exactly the tree the guard below passed.
+      - name: Record the validated commit
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # The tag, DaqifiAppVersion and app.manifest must all name the same release. A tag
+      # v3.4.0 on a tree that still says 3.3.0 would ship packages the updater compares wrongly
+      # and a Sentry release with the wrong name. app.manifest repeats the number as X.Y.Z.0
+      # and nothing else keeps it in step, so it is checked here too.
+      #
+      # It also derives the MSI ProductVersion. Windows Installer compares only three fields,
+      # so vpk's default (X.Y.Z.0) gives every 3.4.0 beta and 3.4.0 itself one version and an
+      # MSI push cannot upgrade between them. The script maps each tag to a build field that
+      # grows in SemVer order (patch*100 + rank: alpha.N 1-29, beta.N 31-69, rc.N 71-98,
+      # stable 99), so 3.4.0-beta.3 is 3.4.33 and 3.4.0 is 3.4.99, and it refuses a tag the
+      # scheme cannot place. vpk 1.3's AllowSameVersionUpgrades is the backstop, not the plan.
+      - name: Check the tag against DaqifiAppVersion and app.manifest
+        id: check
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: python3 .github/scripts/check_release_version.py "$TAG" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows MSI
+    needs: version
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+      MSI_VERSION: ${{ needs.version.outputs.msi_version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      # From global.json, never a floating 10.0.x: the SDK patch decides package versions the
+      # lock files record (see build.yml and #107).
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Verify locked-mode restore is armed
+        run: |
+          set -euo pipefail
+          locked=$(dotnet msbuild Daqifi.Avalonia.Desktop/Daqifi.Avalonia.Desktop.csproj -getProperty:RestoreLockedMode)
+          echo "RestoreLockedMode=${locked}"
+          if [ "${locked}" != "true" ]; then
+            echo "::error::RestoreLockedMode is '${locked}', expected 'true'. A release must not resolve packages the lock files do not name."
+            exit 1
+          fi
+
+      # RID-less, like every other restore in this repo: an explicit -r restore rewrites the lock
+      # file to hold only that RID (#85). The RID arrives at publish time instead, against the
+      # per-RID assets this restore already produced for every declared RuntimeIdentifier.
+      - name: Restore
+        run: dotnet restore Daqifi.Avalonia.Desktop/Daqifi.Avalonia.Desktop.csproj
+
+      # -p:Version carries the full tag version, prerelease suffix included, into every
+      # assembly. The update service reads it back (a '-' means "follow prereleases"), and so
+      # do the in-app version text and the Sentry release.
+      - name: Publish (self-contained, win-x64)
+        run: |
+          set -euo pipefail
+          dotnet publish Daqifi.Avalonia.Desktop/Daqifi.Avalonia.Desktop.csproj \
+            -c Release -r win-x64 --self-contained true --no-restore \
+            -p:Version="${VERSION}" -p:ContinuousIntegrationBuild=true \
+            -o "${RUNNER_TEMP}/publish"
+          test -f "${RUNNER_TEMP}/publish/Daqifi.Avalonia.Desktop.exe"
+
+      - name: Lock files are unchanged by the build
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- '*packages.lock.json'; then
+            echo "::error::The release build changed a lock file. What shipped is not what main's lock files describe."
+            exit 1
+          fi
+
+      # The packer must match the library the app was built against. Both are prereleases for
+      # now (see VPK_VERSION), so a bump of one without the other is easy to miss.
+      #
+      # And the MSI's cleanup must not be aimed at the app's data folder. It deletes
+      # %LOCALAPPDATA%\<name>: the pack ID from vpk 1.3, but the pack TITLE before that, and our
+      # title is DAQiFi, the data folder's name. So the pack ID is always checked, and a vpk
+      # older than 1.3 is refused while the title is DAQiFi, so a downgrade cannot bring the
+      # data loss back.
+      - name: Pack identity and packer version are safe
+        run: |
+          set -euo pipefail
+          lib=$(sed -n 's/.*Include="Velopack" Version="\([^"]*\)".*/\1/p' Daqifi.Avalonia.Desktop/Daqifi.Avalonia.Desktop.csproj)
+          echo "Velopack library ${lib}, vpk ${VPK_VERSION}"
+          if [ "${lib}" != "${VPK_VERSION}" ]; then
+            echo "::error::vpk ${VPK_VERSION} does not match the Velopack library ${lib} in Daqifi.Avalonia.Desktop.csproj."
+            exit 1
+          fi
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+          if [ "$(lower "${PACK_ID}")" = "daqifi" ]; then
+            echo "::error::PACK_ID '${PACK_ID}' is the app's data folder name. The MSI's cleanup would delete it on uninstall and upgrade."
+            exit 1
+          fi
+          IFS=. read -r vpk_major vpk_minor _ <<< "${VPK_VERSION}"
+          if { [ "${vpk_major}" -lt 1 ] || { [ "${vpk_major}" -eq 1 ] && [ "${vpk_minor}" -lt 3 ]; }; } \
+             && [ "$(lower "${PACK_TITLE}")" = "daqifi" ]; then
+            echo "::error::vpk ${VPK_VERSION} is older than 1.3, whose MSI cleanup deletes %LOCALAPPDATA%\\<packTitle>. With the title '${PACK_TITLE}' that is the app's data folder."
+            exit 1
+          fi
+          if [ "${PACK_ID}" != "Daqifi.App" ]; then
+            echo "::error::PACK_ID changed from Daqifi.App. Installed copies would stop updating; see the note at the top of this file."
+            exit 1
+          fi
+
+      - name: Install vpk
+        run: dotnet tool install --global vpk --version "${VPK_VERSION}"
+
+      # Signing is wired but inert until #342 provides a certificate: set the WINDOWS_SIGN_PARAMS
+      # secret to signtool parameters and vpk signs the app, Update.exe and the MSI in one step.
+      # Without it everything ships unsigned, so Windows shows "Unknown publisher" (fine for betas).
+      #
+      # No --delta: deltas need the previous release downloaded first, and the first update
+      # after an MSI install downloads the full package anyway (velopack#1118). Adding them is a
+      # bandwidth optimisation for later, not a correctness one.
+      - name: Pack the MSI
+        env:
+          SIGN_PARAMS: ${{ secrets.WINDOWS_SIGN_PARAMS }}
+        run: |
+          set -euo pipefail
+          sign=()
+          if [ -n "${SIGN_PARAMS}" ]; then
+            sign=(--signParams "${SIGN_PARAMS}")
+          else
+            echo "::notice::WINDOWS_SIGN_PARAMS is not set; the installer and app are unsigned."
+          fi
+          vpk pack \
+            --packId "${PACK_ID}" --packTitle "${PACK_TITLE}" --packAuthors DAQiFi \
+            --packVersion "${VERSION}" --msiVersion "${MSI_VERSION}" --runtime win-x64 \
+            --packDir "${RUNNER_TEMP}/publish" --mainExe Daqifi.Avalonia.Desktop.exe \
+            --icon Daqifi.Avalonia/Daqifi.Desktop/Images/AppIcon.ico \
+            --msi --instLocation Either --noPortable --shortcuts StartMenuRoot \
+            --msiTopBanner installer/windows/msi-top-banner.bmp \
+            --msiDialogBackground installer/windows/msi-dialog-background.bmp \
+            --delta None \
+            "${sign[@]}" \
+            --outputDir "${RUNNER_TEMP}/releases"
+
+      - name: Collect the release files
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/upload"
+          mkdir -p "${out}"
+          src="${RUNNER_TEMP}/releases"
+          cp "${src}/${PACK_ID}-win.msi" "${out}/DAQiFi-${VERSION}-win-x64.msi"
+          cp "${src}/${PACK_ID}-${VERSION}-full.nupkg" "${out}/"
+          cp "${src}/releases.win.json" "${src}/RELEASES" "${out}/"
+          ls -la "${out}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ needs.version.outputs.version }}
+          path: ${{ runner.temp }}/upload
+          if-no-files-found: error
+
+      # Attached to the tag's release. A release that does not exist yet is created as a DRAFT,
+      # so a person writes the notes and publishes it; the updater cannot see a draft. An
+      # existing DRAFT just gets the files, replacing any from an earlier run of the same tag.
+      #
+      # A PUBLISHED release is never touched. `gh release upload --clobber` deletes each file
+      # before uploading its replacement, so a failed re-run could leave a live feed pointing
+      # at a package that is gone, or remove the feed itself. A correction to a published
+      # release ships as a new version.
+      #
+      # An existing release must carry the prerelease flag the tag implies. The updater's
+      # GithubSource filters on GitHub's flag, not the version suffix, so a beta's feed on a
+      # release marked stable would be offered to every stable install. A release a person made
+      # is theirs to fix, so a mismatch fails the job rather than editing it.
+      - name: Attach to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          state=$(gh release view "${TAG}" --json isDraft,isPrerelease -q '"\(.isDraft) \(.isPrerelease)"' 2>/dev/null | tr -d '\r' || true)
+          draft=${state%% *}
+          existing=${state##* }
+          if [ -z "${state}" ]; then
+            pre=()
+            if [ "${PRERELEASE}" = "true" ]; then pre=(--prerelease); fi
+            gh release create "${TAG}" --draft --verify-tag "${pre[@]}" \
+              --title "${TAG}" --notes "Built by the release workflow from ${TAG}. Notes to follow."
+          elif [ "${draft}" != "true" ]; then
+            echo "::error::Release ${TAG} is already published, so its files are not replaced: a failed upload would break the live update feed. Ship the correction as a new version; nothing was uploaded."
+            exit 1
+          elif [ "${existing}" != "${PRERELEASE}" ]; then
+            echo "::error::Release ${TAG} has prerelease=${existing}, but the tag says prerelease=${PRERELEASE}. Fix the release's 'Set as a pre-release' box and re-run; nothing was uploaded."
+            exit 1
+          fi
+          gh release upload "${TAG}" "${RUNNER_TEMP}"/upload/* --clobber

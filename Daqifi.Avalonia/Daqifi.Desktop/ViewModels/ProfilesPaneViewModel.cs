@@ -39,6 +39,29 @@ public partial class ProfilesPaneViewModel : ObservableObject
     /// <summary>True when the edit/new-profile drawer is visible.</summary>
     [ObservableProperty] private bool _isDrawerOpen;
 
+    // The panes with their editor open. Static because each pane makes its own view model, and
+    // the app update has to know about any of them (#503 audit).
+    private static readonly HashSet<ProfilesPaneViewModel> OpenEditors = [];
+
+    /// <summary>
+    /// True while any profile editor is open. Closing it is what saves an edit, so the restart an
+    /// app update makes would lose the edit; the update waits for this instead.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    internal static bool IsAnyEditorOpen
+    {
+        get { lock (OpenEditors) { return OpenEditors.Count > 0; } }
+    }
+
+    partial void OnIsDrawerOpenChanged(bool value)
+    {
+        lock (OpenEditors)
+        {
+            if (value) OpenEditors.Add(this);
+            else OpenEditors.Remove(this);
+        }
+    }
+
     /// <summary>True when the drawer is showing the "new profile" form rather than editing an existing profile.</summary>
     [ObservableProperty] private bool _isNewProfile;
 
@@ -809,6 +832,8 @@ public partial class ProfilesPaneViewModel : ObservableObject
             item.PropertyChanged -= OnNewDeviceItemPropertyChanged;
         // Release any awaiter on an unresolved confirm dialog.
         ConfirmOverlay.Cancel();
+        // A pane that goes away with its editor open must not hold app updates forever.
+        lock (OpenEditors) { OpenEditors.Remove(this); }
         return unsaved;
     }
     #endregion

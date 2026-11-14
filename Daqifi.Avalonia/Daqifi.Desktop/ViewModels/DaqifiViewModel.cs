@@ -164,7 +164,6 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     [NotifyPropertyChangedFor(nameof(SelectedStreamingFrequency))]
     private IStreamingDevice? _selectedDevice;
 
-    private VersionNotification? _versionNotification;
     private LoggingSession _selectedLoggingSession;
 
     /// <summary>The session the Logged Data pane's flyouts show and rename.</summary>
@@ -275,10 +274,8 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// empty-state swap, the same way <see cref="HasLoggingSessions"/> drives the Logged Data pane's.
     /// <para>
     /// Derived from <see cref="NotificationList"/> and refreshed from its CollectionChanged, NOT from
-    /// <see cref="NotificationCount"/>: that property is also assigned the *version*-notification count
-    /// straight off <c>VersionNotification</c> in <c>UpdateUi</c>, so it can differ from the list's own
-    /// Count, and three sites add to the list without touching it at all. Only CollectionChanged fires on
-    /// every mutation by construction.
+    /// <see cref="NotificationCount"/>: several sites add to the list without touching that property,
+    /// so it can lag the list's own Count. Only CollectionChanged fires on every mutation by construction.
     /// </para>
     /// </summary>
     public bool HasNotifications => NotificationList.Count > 0;
@@ -919,8 +916,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // every head (#544) — not here, which only the desktop ever reached.
 
                     // Notifications
-                    _versionNotification = new VersionNotification();
-                    _ = LoggingManager.Instance.CheckApplicationVersion(_versionNotification);
+                    _ = CheckForAppUpdateAsync();
 
                     // Issue #90: when USB hotplug-removal detection isn't running on a platform that
                     // has USB serial, say so. Previously the failure only reached the log, so the
@@ -1783,7 +1779,17 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     }
 
     private Notifications? _previousSessionNotice;
-    private bool _isImportingPreviousSessions;
+    private volatile bool _isImportingPreviousSessions;
+
+    /// <summary>
+    /// True while sessions from an earlier version are being copied. An app update waits for it
+    /// (#513). Settable only so tests can stand in for a running import.
+    /// </summary>
+    internal bool IsImportingPreviousSessions
+    {
+        get => _isImportingPreviousSessions;
+        set => _isImportingPreviousSessions = value;
+    }
 
     /// <summary>The offer (or a retry after a failure): a short line, Import, and Dismiss.</summary>
     /// <summary>
@@ -2333,24 +2339,6 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                 _loggingSessionList.AttachCollection(LoggingManager.Instance.LoggingSessions);
                 NotifyLoggingSessionsChanged();
                 break;
-            case "NotificationCount":
-                var data = _versionNotification;
-                NotificationCount = data.NotificationCount;
-                if (NotificationCount > 0)
-                {
-                    var notify = new Notifications
-                    {
-                        IsFirmwareUpdate = false,
-                        DeviceSerialNo = null,
-                        Message = $"Please update latest application version:  {data.VersionNumber}",
-                        Link = "https://github.com/daqifi/daqifi-desktop/releases"
-                    };
-                    if (!NotificationList.Any(n => n.Message == notify.Message || n.Link == notify.Link))
-                    {
-                        NotificationList.Add(notify);
-                    }
-                }
-                break;
             case "NotifyConnection":
                 var deviceConnection = ConnectionManager.Instance.NotifyConnection;
                 if (deviceConnection)
@@ -2474,6 +2462,109 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         string affirmativeLabel = "OK",
         bool isDestructive = false)
         => ConfirmOverlay.ShowAsync(title, message, affirmativeLabel, isDestructive);
+
+    /// <summary>
+    /// What installing an update would cut off right now, since installing restarts the app.
+    /// </summary>
+    internal UpdateBlocker CurrentUpdateBlocker()
+    {
+        // A stopped session is still being saved for a moment afterwards, in the background.
+        if (IsLogging || LoggingManager.Instance.IsSavingSession)
+        {
+            return UpdateBlocker.Logging;
+        }
+
+        // Three firmware signals, because no one of them sees every flash: the connection manager's
+        // covers the coordinator's whole update, including the reboot and reconnect around the
+        // write; this view model's covers an upload from the Devices pane; the bootloader watcher's
+        // is the only one a manual flash from the connection dialog raises.
+        if (ConnectionManager.Instance.IsFirmwareUpdateInProgress
+            || IsFirmwareUploading
+            || App.ServiceProvider?.GetService<IBootloaderWatcher>()?.IsFlashInProgress == true)
+        {
+            return UpdateBlocker.FirmwareUpdate;
+        }
+
+        // The SD card pane lives in the main window, so the window count below cannot see it. Its
+        // busy flag covers listing the card's files and importing one or all of them.
+        if (DeviceLogsViewModel?.IsBusy == true)
+        {
+            return UpdateBlocker.SdCardTransfer;
+        }
+
+        // The Logged Data pane: importing a log file from disk, deleting a session, or deleting all.
+        // Also the import of sessions from an earlier version, which runs from its notification
+        // and commits in batches, so a restart part way leaves a session to import again (#513).
+        if (IsLoggedDataBusy || IsImportingPreviousSessions)
+        {
+            return UpdateBlocker.LoggedDataBusy;
+        }
+
+        // A profile editor is in the main window too. Closing it is what saves the edit, so the
+        // restart would discard it (#503 audit).
+        if (ProfilesPaneViewModel.IsAnyEditorOpen)
+        {
+            return UpdateBlocker.ProfileBeingEdited;
+        }
+
+        // Anything else long-running (an export, a firmware or connection dialog) runs in a window
+        // of its own. Listing each operation would always miss the next one, so any open window
+        // besides the main one blocks the install.
+        if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime { Windows.Count: > 1 })
+        {
+            return UpdateBlocker.OtherWindowOpen;
+        }
+
+        return UpdateBlocker.None;
+    }
+
+    /// <summary>
+    /// Asks the update service whether a newer version exists and, if so, adds a notification
+    /// whose button installs it (#343). Replaces the old check against the WPF app's releases (#345).
+    /// </summary>
+    private async Task CheckForAppUpdateAsync()
+    {
+        var notifier = new AppUpdateNotifier(
+            AppUpdates.Current,
+            CurrentUpdateBlocker,
+            // A modal box, not ShowConfirm: that overlay is only drawn inside the Profiles pane, so
+            // from the notifications flyout it would wait on a question nobody can see.
+            async (message, title) =>
+            {
+                IsNotificationsOpen = false;
+                return await _messageBoxService.ShowAsync(message, title, MessageBoxButton.OKCancel, MessageBoxImage.Question)
+                       == MessageBoxResult.OK;
+            },
+            // Download progress arrives on a background thread.
+            notice => Dispatcher.UIThread.Post(() => ShowUpdateNotice(notice)),
+            _appLogger,
+            attempts: new UpdateAttemptMarker(Path.Combine(Daqifi.Desktop.Common.AppDataPaths.DataDirectory, "update-attempt")));
+
+        await notifier.CheckAsync();
+    }
+
+    private Notifications? _updateNotice;
+
+    /// <summary>Replaces the update notification (its text is init-only), or removes it when null.</summary>
+    private void ShowUpdateNotice(Notifications? notice)
+    {
+        var index = _updateNotice is null ? -1 : NotificationList.IndexOf(_updateNotice);
+        if (notice is null)
+        {
+            if (index >= 0) NotificationList.RemoveAt(index);
+        }
+        else if (index >= 0)
+        {
+            NotificationList[index] = notice;
+        }
+        else
+        {
+            NotificationList.Add(notice);
+        }
+
+        _updateNotice = notice;
+        NotificationCount = NotificationList.Count;
+    }
 
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.CloseFlyouts
     public void CloseFlyouts()
