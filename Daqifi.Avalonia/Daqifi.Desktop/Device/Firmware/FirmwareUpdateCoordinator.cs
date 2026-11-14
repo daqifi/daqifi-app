@@ -342,8 +342,19 @@ public class FirmwareUpdateCoordinator
             // The success dialog names the version the device reports AFTER its restart (issue #570):
             // from one status reply that the restarted device sends, not from Core's shared metadata,
             // which keeps an earlier value when a reply has no version. Null means "not known". The
-            // run's token, so Cancel stops the wait. Shared with #566 by design (same line, same name).
-            var reportedVersion = await _readPostRestartVersion(coreDevice, cancellationToken);
+            // run's token ends the wait at once on Cancel. Shared with #566 by design (same block).
+
+            // The write has completed. A Cancel during this read must not report the run as
+            // canceled: the device is already written. The version is then unknown (issues #566, #570).
+            string? reportedVersion;
+            try
+            {
+                reportedVersion = await _readPostRestartVersion(coreDevice, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                reportedVersion = null;
+            }
 
             if (!isManualUpload)
             {

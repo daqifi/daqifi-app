@@ -54,7 +54,7 @@ public class FirmwareUpdateOutcomeTests : IDisposable
     /// <c>canFlashWifiModule: false</c> and a device with no WINC module keep the run to the PIC32
     /// half, which is the half this ticket is about.
     /// </summary>
-    private FirmwareUpdateCoordinator CreateCoordinator() =>
+    private FirmwareUpdateCoordinator CreateCoordinator(bool canFlashWifiModule = false) =>
         new(_host,
             _updates,
             _downloads,
@@ -62,7 +62,7 @@ public class FirmwareUpdateOutcomeTests : IDisposable
             _logger,
             _dataDirectory,
             wifiUpdateModeSettleDelay: TimeSpan.Zero,
-            canFlashWifiModule: false,
+            canFlashWifiModule: canFlashWifiModule,
             readPostRestartVersion: async (_, token) =>
             {
                 Interlocked.Increment(ref _postRestartReads);
@@ -270,17 +270,24 @@ public class FirmwareUpdateOutcomeTests : IDisposable
         Assert.True(writeHadReturnedWhenRead);
     }
 
-    /// <summary>The run's token reaches the reader, so CANCEL UPDATE stops the wait for the reply.</summary>
+    /// <summary>
+    /// Review finding on #577: a Cancel during the version read, after a manual write has returned,
+    /// must not report the run as canceled — the device is already written. The read ends at once
+    /// (the reader honours the token), the version is unknown, and the run reports success.
+    /// </summary>
     [Fact]
-    public async Task Cancel_stops_the_wait_for_the_post_restart_reply()
+    public async Task Cancel_during_the_version_read_reports_the_completed_manual_write()
     {
         using var harness = ConnectedDevice(versionBeforeFlash: "3.8.0");
         _host.SelectedDevice = harness.Device;
         _host.FirmwareFilePath = FirmwareFile();
+        _updates.OnPic32Flash = () => _host.UploadFirmwareProgress = 100;
+        _postRestartVersion = "3.9.0";
         var reading = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _onReadPostRestartVersion = async token =>
         {
             reading.TrySetResult();
+            // As PostRestartFirmwareVersion does: a cancelled token throws OperationCanceledException.
             await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, token);
         };
         var coordinator = CreateCoordinator();
@@ -290,8 +297,45 @@ public class FirmwareUpdateOutcomeTests : IDisposable
         coordinator.CancelUpload();
         await run.WaitAsync(Timeout);
 
+        var message = Assert.Single(_host.SuccessMessages);
+        Assert.Contains("The new version is unknown", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Firmware update canceled.", _host.StatusWrites);
+        Assert.Equal(0, _host.UploadFirmwareProgress);
+        Assert.False(_host.IsFirmwareUploading);
+    }
+
+    /// <summary>
+    /// The guard in the other direction: a step that has yet to run keeps its cancellation. On the
+    /// automatic path the WiFi module step follows the read on the same token; with a module that
+    /// has work to do, a Cancel during the read still stops it before the WiFi flash starts, and the
+    /// run ends as canceled — as a Cancel in that step did before the read existed.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_during_the_version_read_still_stops_the_wifi_step()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.8.0");
+        // A WINC module that the app has not read (WifiFirmwareNeedsFlash treats it as outdated), on
+        // a machine that can flash it: the WiFi step has work to do.
+        harness.Device.Metadata.Capabilities.HasWincWifiModule = true;
+        _host.SelectedDevice = harness.Device;
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        var reading = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _onReadPostRestartVersion = async token =>
+        {
+            reading.TrySetResult();
+            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, token);
+        };
+        var coordinator = CreateCoordinator(canFlashWifiModule: true);
+
+        var run = coordinator.UploadFirmwareAsync();
+        await reading.Task.WaitAsync(Timeout);
+        coordinator.CancelUpload();
+        await run.WaitAsync(Timeout);
+
         Assert.Empty(_host.SuccessMessages);
         Assert.Contains("Firmware update canceled.", _host.StatusWrites);
+        Assert.Equal(0, _downloads.WifiDownloads);
+        Assert.Equal(0, _updates.WifiFlashes);
     }
 
     /// <summary>
@@ -481,11 +525,16 @@ public class FirmwareUpdateOutcomeTests : IDisposable
             IProgress<int>? progress = null,
             CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 
+        public int WifiDownloads;
+
         public Task<(string ExtractedPath, string Version)?> DownloadWifiFirmwareAsync(
             string destinationDirectory,
             IProgress<int>? progress = null,
             CancellationToken cancellationToken = default)
-            => Task.FromResult<(string ExtractedPath, string Version)?>(null);
+        {
+            Interlocked.Increment(ref WifiDownloads);
+            return Task.FromResult<(string ExtractedPath, string Version)?>(null);
+        }
 
         public Task<FirmwareReleaseInfo?> GetLatestWifiReleaseAsync(CancellationToken cancellationToken = default)
             => Task.FromResult<FirmwareReleaseInfo?>(null);
@@ -538,12 +587,18 @@ public class FirmwareUpdateOutcomeTests : IDisposable
             return Task.CompletedTask;
         }
 
+        public int WifiFlashes;
+
         public Task UpdateWifiModuleAsync(
             Daqifi.Core.Device.IStreamingDevice device,
             string firmwarePath,
             IProgress<FirmwareUpdateProgress>? progress = null,
             CancellationToken cancellationToken = default,
-            bool skipVersionCheck = false) => Task.CompletedTask;
+            bool skipVersionCheck = false)
+        {
+            Interlocked.Increment(ref WifiFlashes);
+            return Task.CompletedTask;
+        }
 
         public Task<WifiFirmwareStatus> CheckWifiFirmwareStatusAsync(
             Daqifi.Core.Device.IStreamingDevice device,
