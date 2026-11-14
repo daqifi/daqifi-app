@@ -2127,8 +2127,10 @@ internal static class HeadlessBench
     /// which is the part that was broken.
     /// </para>
     /// <para>
-    /// The setter's own refusal — the backstop if a change reaches it anyway — is
-    /// <c>LoggingModeMidSessionTests</c>' job, not this row's.
+    /// The <c>refused</c> check clicks LOG TO DEVICE with a WiFi device in the fleet. The fleet
+    /// refuses, so the buttons must go back to STREAM TO APP. The setter's own refusal during a
+    /// session — the backstop if a change reaches it anyway — is <c>LoggingModeMidSessionTests</c>'
+    /// job, not this row's.
     /// </para>
     /// <para>
     /// The SD half runs only against <see cref="ScriptedDevice"/>, whose SD logging is a flag. It
@@ -2144,6 +2146,7 @@ internal static class HeadlessBench
         var device = new ScriptedDevice(ScriptedSerial);
         var ai = device.AddAnalogInput(0);
         ConnectScripted(shell, device);
+        var wifi = new ScriptedDevice(ScriptedSerial + "-WIFI", ConnectionType.Wifi);
 
         using var channelsPane = new ChannelsPaneViewModel();
         try
@@ -2197,6 +2200,30 @@ internal static class HeadlessBench
                  $"started in Stream to App={cStart}. LOG TO DEVICE ({cToSdClick}) changed the mode={cToSd}: " +
                  $"{cToSdState}. STREAM TO APP ({cToStreamClick}) changed it back={cToStream}: {cToStreamState}",
                  cShot, sw.Elapsed.TotalSeconds);
+
+            // The refused check (#578 review): add a WiFi device, which cannot log to an SD card,
+            // and click LOG TO DEVICE in the USB device's drawer. The fleet refuses and stays in
+            // Stream to App, so the buttons must show STREAM TO APP again. Before the fix the
+            // clicked button stayed checked: the drawer promised an SD card recording that the
+            // next session would not make.
+            sw.Restart();
+            ConnectScripted(shell, wifi);
+            PumpFor(TimeSpan.FromMilliseconds(300));
+            var rClick = Click(main, sd);
+            PumpFor(TimeSpan.FromMilliseconds(300));
+            var rHeld = InMode(streamToApp, DeviceMode.StreamToApp) && wifi.Mode == DeviceMode.StreamToApp;
+            var rButtons = stream.IsChecked == true && sd.IsChecked == false;
+            var rState = $"app mode='{shell.SelectedLoggingMode}', USB device={device.Mode}, WiFi device={wifi.Mode}, {Buttons()}";
+            var rShot = Capture(main, "t1-logmode-refused");
+            ConnectionManager.Instance.Disconnect(wifi);
+            var rGone = PumpUntil(() => !shell.ConnectedDevices.Contains(wifi), TimeSpan.FromSeconds(10));
+            sw.Stop();
+
+            Step(1, "LOG-MODE", "refused",
+                 rHeld && rButtons && rGone,
+                 $"USB and WiFi devices connected; LOG TO DEVICE ({rClick}): the fleet stayed in Stream to App={rHeld}, " +
+                 $"the buttons show STREAM TO APP again={rButtons}: {rState}. WiFi device disconnected afterwards={rGone}",
+                 rShot, sw.Elapsed.TotalSeconds);
 
             // Procedure A: a streaming session. Control first: no session, both buttons usable.
             sw.Restart();
@@ -2274,9 +2301,12 @@ internal static class HeadlessBench
                     PumpUntil(() => !LoggingManager.Instance.Active, TimeSpan.FromSeconds(10));
                 }
                 shell.SelectedLoggingMode = streamToApp;
-                if (ConnectionManager.Instance.ConnectedDevices.Contains(device))
+                foreach (var scripted in new[] { wifi, device })
                 {
-                    ConnectionManager.Instance.Disconnect(device);
+                    if (ConnectionManager.Instance.ConnectedDevices.Contains(scripted))
+                    {
+                        ConnectionManager.Instance.Disconnect(scripted);
+                    }
                 }
             }
             catch (Exception ex) { Console.WriteLine($"[WARN] cleanup after LOG-MODE: {ex.Message}"); }

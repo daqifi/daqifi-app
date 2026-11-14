@@ -894,9 +894,12 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                 if (switched.AnyRefused)
                 {
                     // The fleet is back in its previous mode, so leave _selectedLoggingMode alone
-                    // and re-notify: the radio group is the binding source and has already moved
-                    // itself, and without this it would keep showing a mode nothing is in.
+                    // and re-notify. The radio buttons have already moved themselves, and they bind
+                    // IsLogToDeviceMode one way, so announce both properties (#578 review); without
+                    // IsLogToDeviceMode the drawer kept showing LOG TO DEVICE over a fleet that
+                    // stayed in Stream to App.
                     OnPropertyChanged();
+                    OnPropertyChanged(nameof(IsLogToDeviceMode));
 
                     var report =
                         $"The logging mode was left as \"{_selectedLoggingMode}\" because these devices could not change it:"

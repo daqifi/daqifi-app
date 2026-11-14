@@ -667,12 +667,15 @@
                                            A handler attribute names an event the XAML compiler must resolve.
                                          - Only when checked: IsCheckedChanged also fires on the button that becomes
                                            unchecked, and sending that button's mode as well would undo the change.
+                                         - Then the handler sets both buttons from the app's mode. A refused change
+                                           (a WiFi device in the fleet) leaves the clicked button checked otherwise.
                                          The OneWay IsChecked bindings also raise IsCheckedChanged when the mode
                                          changes from code; the SelectedLoggingMode setter ignores a mode it already
                                          has, so that echo does nothing. -->
                                     <RadioButton Grid.Column="0"
                                                  Content="STREAM TO APP"
                                                  AutomationProperties.AutomationId="LoggingModeStreamToApp"
+                                                 x:Name="LoggingModeStreamToAppButton"
                                                  GroupName="LoggingMode"
                                                  Tag="Stream to App"
                                                  IsChecked="{Binding !Shell.IsLogToDeviceMode, Mode=OneWay}"
@@ -681,6 +684,7 @@
                                     <RadioButton Grid.Column="1"
                                                  Content="LOG TO DEVICE"
                                                  AutomationProperties.AutomationId="LoggingModeLogToDevice"
+                                                 x:Name="LoggingModeLogToDeviceButton"
                                                  GroupName="LoggingMode"
                                                  Tag="Log to Device"
                                                  IsEnabled="{Binding SelectedTile.IsUsb}"
