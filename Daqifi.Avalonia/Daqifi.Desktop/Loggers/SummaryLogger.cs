@@ -93,7 +93,7 @@ public partial class SummaryLogger : ObservableObject, ILogger
         /// <summary>Name and serial together, for the section header.</summary>
         public string Title => string.IsNullOrWhiteSpace(SerialNumber)
             ? Name
-            : $"{Name}  (S/N {SerialNumber})";
+            : $"{Name}  (S/N {DeviceSerials.ToDisplay(SerialNumber)})";
 
         // @port: Daqifi.Desktop.Logger.SummaryLogger.ElapsedTime
         // An elapsed-milliseconds row was dropped along with its column: it is Samples divided by

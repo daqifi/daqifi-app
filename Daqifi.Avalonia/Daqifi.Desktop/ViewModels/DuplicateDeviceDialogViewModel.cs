@@ -47,7 +47,7 @@ public partial class DuplicateDeviceDialogViewModel : ObservableObject
         ExistingInterface = existingInterface;
         NewInterface = newInterface;
         
-        Message = $"This device (S/N: {DeviceSerialNumber}) is already connected via {ExistingInterface}.\n\n" +
+        Message = $"This device (S/N: {DeviceSerials.ToDisplay(DeviceSerialNumber)}) is already connected via {ExistingInterface}.\n\n" +
                  "Would you like to:";
         KeepExistingText = $"Keep {ExistingInterface} connection (recommended)";
         SwitchToNewText = $"Switch to {NewInterface} connection";

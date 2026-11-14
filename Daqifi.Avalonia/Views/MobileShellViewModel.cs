@@ -502,7 +502,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         }
         IsStreaming = false;
         IsConnected = true;
-        Status = $"Connected: {device.Name}  •  SN {device.Metadata.SerialNumber ?? "?"}"
+        Status = $"Connected: {device.Name}  •  SN {(device.Metadata.SerialNumber is null ? "?" : DeviceSerials.ToDisplay(device.Metadata.SerialNumber))}"
                + $"  •  FW {device.Metadata.FirmwareVersion ?? "?"}"
                + $"  •  {analog.Count} analog ch — pick channels + rate, then stream";
     }
