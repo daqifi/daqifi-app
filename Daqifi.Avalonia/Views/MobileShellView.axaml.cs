@@ -59,7 +59,7 @@ public partial class MobileShellView : UserControl
             if (_pollsSinceRedraw < PollsPerRedraw) { return; }
             _pollsSinceRedraw = 0;
             Plot.SampleCount = _viewModel.TotalSamples;
-            Plot.Pulse();
+            Plot.InvalidateVisual();
         };
         _renderTimer.Start();
 

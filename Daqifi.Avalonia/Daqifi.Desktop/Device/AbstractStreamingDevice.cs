@@ -726,7 +726,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             coreDevice.MessageReceived += OnCoreMessageReceived;
             coreDevice.StatusChanged += OnCoreStatusChanged;
 
-            InitializeDeviceState();
+            InitializeProtocolHandler();
 
             // Blocking on Core's async initialization is safe because Connect() is invoked
             // from Task.Run by ConnectionManager (see remarks).
@@ -1180,8 +1180,13 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// Uses Core's ProtobufProtocolHandler to route streaming protobuf messages while Core
     /// itself owns status parsing and channel population.
     /// </summary>
+    /// <remarks>
+    /// Protected so a test double can wire the real handler without a transport. Upstream's
+    /// public <c>InitializeDeviceState</c> only forwarded here and was folded in (issue #448).
+    /// </remarks>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.InitializeProtocolHandler
-    private void InitializeProtocolHandler()
+    // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.InitializeDeviceState
+    protected void InitializeProtocolHandler()
     {
         _protocolHandler = new ProtobufProtocolHandler(
             statusMessageHandler: OnStatusMessageReceived,
@@ -2708,13 +2713,6 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     }
 
     #endregion
-
-    // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.InitializeDeviceState
-    public void InitializeDeviceState()
-    {
-        // Initialize protocol handler for automatic message routing
-        InitializeProtocolHandler();
-    }
 
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.UpdateNetworkConfiguration
     public async Task UpdateNetworkConfiguration()

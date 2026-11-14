@@ -22,7 +22,7 @@ namespace Daqifi.Desktop.Device.Firmware;
 /// (firmware services, loggers, the firmware data directory), all bound progress/status state is
 /// reached through the <see cref="IFirmwareUpdateHost"/> seam, and dialog presentation is delegated
 /// to the host — so the coordinator has no dependency on WPF or on desktop singletons
-/// (<c>AppLogger.Instance</c>, <c>App.ServiceProvider</c>, <c>App.DaqifiDataDirectory</c>) and is
+/// (<c>AppLogger.Instance</c>, <c>App.ServiceProvider</c>, <c>AppDataPaths.DataDirectory</c>) and is
 /// unit-testable in isolation.
 /// </para>
 /// </summary>
