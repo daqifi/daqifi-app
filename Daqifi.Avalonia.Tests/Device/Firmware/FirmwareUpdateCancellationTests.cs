@@ -308,15 +308,21 @@ public class FirmwareUpdateCancellationTests : IDisposable
             IProgress<int>? progress = null,
             CancellationToken cancellationToken = default) => Task.FromResult(LatestFirmwarePath);
 
+        /// <summary>
+        /// The auto-update downloads the release it named in the prompt, by tag (issue #564), so this
+        /// returns the same package as the "latest" download.
+        /// </summary>
         public Task<string?> DownloadFirmwareByTagAsync(
             string tagName,
             string destinationDirectory,
             IProgress<int>? progress = null,
-            CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
+            CancellationToken cancellationToken = default) => Task.FromResult(LatestFirmwarePath);
 
+        /// <summary>A release to name in the prompt; the coordinator stops before it with none.</summary>
         public Task<FirmwareReleaseInfo?> GetLatestReleaseAsync(
             bool includePreRelease = false,
-            CancellationToken cancellationToken = default) => Task.FromResult<FirmwareReleaseInfo?>(null);
+            CancellationToken cancellationToken = default) => Task.FromResult<FirmwareReleaseInfo?>(
+                new FirmwareReleaseInfo { Version = default, TagName = "v0.0.0-test", IsPreRelease = false });
 
         public Task<FirmwareReleaseInfo?> GetLatestWifiReleaseAsync(CancellationToken cancellationToken = default)
             => Task.FromResult<FirmwareReleaseInfo?>(null);
@@ -414,7 +420,10 @@ public class FirmwareUpdateCancellationTests : IDisposable
 
         public void ShowFirmwareError(string message) { }
 
-        public void ShowFirmwareUpdateSucceeded() { }
+        public void ShowFirmwareUpdateSucceeded(string message) { }
+
+        /// <summary>Confirms at once: these facts are about the run, not the prompt in front of it (issue #564).</summary>
+        public Task<bool> ConfirmFirmwareUpdateAsync(string title, string message, CancellationToken cancellationToken) => Task.FromResult(true);
 
         /// <summary>Completes once the coordinator has reached the probe quiesce.</summary>
         public Task WaitUntilQuiescingAsync() => _quiescing.Task.WaitAsync(UnwindTimeout);

@@ -267,9 +267,9 @@ jobs:
 
       # The system-test rig's T1 rows, RUN rather than merely compiled (#304). Until now
       # everything HeadlessBench checks lived on one bench Mac and CI could only say that it
-      # still built — see the note on the Build step above. The six `--scripted` states open
+      # still built — see the note on the Build step above. The seven `--scripted` states open
       # no serial port and need no board (three fabricate a database the app finds at boot,
-      # three fabricate an IStreamingDevice), so they are the part of this rig a runner can
+      # four fabricate an IStreamingDevice), so they are the part of this rig a runner can
       # actually execute, which was the whole argument for building `--scripted` (#260).
       #
       # This is the first time any of it has run on a LINUX runner. Headless Skia and font
@@ -287,7 +287,7 @@ jobs:
       # when a check could not be attempted at all — export-readonly reports it when its
       # chmod-555 destination turns out to still be writable, which is what running as root
       # looks like — and a step that accepted it would report green for a job that measured
-      # nothing. There is no legitimate `not-run` in a healthy scripted run: all six states
+      # nothing. There is no legitimate `not-run` in a healthy scripted run: all seven states
       # emit none.
       #
       # And each state's own row/check records are named below rather than the file merely
@@ -299,7 +299,7 @@ jobs:
       - name: Run the HeadlessBench --scripted states
         run: |
           set -euo pipefail
-          for state in sessions-500 session-10h export-readonly sd-empty drop-mid-stream disconnect-mid-stream; do
+          for state in sessions-500 session-10h export-readonly sd-empty drop-mid-stream disconnect-mid-stream mode-change-mid-session; do
             echo "::group::--scripted ${state}"
             dotnet run --project tools/system-test/HeadlessBench/HeadlessBench.csproj \
               -c Release --no-build -- \
@@ -320,6 +320,7 @@ jobs:
               "sd-empty":        [("SD-LIST", "limits")],
               "drop-mid-stream": [("CONN-LOST", "works"), ("CONN-LOST", "limits")],
               "disconnect-mid-stream": [("CONN-DISC", "works"), ("CONN-DISC", "reboot")],
+              "mode-change-mid-session": [("LOG-MODE", "works"), ("LOG-MODE", "sd")],
           }
           root = pathlib.Path(sys.argv[1])
           failed = False

@@ -123,7 +123,7 @@
                         <TextBlock Classes="chipValue" Text="{Binding Identifier}" />
                       </Border>
                       <Border Classes="chip" Margin="0,0,6,6">
-                        <TextBlock Classes="chipValue" Text="{Binding SerialNumber}" />
+                        <TextBlock Classes="chipValue" Text="{Binding SerialNumber, Converter={StaticResource SerialDisplay}}" />
                       </Border>
                       <Border Classes="chip" Margin="0,0,6,6">
                         <TextBlock>
@@ -190,7 +190,7 @@
               </StackPanel>
               <StackPanel Spacing="3">
                 <TextBlock Text="SERIAL" Classes="fieldLabel" />
-                <TextBlock Text="{Binding SelectedTile.SerialNumber}" Classes="infoValue" />
+                <TextBlock Text="{Binding SelectedTile.SerialNumber, Converter={StaticResource SerialDisplay}}" Classes="infoValue" />
               </StackPanel>
               <StackPanel Spacing="3">
                 <TextBlock Text="FIRMWARE" Classes="fieldLabel" />
@@ -342,6 +342,10 @@
                            Value="{Binding Shell.UploadFirmwareProgress}" />
             </StackPanel>
 
+            <!-- Issue #564: this command now awaits Shell.FirmwareUpdateConfirm before it writes, and
+                 only DevicesPanePrototype renders that prompt. Nothing constructs this view today; a
+                 change that does must render the prompt here too, or this button waits on a dialog
+                 nobody can see. -->
             <Button Theme="{StaticResource AccentPillButton}" HorizontalAlignment="Stretch" MinHeight="44"
                     Content="UPDATE FIRMWARE"
                     Command="{Binding Shell.UploadFirmwareCommand}" />

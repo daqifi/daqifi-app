@@ -94,6 +94,43 @@ public class DeviceSelectorDisplayNameTests
     }
 
     /// <summary>
+    /// Issue #493, review thread on <c>DeviceLogsViewModel.cs</c>: a board with no friendly name is
+    /// listed by its serial, and that serial is shown in the hex form <c>*IDN?</c> reports — the
+    /// bench Nq1 reads <c>7E2815916200E898</c> here as it does on every other screen, not the
+    /// stored decimal <c>9090539562006014104</c>.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(EveryViewAndDevice))]
+    public void A_board_with_no_friendly_name_is_listed_by_its_hex_serial(string view, string deviceType)
+    {
+        var device = EveryConcreteDevice().Single(candidate => candidate.GetType().FullName == deviceType);
+        device.DeviceSerialNo = "9090539562006014104";
+
+        Assert.Equal("7E2815916200E898", WhatTheComboRenders(view, device));
+        Assert.Equal("9090539562006014104", device.DeviceSerialNo);
+    }
+
+    /// <summary>
+    /// The other half of the same thread: a friendly name is shown exactly as the owner typed it,
+    /// even one made only of digits, which the serial rule would otherwise turn into hex.
+    /// </summary>
+    [Theory]
+    [InlineData(MobileView, "12345")]
+    [InlineData(DesktopView, "12345")]
+    [InlineData(MobileView, "9090539562006014104")]
+    [InlineData(DesktopView, "Bench Nq1")]
+    public void A_friendly_name_is_listed_exactly_as_entered(string view, string friendlyName)
+    {
+        var device = new SerialStreamingDevice("COM9")
+        {
+            DeviceSerialNo = "9090539562006014104",
+            FriendlyName = friendlyName
+        };
+
+        Assert.Equal(friendlyName, WhatTheComboRenders(view, device));
+    }
+
+    /// <summary>
     /// The trap the fix was chosen to close, held open: overriding <c>ToString()</c> on one device
     /// would have cured the reported symptom and left the next transport to rediscover it. This
     /// fails when a device type is added to the app without being brought into the roster above,

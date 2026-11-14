@@ -168,6 +168,11 @@
             <Style Selector="^:pointerover">
                 <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
             </Style>
+            <!-- Without this a disabled LOGGING MODE button looks the same as an enabled one, so the
+                 lock during a session (#536) would read as a button that ignores the click. -->
+            <Style Selector="^:disabled">
+                <Setter Property="Opacity" Value="0.4"/>
+            </Style>
         </ControlTheme>
 
         <!-- Tile gear (upstream inline Button template → ControlTheme) -->
@@ -253,7 +258,7 @@
                                        FontFamily="Consolas"
                                        FontSize="11"
                                        Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBlock Text="{Binding SerialNumber}"
+                            <TextBlock Text="{Binding SerialNumber, Converter={StaticResource SerialDisplay}}"
                                        FontFamily="Consolas"
                                        FontSize="11"
                                        Margin="0,2,0,0"
@@ -528,7 +533,7 @@
                                     </StackPanel>
                                     <StackPanel Grid.Column="0" Grid.Row="1">
                                         <TextBlock Text="SERIAL" Classes="infoLabel"/>
-                                        <TextBlock Text="{Binding SelectedTile.SerialNumber}"
+                                        <TextBlock Text="{Binding SelectedTile.SerialNumber, Converter={StaticResource SerialDisplay}}"
                                                    Classes="infoValue"/>
                                     </StackPanel>
                                     <StackPanel Grid.Column="1" Grid.Row="1">
@@ -610,7 +615,11 @@
                                     BorderThickness="1"
                                     CornerRadius="3"
                                     Padding="3">
-                                <Grid ColumnDefinitions="*,*">
+                                <!-- Disabled while a session is ON (#536): a mode change stops the devices'
+                                     stream or SD log, so it would end the recording while the toggle still
+                                     read LOGGING ON. IsEnabled is inherited, so LOG TO DEVICE keeps its own
+                                     USB gate as well. -->
+                                <Grid ColumnDefinitions="*,*" IsEnabled="{Binding !Shell.IsLogging}">
                                     <!-- Drive the mode switch off Checked rather than Command: a RadioButton's
                                          bound Command fires only on a real Click, which a background UI-automation
                                          host cannot raise. Checking the button through the automation Toggle
@@ -942,6 +951,65 @@
                         HorizontalAlignment="Center"
                         Command="{Binding AddDeviceCommand}"/>
             </StackPanel>
+        </Grid>
+
+        <!-- ========== FIRMWARE UPDATE CONFIRM (issue #564, over the drawer) ========== -->
+        <!-- The same overlay as the Logged Data pane's confirm dialog, bound to the shell's
+             FirmwareUpdateConfirm. UPDATE in the drawer awaits it, and the write starts only on
+             the affirmative button. The sentinel below moves focus to CANCEL when the overlay
+             opens, so Enter does not start a write; Cycle keeps Tab inside the card. -->
+        <Control Width="0" Height="0"
+                 IsHitTestVisible="False"
+                 Focusable="False"
+                 IsVisible="{Binding Shell.FirmwareUpdateConfirm.IsOpen, FallbackValue=False}"
+                 PropertyChanged="OnFirmwareUpdateConfirmIsVisibleChanged"/>
+
+        <Grid IsVisible="{Binding Shell.FirmwareUpdateConfirm.IsOpen, FallbackValue=False}"
+              ZIndex="30"
+              Focusable="True"
+              KeyboardNavigation.TabNavigation="Cycle">
+            <!-- Scrim. Tap = cancel, the same pattern as the drawer's scrim. -->
+            <Rectangle Fill="#A0000000">
+                <ia:Interaction.Behaviors>
+                    <iac:EventTriggerBehavior EventName="Tapped">
+                        <iac:InvokeCommandAction Command="{Binding Shell.FirmwareUpdateConfirm.NegativeCommand}"/>
+                    </iac:EventTriggerBehavior>
+                </ia:Interaction.Behaviors>
+            </Rectangle>
+
+            <Border Width="460"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="{DynamicResource SurfaceRaised}"
+                    BorderBrush="{DynamicResource BorderDim}"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Padding="24">
+                <StackPanel>
+                    <TextBlock Text="{Binding Shell.FirmwareUpdateConfirm.Title}"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextPrimary}"/>
+                    <TextBlock Text="{Binding Shell.FirmwareUpdateConfirm.Message}"
+                               FontSize="13"
+                               Foreground="{DynamicResource TextSecondary}"
+                               TextWrapping="Wrap"
+                               Margin="0,10,0,20"/>
+                    <StackPanel Orientation="Horizontal"
+                                HorizontalAlignment="Right">
+                        <Button x:Name="FirmwareConfirmCancelButton"
+                                Content="CANCEL"
+                                Theme="{StaticResource PillButton}"
+                                IsCancel="True"
+                                Command="{Binding Shell.FirmwareUpdateConfirm.NegativeCommand}"/>
+                        <Button Content="{Binding Shell.FirmwareUpdateConfirm.AffirmativeLabel}"
+                                AutomationProperties.AutomationId="FirmwareConfirmUpdateButton"
+                                Theme="{StaticResource DangerPillButton}"
+                                Margin="10,0,0,0"
+                                Command="{Binding Shell.FirmwareUpdateConfirm.AffirmativeCommand}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
         </Grid>
 
     </Grid>

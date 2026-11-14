@@ -404,9 +404,7 @@ public partial class PlotLogger : ObservableObject, ILogger
         var key = (DeviceSerialNo, channelName);
         var newDataPoints = new List<DataPoint>();
 
-        var serialSuffix = DeviceSerialNo?.Length > 4
-            ? $"...{DeviceSerialNo[^4..]}"
-            : DeviceSerialNo;
+        var serialSuffix = DeviceSerials.ToShortDisplay(DeviceSerialNo);
 
         var newLineSeries = new LineSeries
         {

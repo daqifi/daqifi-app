@@ -160,8 +160,11 @@ public class DropChannelTableMigrationTests : IDisposable
 
         Assert.False(TableExists("Channel"));
 
+        // Later migrations (#511's PreviousFirstSampleId) are still pending here, by design: this
+        // test stops at the drop.
         using var context = CreateContext();
-        Assert.Empty(context.Database.GetPendingMigrations());
+        Assert.Contains(TheDrop, context.Database.GetAppliedMigrations());
+        Assert.DoesNotContain(TheDrop, context.Database.GetPendingMigrations());
     }
 
     #region Fixtures

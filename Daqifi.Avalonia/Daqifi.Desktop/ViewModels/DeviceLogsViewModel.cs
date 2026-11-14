@@ -583,7 +583,7 @@ public partial class DeviceLogsViewModel : ObservableObject
     private async Task CopyDiagnosticInfoAsync()
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"Device Serial: {SelectedDevice?.DeviceSerialNo ?? "N/A"}");
+        sb.AppendLine($"Device Serial: {(SelectedDevice is null ? "N/A" : DeviceSerials.ToDisplay(SelectedDevice.DeviceSerialNo))}");
         sb.AppendLine($"Firmware Version: {SelectedDevice?.DeviceVersion ?? "N/A"}");
         sb.AppendLine($"Connection Type: {SelectedDevice?.ConnectionType}");
         sb.AppendLine($"SD Card State: {SdCardState}");

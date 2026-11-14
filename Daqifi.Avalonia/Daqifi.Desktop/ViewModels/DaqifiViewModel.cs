@@ -137,6 +137,14 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.ConfirmOverlay
     public ConfirmOverlayViewModel ConfirmOverlay { get; } = new();
 
+    /// <summary>
+    /// Backs the prompt the Devices pane shows before a firmware write (issue #564). A separate
+    /// instance from <see cref="ConfirmOverlay"/>, which the Logged Data pane binds: one shared
+    /// instance would open both panes' overlays at once, and the hidden pane's focus handler would
+    /// then act on a prompt it does not show.
+    /// </summary>
+    public ConfirmOverlayViewModel FirmwareUpdateConfirm { get; } = new();
+
     private SettingsViewModel? _appSettings;
 
     /// <summary>
@@ -553,6 +561,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             // delete) doesn't get stranded when the user navigates away from the
             // pane that owns the overlay.
             ConfirmOverlay.Cancel();
+            // The same for a firmware update that is being prepared: the Devices pane that shows its
+            // prompt detaches on a tab change, and a "yes" must never arrive for a prompt the user
+            // can no longer see — nor a prompt open later for a lookup that finishes now (#564).
+            CancelFirmwareUpdatePreparation();
             OnPropertyChanged();
         }
     }
@@ -718,6 +730,25 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
                 var isLogToDeviceMode = mode == "Log to Device";
                 var deviceMode = isLogToDeviceMode ? DeviceMode.LogToDevice : DeviceMode.StreamToApp;
+
+                // No mode change during a session (#536). SwitchMode stops each device's stream or
+                // SD log before it changes the mode, and the CurrentMode write below closes the
+                // database session (toward SD) or leaves the run with none (toward streaming) — but
+                // nothing turned the toggle OFF, so it read LOGGING ON over a run recording nothing.
+                // IsLogging, not _isLogging: a device still logging to its SD card after a reconnect
+                // is a session the toggle shows as ON too. The mode buttons are disabled while a
+                // session runs, so this is the backstop for any other route here.
+                if (IsLogging)
+                {
+                    // The radio buttons have already moved themselves; they bind IsLogToDeviceMode
+                    // one way, so announce both properties to put them back.
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(IsLogToDeviceMode));
+                    ReportLoggingProblem(
+                        "Cannot Change Logging Mode",
+                        "Stop logging before you change the logging mode.");
+                    return;
+                }
 
                 // All-or-nothing, and reported rather than thrown (#214). SelectedLoggingMode is a
                 // single value for the whole app, so a fleet that cannot all move is put back where
@@ -1318,6 +1349,12 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.OnSelectedDeviceChanged
     partial void OnSelectedDeviceChanged(IStreamingDevice? oldValue, IStreamingDevice? newValue)
     {
+        // A firmware update prepared for one device must not prompt, or write, for another (#564).
+        if (!ReferenceEquals(oldValue, newValue))
+        {
+            CancelFirmwareUpdatePreparation();
+        }
+
         if (oldValue is INotifyPropertyChanged oldNotifier)
         {
             oldNotifier.PropertyChanged -= OnSelectedDeviceFriendlyNameChanged;
@@ -2543,12 +2580,11 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// Presents the firmware-update success dialog on the UI thread and closes the firmware flyout.
     /// </summary>
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.IFirmwareUpdateHost.ShowFirmwareUpdateSucceeded
-    void IFirmwareUpdateHost.ShowFirmwareUpdateSucceeded()
+    void IFirmwareUpdateHost.ShowFirmwareUpdateSucceeded(string message)
     {
         void ShowDialog()
         {
-            var successDialogViewModel =
-                new SuccessDialogViewModel("Firmware update completed successfully.");
+            var successDialogViewModel = new SuccessDialogViewModel(message);
             _ = _dialogService.ShowDialogAsync<SuccessDialog>(this, successDialogViewModel);
         }
 
@@ -2562,6 +2598,41 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         Dispatcher.UIThread.Invoke(ShowDialog);
         CloseFlyouts();
     }
+
+    /// <summary>
+    /// Shows the firmware-update prompt in the Devices pane (issue #564). The affirmative button is
+    /// the danger style because the write can erase the device's WiFi settings and calibration; the
+    /// pane moves focus to CANCEL, so Enter does not start a write.
+    /// </summary>
+    async Task<bool> IFirmwareUpdateHost.ConfirmFirmwareUpdateAsync(
+        string title,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        var answer = FirmwareUpdateConfirm.ShowAsync(title, message, "UPDATE", isDestructive: true);
+
+        // The preparation's token closes the prompt, so CancelFirmwareUpdatePreparation is the one
+        // place that ends both a pending lookup and an open prompt. Cancel() runs the callback on
+        // the thread that cancels, which is the UI thread for every caller.
+        await using (cancellationToken.Register(FirmwareUpdateConfirm.Cancel))
+        {
+            return await answer;
+        }
+    }
+
+    /// <summary>
+    /// Ends a firmware update that is being prepared (issue #564): stops a pending release lookup
+    /// and closes an open "Update firmware?" prompt. Called whenever the place the user clicked
+    /// UPDATE goes away — another tab, a closed drawer, another device, the Devices pane detaching —
+    /// so a lookup that finishes later opens nothing. Never stops a write that has already started;
+    /// the drawer's CANCEL UPDATE button does that.
+    /// </summary>
+    public void CancelFirmwareUpdatePreparation() => _firmwareCoordinator.CancelPreparation();
 
     /// <summary>
     /// Cancels any in-flight connect-time WiFi firmware probe AND waits for it to fully unwind before
@@ -2956,12 +3027,14 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     public string WifiFlashUnavailableMessage => FirmwareUpdateCoordinator.WifiFlashUnavailableMessage;
 
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.AddWifiNotification
-    private void AddWifiNotification(IStreamingDevice device, string reportedVersion)
+    internal void AddWifiNotification(IStreamingDevice device, string reportedVersion)
     {
         var versionText = string.Equals(reportedVersion, "Unknown", StringComparison.OrdinalIgnoreCase)
             ? "could not be read"
             : $"is out of date ({reportedVersion})";
-        var message = $"Device {device.DeviceSerialNo}: WiFi module firmware {versionText} " +
+        // The text shows the serial in its display form (#493); the notice keeps the stored serial
+        // below, because de-duplication and the per-device pruning compare that one.
+        var message = $"Device {DeviceSerials.ToDisplay(device.DeviceSerialNo)}: WiFi module firmware {versionText} " +
                       $"(minimum {FirmwareUpdateCoordinator.MinimumWifiFirmwareVersion}). Click below to update just the WiFi module.";
 
         var existingNotification = NotificationList.FirstOrDefault(n => n.IsWifiFirmwareUpdate
