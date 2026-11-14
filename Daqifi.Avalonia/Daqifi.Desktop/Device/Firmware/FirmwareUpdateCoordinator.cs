@@ -5,7 +5,6 @@
 
 using System.IO;
 using System.IO.Ports;
-using CommunityToolkit.Mvvm.Input;
 using Daqifi.Core.Firmware;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.Device.SerialDevice;
@@ -1417,7 +1416,7 @@ public class FirmwareUpdateCoordinator
         // Issue #569: the notification was text only, and the user had to find the update
         // control without help. The button takes them to it.
         ActionText = "Update",
-        Action = new RelayCommand(() => _host.ShowFirmwareSection(device)),
+        Action = new CommunityToolkit.Mvvm.Input.RelayCommand(() => _host.ShowFirmwareSection(device)),
     };
 
     /// <summary>
