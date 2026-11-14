@@ -13,7 +13,7 @@ namespace Daqifi.Avalonia.Tests.Device.Firmware;
 /// <summary>
 /// Pins issue #566: after a successful firmware write, the "has Outdated Firmware" notification
 /// and the device's outdated flag describe the firmware the device now runs, and they do so before
-/// the success dialog is shown.
+/// the success dialog is shown — without a network request inside the write.
 ///
 /// <para>
 /// Before the fix, <see cref="FirmwareUpdateCoordinator.RefreshFirmwareUpdatesAsync"/> ran only
@@ -23,11 +23,18 @@ namespace Daqifi.Avalonia.Tests.Device.Firmware;
 /// </para>
 ///
 /// <para>
+/// The fix compares the version the device reports after the restart with the release the
+/// coordinator already recorded, and refreshes the release list only after the run has closed. The
+/// release lookup takes no token, so it must never hold the upload open: the tests below make it
+/// hang and throw.
+/// </para>
+///
+/// <para>
 /// The device is the app's real <see cref="SerialStreamingDevice"/> over a real, connected Core
-/// device. The PIC32 flash is a stub that does what the restart does to Core's metadata: it writes
-/// the version the board boots with. It does NOT touch the wrapper, which is the case where the
-/// wrapper has not yet heard Core's <c>ChannelsPopulated</c> — the check must still read the new
-/// version.
+/// device. Each test first runs the real connect-time check, which is what records the release and
+/// raises the notification in the app. The PIC32 flash is a stub that does what the restart does to
+/// Core's metadata: it writes the version the board boots with. It does NOT touch the wrapper, which
+/// is the case where the wrapper has not yet heard Core's <c>ChannelsPopulated</c>.
 /// </para>
 /// </summary>
 public class FirmwareUpdateOutdatedNotificationTests : IDisposable
@@ -37,8 +44,11 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     private const string Previous = "3.8.0";
     private const string Older = "3.7.2";
 
+    /// <summary>A run that does not depend on the network finishes at once; a hung one fails fast.</summary>
+    private static readonly TimeSpan RunTimeout = TimeSpan.FromSeconds(5);
+
     private readonly FakeHost _host = new();
-    private readonly ReleaseDownloadService _downloads = new(Latest);
+    private readonly ReleaseDownloadService _downloads;
     private readonly RestartingUpdateService _updates = new();
     private readonly RecordingAppLogger _logger = new();
     private readonly string _dataDirectory =
@@ -47,9 +57,13 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     private readonly Daqifi.Avalonia.Tests.Device.CapturingTransport _transport = new();
     private readonly DaqifiStreamingDevice _core;
     private readonly SerialStreamingDevice _device;
+    private readonly FirmwareUpdateCoordinator _coordinator;
 
     public FirmwareUpdateOutdatedNotificationTests()
     {
+        _downloads = new ReleaseDownloadService(_host, Latest);
+        _host.CountLookups = () => _downloads.LatestReleaseQueries;
+
         _core = new DaqifiStreamingDevice("core", _transport, NullLogger.Instance);
         _core.Connect();
         _device = new SerialStreamingDevice("COM-TEST-566", _core);
@@ -57,10 +71,25 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         _host.SelectedDevice = _device;
         _host.ConnectedDevices.Add(_device);
         _updates.Core = _core;
+
+        // canFlashWifiModule: false and a device with no WINC module keep the WiFi step out of these
+        // tests: it returns at once for a device without the module, so only the PIC32 half, the
+        // comparison and the post-run refresh run.
+        _coordinator = new FirmwareUpdateCoordinator(
+            _host,
+            _updates,
+            _downloads,
+            NullLogger<FirmwareUpdateService>.Instance,
+            _logger,
+            _dataDirectory,
+            wifiUpdateModeSettleDelay: TimeSpan.Zero,
+            canFlashWifiModule: false);
     }
 
     public void Dispose()
     {
+        _downloads.ReleaseHungLookups();
+
         // Release the parked reader first, as CurrentRateCapEnforcementTests does, so Core's
         // teardown does not spend its consumer-join bound on every run.
         _transport.CloseStream();
@@ -82,11 +111,11 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     [Fact]
     public async Task An_update_to_the_latest_firmware_removes_the_outdated_notification()
     {
-        StartOn(Previous, withNotification: true);
+        await ConnectOn(Previous);
         _downloads.LatestFirmwarePath = FirmwareFile();
         _updates.VersionAfterRestart = Latest;
 
-        await CreateCoordinator().UploadFirmwareAsync();
+        await RunUpdate();
 
         Assert.True(_host.UpdateSucceeded, "The update did not reach the success dialog.");
         Assert.Equal(Latest, _device.DeviceVersion);
@@ -102,14 +131,99 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     [Fact]
     public async Task The_notification_is_gone_before_the_success_dialog_shows()
     {
-        StartOn(Previous, withNotification: true);
+        await ConnectOn(Previous);
         _downloads.LatestFirmwarePath = FirmwareFile();
         _updates.VersionAfterRestart = Latest;
 
-        await CreateCoordinator().UploadFirmwareAsync();
+        await RunUpdate();
 
         Assert.Equal(0, _host.FirmwareNotificationsWhenSucceeded);
         Assert.False(_host.WasOutdatedWhenSucceeded);
+    }
+
+    /// <summary>
+    /// The review finding on PR #574: the release lookup takes no token, so when GitHub never answers
+    /// it must not hold the run open. The notification is settled anyway, the run completes, and the
+    /// upload flag (which keeps Cancel enabled) is down.
+    /// </summary>
+    [Fact]
+    public async Task A_release_lookup_that_never_answers_does_not_hold_the_run_open()
+    {
+        await ConnectOn(Previous);
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        _updates.VersionAfterRestart = Latest;
+        _downloads.Lookup = LookupMode.Hang;
+
+        await RunUpdate();
+
+        Assert.True(_host.UpdateSucceeded);
+        Assert.False(_host.IsFirmwareUploading);
+        Assert.False(_device.IsFirmwareOutdated);
+        Assert.DoesNotContain(_host.Notifications, n => n.IsFirmwareUpdate);
+        Assert.Equal(0, _host.NotificationCount);
+    }
+
+    /// <summary>
+    /// The other half of the finding: a lookup that fails must not leave the old notification
+    /// standing. The full check swallows the failure and changes nothing, so it cannot be the thing
+    /// that settles the notification.
+    /// </summary>
+    [Fact]
+    public async Task A_release_lookup_that_fails_does_not_leave_the_old_notification()
+    {
+        await ConnectOn(Previous);
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        _updates.VersionAfterRestart = Latest;
+        _downloads.Lookup = LookupMode.Throw;
+
+        await RunUpdate();
+
+        Assert.True(_host.UpdateSucceeded);
+        Assert.False(_host.IsFirmwareUploading);
+        Assert.False(_device.IsFirmwareOutdated);
+        Assert.DoesNotContain(_host.Notifications, n => n.IsFirmwareUpdate);
+        Assert.Equal(0, _host.NotificationCount);
+    }
+
+    /// <summary>
+    /// The release list is refreshed separately: only after the run has closed, so it never holds
+    /// <c>IsFirmwareUploading</c> up, and never before the success dialog.
+    /// </summary>
+    [Fact]
+    public async Task The_release_list_is_refreshed_only_after_the_run_has_closed()
+    {
+        await ConnectOn(Previous);
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        _updates.VersionAfterRestart = Latest;
+        var lookupsBefore = _downloads.LatestReleaseQueries;
+
+        await RunUpdate();
+
+        Assert.True(_downloads.LatestReleaseQueries > lookupsBefore, "No release refresh followed the run.");
+        Assert.All(_downloads.UploadingWhenLookedUp.Skip(lookupsBefore), Assert.False);
+        Assert.Equal(lookupsBefore, _host.LookupsWhenSucceeded);
+    }
+
+    /// <summary>
+    /// What the comparison cannot see — a release published while the write ran — the separate
+    /// refresh does: the board is on the release recorded at connect time, but a newer one now exists.
+    /// </summary>
+    [Fact]
+    public async Task A_release_published_during_the_write_is_found_by_the_refresh()
+    {
+        await ConnectOn(Previous);
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        _updates.VersionAfterRestart = Latest;
+        _downloads.Publish("3.10.0");
+
+        await RunUpdate();
+
+        // Settled against the recorded 3.9.0 when the dialog opened ...
+        Assert.Equal(0, _host.FirmwareNotificationsWhenSucceeded);
+
+        // ... and corrected by the refresh once the run had closed.
+        Assert.True(_device.IsFirmwareOutdated);
+        Assert.Single(_host.Notifications, n => n.IsFirmwareUpdate);
     }
 
     /// <summary>
@@ -118,11 +232,11 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     [Fact]
     public async Task A_manual_upload_of_the_latest_firmware_removes_the_outdated_notification()
     {
-        StartOn(Previous, withNotification: true);
+        await ConnectOn(Previous);
         _host.FirmwareFilePath = FirmwareFile();
         _updates.VersionAfterRestart = Latest;
 
-        await CreateCoordinator().UploadFirmwareAsync();
+        await RunUpdate();
 
         Assert.True(_host.UpdateSucceeded);
         Assert.False(_device.IsFirmwareOutdated);
@@ -133,18 +247,21 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     /// <summary>
     /// The other direction: a manual upload that installs an OLDER image on an up-to-date board
     /// must bring the notification back. A fix that only removed the notification would pass every
-    /// test above and fail this one.
+    /// removal test and fail this one. The lookup hangs, so it is the comparison that adds it,
+    /// before the dialog.
     /// </summary>
     [Fact]
     public async Task A_manual_upload_of_an_older_firmware_brings_the_notification_back()
     {
-        StartOn(Latest, withNotification: false);
+        await ConnectOn(Latest);
         _host.FirmwareFilePath = FirmwareFile();
         _updates.VersionAfterRestart = Previous;
+        _downloads.Lookup = LookupMode.Hang;
 
-        await CreateCoordinator().UploadFirmwareAsync();
+        await RunUpdate();
 
         Assert.True(_host.UpdateSucceeded);
+        Assert.Equal(1, _host.FirmwareNotificationsWhenSucceeded);
         Assert.Equal(Previous, _device.DeviceVersion);
         Assert.True(_device.IsFirmwareOutdated);
         var notification = Assert.Single(_host.Notifications, n => n.IsFirmwareUpdate);
@@ -154,16 +271,16 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
 
     /// <summary>
     /// A manual upload that is still older than the newest release keeps the notification it
-    /// already had, once — the re-check must not stack a second copy.
+    /// already had, once — neither the comparison nor the refresh may stack a second copy.
     /// </summary>
     [Fact]
     public async Task A_manual_upload_that_is_still_outdated_keeps_one_notification()
     {
-        StartOn(Older, withNotification: true);
+        await ConnectOn(Older);
         _host.FirmwareFilePath = FirmwareFile();
         _updates.VersionAfterRestart = Previous;
 
-        await CreateCoordinator().UploadFirmwareAsync();
+        await RunUpdate();
 
         Assert.True(_host.UpdateSucceeded);
         Assert.True(_device.IsFirmwareOutdated);
@@ -172,17 +289,18 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     }
 
     /// <summary>
-    /// When Core has no version after the reset (the board never answered), the wrapper keeps the
-    /// version it had rather than being blanked, and the notification is left as it was.
+    /// When Core has no version after the reset (the board never answered), nothing is guessed:
+    /// the wrapper keeps the version it had and the notification is left as it was.
     /// </summary>
     [Fact]
-    public async Task An_empty_version_after_the_restart_does_not_erase_the_device_version()
+    public async Task An_empty_version_after_the_restart_changes_nothing()
     {
-        StartOn(Previous, withNotification: true);
+        await ConnectOn(Previous);
         _downloads.LatestFirmwarePath = FirmwareFile();
         _updates.VersionAfterRestart = string.Empty;
+        _downloads.Lookup = LookupMode.Hang;
 
-        await CreateCoordinator().UploadFirmwareAsync();
+        await RunUpdate();
 
         Assert.True(_host.UpdateSucceeded);
         Assert.Equal(Previous, _device.DeviceVersion);
@@ -191,62 +309,73 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     }
 
     /// <summary>
-    /// The re-check belongs to the success path only. A failed write changes nothing the check
-    /// reads, so it must not run, and the notification stays.
+    /// When no release was ever recorded (the connect-time check never succeeded), there is nothing
+    /// to compare with, so the notification is not touched before the dialog.
     /// </summary>
     [Fact]
-    public async Task A_failed_write_does_not_run_the_check()
+    public async Task No_recorded_release_changes_nothing_before_the_dialog()
     {
-        StartOn(Previous, withNotification: true);
+        // No ConnectOn: the coordinator has recorded no release. A notification is standing anyway,
+        // as one would after a check whose result has since been cleared.
+        _device.DeviceSerialNo = Serial;
+        _device.DeviceVersion = Previous;
+        _core.Metadata.FirmwareVersion = Previous;
+        _device.IsFirmwareOutdated = true;
+        _host.Notifications.Add(new Notifications
+        {
+            DeviceSerialNo = Serial,
+            Message = $"Device With Serial {Serial} has Outdated Firmware. Please Update to Version {Latest}.",
+            IsFirmwareUpdate = true
+        });
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        _updates.VersionAfterRestart = Latest;
+        _downloads.Lookup = LookupMode.Hang;
+
+        await RunUpdate();
+
+        Assert.True(_host.UpdateSucceeded);
+        Assert.Equal(1, _host.FirmwareNotificationsWhenSucceeded);
+        Assert.True(_host.WasOutdatedWhenSucceeded);
+    }
+
+    /// <summary>
+    /// A failed write changes nothing the check reads: the notification stays, and no refresh runs.
+    /// </summary>
+    [Fact]
+    public async Task A_failed_write_changes_nothing_and_does_not_refresh()
+    {
+        await ConnectOn(Previous);
         _downloads.LatestFirmwarePath = FirmwareFile();
         _updates.VersionAfterRestart = Latest;
         _updates.FailFlash = true;
+        var lookupsBefore = _downloads.LatestReleaseQueries;
 
-        await CreateCoordinator().UploadFirmwareAsync();
+        await RunUpdate();
 
         Assert.False(_host.UpdateSucceeded);
-        Assert.Equal(0, _downloads.LatestReleaseQueries);
+        Assert.Equal(lookupsBefore, _downloads.LatestReleaseQueries);
+        Assert.True(_device.IsFirmwareOutdated);
         Assert.Single(_host.Notifications, n => n.IsFirmwareUpdate);
     }
 
     #region Helpers
     /// <summary>
-    /// <c>canFlashWifiModule: false</c> and a device with no WINC module keep the WiFi step out of
-    /// these tests: it returns at once for a device without the module, so only the PIC32 half and
-    /// the re-check run.
+    /// Connects the device on <paramref name="version"/> and runs the real connect-time check, which
+    /// records the latest release and raises or clears the notification, as the app does.
     /// </summary>
-    private FirmwareUpdateCoordinator CreateCoordinator() =>
-        new(_host,
-            _updates,
-            _downloads,
-            NullLogger<FirmwareUpdateService>.Instance,
-            _logger,
-            _dataDirectory,
-            wifiUpdateModeSettleDelay: TimeSpan.Zero,
-            canFlashWifiModule: false);
-
-    /// <summary>
-    /// Puts the device, Core and the host in the state the connect-time check leaves them in.
-    /// </summary>
-    private void StartOn(string version, bool withNotification)
+    private async Task ConnectOn(string version)
     {
         _device.DeviceSerialNo = Serial;
         _device.DeviceVersion = version;
         _core.Metadata.FirmwareVersion = version;
-        _device.IsFirmwareOutdated = withNotification;
 
-        if (withNotification)
-        {
-            _host.Notifications.Add(new Notifications
-            {
-                DeviceSerialNo = Serial,
-                Message = $"Device With Serial {Serial} has Outdated Firmware. Please Update to Version {Latest}.",
-                IsFirmwareUpdate = true
-            });
-        }
+        await _coordinator.RefreshFirmwareUpdatesAsync();
 
-        _host.NotificationCount = _host.Notifications.Count;
+        Assert.Equal(Latest, _coordinator.LatestFirmwareVersion);
     }
+
+    /// <summary>Runs the update, failing the test rather than hanging if the run never completes.</summary>
+    private Task RunUpdate() => _coordinator.UploadFirmwareAsync().WaitAsync(RunTimeout);
 
     /// <summary>A stand-in PIC32 image: the coordinator checks only that the file exists.</summary>
     private string FirmwareFile()
@@ -259,24 +388,40 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     #endregion
 
     #region Fakes
-    /// <summary>
-    /// Download service with one published release. <see cref="CheckForUpdateAsync"/> compares
-    /// the way Core's does: an update is available when the release is newer than the device.
-    /// </summary>
-    private sealed class ReleaseDownloadService(string latestVersion) : IFirmwareDownloadService
+    private enum LookupMode
     {
-        private readonly FirmwareReleaseInfo _latest = new()
-        {
-            Version = ParseVersion(latestVersion),
-            TagName = "v" + latestVersion,
-            IsPreRelease = false
-        };
+        Answer,
+        Hang,
+        Throw
+    }
+
+    /// <summary>
+    /// Download service with one published release. <see cref="CheckForUpdateAsync"/> follows Core's
+    /// rule: an update is available when the release is newer than the device. The release lookup
+    /// can be made to answer, hang until teardown, or throw, and it records whether the host was
+    /// uploading each time it was asked.
+    /// </summary>
+    private sealed class ReleaseDownloadService(FakeHost host, string latestVersion) : IFirmwareDownloadService
+    {
+        private readonly CancellationTokenSource _releaseHung = new();
+        private FirmwareReleaseInfo _latest = Release(latestVersion);
 
         /// <summary>What the PIC32 package download returns; null means "no package".</summary>
         public string? LatestFirmwarePath { get; set; }
 
-        /// <summary>How many times the check asked for the latest release.</summary>
+        public LookupMode Lookup { get; set; } = LookupMode.Answer;
+
+        /// <summary>How many times the release lookup was asked.</summary>
         public int LatestReleaseQueries { get; private set; }
+
+        /// <summary>The host's upload flag at each lookup, in order.</summary>
+        public List<bool> UploadingWhenLookedUp { get; } = [];
+
+        /// <summary>Makes a newer release the latest, as a release published mid-write would.</summary>
+        public void Publish(string version) => _latest = Release(version);
+
+        /// <summary>Frees any hung lookup so it cannot outlive the test.</summary>
+        public void ReleaseHungLookups() => _releaseHung.Cancel();
 
         public Task<(string ExtractedPath, string Version)?> DownloadWifiFirmwareAsync(
             string destinationDirectory,
@@ -296,12 +441,23 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
             IProgress<int>? progress = null,
             CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 
-        public Task<FirmwareReleaseInfo?> GetLatestReleaseAsync(
+        public async Task<FirmwareReleaseInfo?> GetLatestReleaseAsync(
             bool includePreRelease = false,
             CancellationToken cancellationToken = default)
         {
             LatestReleaseQueries++;
-            return Task.FromResult<FirmwareReleaseInfo?>(_latest);
+            UploadingWhenLookedUp.Add(host.IsFirmwareUploading);
+
+            switch (Lookup)
+            {
+                case LookupMode.Hang:
+                    await Task.Delay(Timeout.InfiniteTimeSpan, _releaseHung.Token);
+                    return null;
+                case LookupMode.Throw:
+                    throw new HttpRequestException("Simulated: GitHub is unavailable.");
+                default:
+                    return _latest;
+            }
         }
 
         public Task<FirmwareReleaseInfo?> GetLatestWifiReleaseAsync(CancellationToken cancellationToken = default)
@@ -315,7 +471,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
             var parsed = FirmwareVersion.TryParse(deviceVersionString, out var deviceVersion);
             return Task.FromResult(new FirmwareUpdateCheckResult
             {
-                UpdateAvailable = parsed && _latest.Version > deviceVersion,
+                UpdateAvailable = !parsed || _latest.Version > deviceVersion,
                 DeviceVersion = parsed ? deviceVersion : null,
                 LatestRelease = _latest
             });
@@ -323,10 +479,14 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
 
         public void InvalidateCache() { }
 
-        private static FirmwareVersion ParseVersion(string value) =>
-            FirmwareVersion.TryParse(value, out var version)
-                ? version
-                : throw new ArgumentException($"Not a firmware version: {value}", nameof(value));
+        private static FirmwareReleaseInfo Release(string version) => new()
+        {
+            Version = FirmwareVersion.TryParse(version, out var parsed)
+                ? parsed
+                : throw new ArgumentException($"Not a firmware version: {version}", nameof(version)),
+            TagName = "v" + version,
+            IsPreRelease = false
+        };
     }
 
     /// <summary>
@@ -419,11 +579,16 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
 
         public int NotificationCount { get; set; }
 
+        /// <summary>Set by the test's download service so the dialog can record how many lookups preceded it.</summary>
+        public Func<int>? CountLookups { get; set; }
+
         public bool UpdateSucceeded { get; private set; }
 
         public int FirmwareNotificationsWhenSucceeded { get; private set; } = -1;
 
         public bool WasOutdatedWhenSucceeded { get; private set; }
+
+        public int LookupsWhenSucceeded { get; private set; } = -1;
 
         public void RefreshNotificationCount() => NotificationCount = Notifications.Count;
 
@@ -434,6 +599,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
             UpdateSucceeded = true;
             FirmwareNotificationsWhenSucceeded = Notifications.Count(n => n.IsFirmwareUpdate);
             WasOutdatedWhenSucceeded = SelectedDevice?.IsFirmwareOutdated ?? false;
+            LookupsWhenSucceeded = CountLookups?.Invoke() ?? -1;
         }
 
         public Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default)

@@ -235,6 +235,7 @@ public class FirmwareUpdateCoordinator
         // a throw before the try would leave it raised with no finally to lower it — the pane stuck
         // "uploading" behind a Cancel button with nothing left to cancel. Every statement the
         // preamble used to run before opening the run therefore moved inside.
+        var refreshReleasesAfterRun = false;
         var cancellationToken = BeginUpload();
         try
         {
@@ -324,7 +325,8 @@ public class FirmwareUpdateCoordinator
                 await UpdateWifiModuleAsync(serialStreamingDevice, cancellationToken);
             }
 
-            await RecheckFirmwareAfterWriteAsync(serialStreamingDevice, coreDevice);
+            RecheckFirmwareAfterWrite(serialStreamingDevice, coreDevice);
+            refreshReleasesAfterRun = true;
 
             _host.IsUploadComplete = true;
             _appLogger.AddBreadcrumb("firmware", "Firmware update completed");
@@ -360,13 +362,24 @@ public class FirmwareUpdateCoordinator
             // case of issue #599. The next run defaults to a full auto-update unless the user
             // explicitly re-selects a file. (The auto path never writes this property.)
             _host.FirmwareFilePath = string.Empty;
+
+            // Refresh the release list only now that the run has closed, and do not await it: the
+            // lookup takes no token, so it must never hold IsFirmwareUploading up or delay the
+            // success dialog (issue #566). It catches its own failures. RecheckFirmwareAfterWrite
+            // has already settled the notification against the recorded release; this pass picks
+            // up a release published since that one was recorded.
+            if (refreshReleasesAfterRun)
+            {
+                _ = RefreshFirmwareUpdatesAsync();
+            }
         }
     }
 
     /// <summary>
-    /// Re-runs the outdated-firmware check once a write has succeeded, so the notification and
-    /// <see cref="Daqifi.Desktop.Device.IStreamingDevice.IsFirmwareOutdated"/> describe the firmware
-    /// the device now runs before the success dialog tells the user the update is done (issue #566).
+    /// Settles the outdated-firmware notification and
+    /// <see cref="Daqifi.Desktop.Device.IStreamingDevice.IsFirmwareOutdated"/> for the device a write
+    /// has just succeeded on, before the success dialog tells the user the update is done
+    /// (issue #566). Makes no network request.
     /// <para>
     /// <see cref="RefreshFirmwareUpdatesAsync"/> is otherwise reached only from the end of the
     /// shell's <c>UpdateUi</c>, which runs on a connection-manager or logging-manager property
@@ -375,29 +388,64 @@ public class FirmwareUpdateCoordinator
     /// standing beside a tile that already showed the new version.
     /// </para>
     /// <para>
-    /// The wrapper's version is first taken from Core's metadata. Core re-reads the device's status
-    /// when it wakes the board after the reset, so its metadata carries the version the device
-    /// booted with. The wrapper normally hears that through <c>ChannelsPopulated</c>, but the check
-    /// must not depend on that event having run first, or it reads the version from before the
-    /// restart and keeps the notification it exists to remove. An empty value (the board never
-    /// answered after the reset) leaves the wrapper as it was rather than erasing the version.
+    /// The comparison is against the release already recorded in <see cref="_latestFirmwareVersion"/>,
+    /// the one the standing notification was raised for, and not a fresh release lookup. That lookup
+    /// takes no token: run inside the write it would hold the upload open (Cancel enabled over a
+    /// finished write) for as long as GitHub takes to answer once the release cache has expired, and
+    /// on a failure it would leave the old notification standing. The release list is refreshed
+    /// separately, after the run has closed (see the end of <see cref="UploadFirmwareAsync"/>).
+    /// The rule is Core's own <c>CheckForUpdateAsync</c> rule — outdated when the release is newer
+    /// than the device by <see cref="FirmwareVersion"/> ordering — so pre-release ordering is the
+    /// same here as in the full check.
     /// </para>
     /// <para>
-    /// The check is the full one, not "remove the notification": a manual <c>.hex</c> can install
-    /// an OLDER image, and the notification must then stay, or come back.
+    /// The device's version is taken from Core's metadata. Core re-reads the device's status when it
+    /// wakes the board after the reset, so its metadata carries the version the device booted with.
+    /// The wrapper normally hears that through <c>ChannelsPopulated</c>, but this must not depend on
+    /// that event having run first, or it compares the version from before the restart.
+    /// </para>
+    /// <para>
+    /// Both directions are settled, not only removal: a manual <c>.hex</c> can install an OLDER
+    /// image, and the notification must then stay, or come back. When no release has been recorded,
+    /// or the device reports no version (or one that does not parse), nothing is changed — there
+    /// is nothing honest to compare, and the separate refresh will settle it.
     /// </para>
     /// </summary>
-    private async Task RecheckFirmwareAfterWriteAsync(
+    private void RecheckFirmwareAfterWrite(
         SerialStreamingDevice serialStreamingDevice,
         Daqifi.Core.Device.DaqifiDevice coreDevice)
     {
         var restartedVersion = coreDevice.Metadata.FirmwareVersion;
-        if (!string.IsNullOrWhiteSpace(restartedVersion))
+        if (string.IsNullOrWhiteSpace(restartedVersion))
         {
-            serialStreamingDevice.DeviceVersion = restartedVersion;
+            return;
         }
 
-        await RefreshFirmwareUpdatesAsync();
+        serialStreamingDevice.DeviceVersion = restartedVersion;
+
+        var recordedRelease = _latestFirmwareVersion;
+        if (!FirmwareVersion.TryParse(recordedRelease, out var latest)
+            || !FirmwareVersion.TryParse(restartedVersion, out var installed))
+        {
+            return;
+        }
+
+        var isOutdated = latest > installed;
+        serialStreamingDevice.IsFirmwareOutdated = isOutdated;
+
+        if (string.IsNullOrWhiteSpace(serialStreamingDevice.DeviceSerialNo))
+        {
+            return;
+        }
+
+        if (isOutdated)
+        {
+            AddNotification(serialStreamingDevice, recordedRelease);
+        }
+        else
+        {
+            RemoveFirmwareNotification(serialStreamingDevice);
+        }
     }
 
     /// <summary>
