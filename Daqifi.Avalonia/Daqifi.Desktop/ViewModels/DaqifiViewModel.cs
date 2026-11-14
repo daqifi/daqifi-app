@@ -570,9 +570,9 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// The Devices drawer shows it beside the installed version.
     /// </summary>
     /// <remarks>
-    /// Announced after every check, also when the value did not change: the check sets each
-    /// device's <c>IsFirmwareOutdated</c> before this is written, and that flag does not notify, so
-    /// this announcement is what tells the drawer to read the flags again.
+    /// Announced after every check, also when the value did not change: the check records each
+    /// device's comparison (<see cref="RecordFirmwareComparison"/>) before this is written, and
+    /// nothing else announces those results, so this is what tells the drawer to read them again.
     /// </remarks>
     // Downstream-only: no upstream counterpart.
     public string LatestFirmwareVersion => _latestFirmwareVersion;
@@ -626,6 +626,61 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         _pendingFirmwareSectionSerial = device.DeviceSerialNo;
         SelectedIndex = DevicesTabIndex;
         FirmwareSectionRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    // Keyed by serial with the same rule as DeviceSerials.SameDevice (ordinal, case-insensitive).
+    // Written by the coordinator's version check, which can run off the UI thread; read by the
+    // drawer on the UI thread.
+    private readonly Dictionary<string, FirmwareComparison> _firmwareComparisons =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed record FirmwareComparison(string DeviceVersion, string LatestVersion, bool IsOutdated);
+
+    /// <summary>
+    /// Records what the version check found for <paramref name="device"/>. The result keeps the
+    /// installed version and the newest version it was made with, so it stops counting when either
+    /// one changes: after a firmware write, or when a newer release appears.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    public void RecordFirmwareComparison(IStreamingDevice device, string latestVersion, bool isOutdated)
+    {
+        if (string.IsNullOrWhiteSpace(device.DeviceSerialNo)) return;
+        lock (_firmwareComparisons)
+        {
+            _firmwareComparisons[device.DeviceSerialNo] =
+                new FirmwareComparison(device.DeviceVersion ?? string.Empty, latestVersion ?? string.Empty, isOutdated);
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="device"/> is older than <see cref="LatestFirmwareVersion"/>: <c>true</c>
+    /// or <c>false</c> from its own completed comparison, or <c>null</c> when no comparison of its
+    /// installed version with the current newest version has completed — not run yet, or failed.
+    /// </summary>
+    /// <remarks>
+    /// Not the device's <c>IsFirmwareOutdated</c> flag: that flag starts <c>false</c>, so it cannot
+    /// tell "current" from "not compared", and a drawer reading it said "up to date" for a device
+    /// that had just connected while another device had already supplied the newest version
+    /// (review of PR #576).
+    /// </remarks>
+    internal bool? FirmwareComparisonFor(IStreamingDevice? device)
+    {
+        if (device == null || string.IsNullOrWhiteSpace(device.DeviceSerialNo) || _latestFirmwareVersion.Length == 0)
+        {
+            return null;
+        }
+
+        FirmwareComparison? result;
+        lock (_firmwareComparisons)
+        {
+            _firmwareComparisons.TryGetValue(device.DeviceSerialNo, out result);
+        }
+
+        return result != null
+               && result.DeviceVersion == (device.DeviceVersion ?? string.Empty)
+               && result.LatestVersion == _latestFirmwareVersion
+            ? result.IsOutdated
+            : null;
     }
 
     /// <summary>Returns the serial of the pending FIRMWARE-section request and clears it, or <c>null</c> when none is pending.</summary>

@@ -124,5 +124,15 @@ public interface IFirmwareUpdateHost
     /// </remarks>
     // Downstream-only: no upstream counterpart.
     void ShowFirmwareSection(IStreamingDevice device) { }
+
+    /// <summary>
+    /// Records the result of the version check for one device: <paramref name="isOutdated"/> when
+    /// compared with <paramref name="latestVersion"/>. The Devices drawer says "up to date" or
+    /// "available" only for a device with a recorded result (review of PR #576); a device whose
+    /// comparison did not run, or failed, shows only its installed version.
+    /// </summary>
+    /// <remarks>A default no-op for the same reason as <see cref="ShowFirmwareSection"/>.</remarks>
+    // Downstream-only: no upstream counterpart.
+    void RecordFirmwareComparison(IStreamingDevice device, string latestVersion, bool isOutdated) { }
     #endregion
 }

@@ -68,6 +68,81 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
     }
 
     /// <summary>
+    /// Review of PR #576: the newest release is already known — another device's check supplied
+    /// it — and this device has just connected. Its own comparison has not run, so the drawer must
+    /// not say "up to date"; the device's outdated flag is <c>false</c> only because that is its
+    /// default.
+    /// </summary>
+    [Fact]
+    public void A_device_not_yet_compared_shows_only_its_installed_version_while_the_newest_is_known()
+    {
+        var shell = new DaqifiViewModel(new NullDialogService());
+        var pane = Track(new DevicesPaneViewModel(shell));
+        shell.SetLatestFirmwareRelease("3.9.0", "v3.9.0");
+        var justConnected = Nq1("9090539562006014105", "3.8.0");
+
+        pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(justConnected));
+
+        Assert.False(pane.SelectedDeviceFirmwareIsCurrent);
+        Assert.False(pane.SelectedDeviceHasFirmwareUpdate);
+        Assert.Equal("Installed 3.8.0.", pane.FirmwareStatusText);
+        Assert.Equal("UPDATE", pane.UpdateFirmwareButtonText);
+    }
+
+    /// <summary>The same device after its own comparison completed: now the drawer can say which.</summary>
+    [Theory]
+    [InlineData("3.8.0", true, "Installed 3.8.0. Version 3.9.0 is available.")]
+    [InlineData("3.9.0", false, "Installed 3.9.0. Firmware is up to date.")]
+    public void After_its_own_comparison_a_just_connected_device_shows_the_result(
+        string installed, bool outdated, string expected)
+    {
+        var shell = new DaqifiViewModel(new NullDialogService());
+        var pane = Track(new DevicesPaneViewModel(shell));
+        shell.SetLatestFirmwareRelease("3.9.0", "v3.9.0");
+        var justConnected = Nq1("9090539562006014105", installed);
+        pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(justConnected));
+
+        shell.RecordFirmwareComparison(justConnected, "3.9.0", outdated);
+        shell.SetLatestFirmwareRelease("3.9.0", "v3.9.0");
+
+        Assert.Equal(expected, pane.FirmwareStatusText);
+    }
+
+    /// <summary>
+    /// A comparison describes one installed version. After a firmware write the device reconnects
+    /// with another version, and the old result must not describe it.
+    /// </summary>
+    [Fact]
+    public void A_comparison_of_another_installed_version_does_not_count()
+    {
+        var shell = new DaqifiViewModel(new NullDialogService());
+        var pane = Track(new DevicesPaneViewModel(shell));
+        shell.SetLatestFirmwareRelease("3.9.0", "v3.9.0");
+        shell.RecordFirmwareComparison(Nq1("9090539562006014104", "3.8.0"), "3.9.0", isOutdated: true);
+
+        var afterTheWrite = Nq1("9090539562006014104", "3.9.0");
+        pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(afterTheWrite));
+
+        Assert.False(pane.SelectedDeviceHasFirmwareUpdate);
+        Assert.False(pane.SelectedDeviceFirmwareIsCurrent);
+        Assert.Equal("Installed 3.9.0.", pane.FirmwareStatusText);
+    }
+
+    /// <summary>A comparison with an older newest release does not count when a newer one appears.</summary>
+    [Fact]
+    public void A_comparison_with_an_older_release_does_not_count()
+    {
+        var (shell, pane, _) = DrawerOpenOn("3.9.0", outdated: false);
+        shell.SetLatestFirmwareRelease("3.9.0", "v3.9.0");
+        Assert.True(pane.SelectedDeviceFirmwareIsCurrent);
+
+        shell.SetLatestFirmwareRelease("3.10.0", "v3.10.0");
+
+        Assert.False(pane.SelectedDeviceFirmwareIsCurrent);
+        Assert.Equal("Installed 3.9.0.", pane.FirmwareStatusText);
+    }
+
+    /// <summary>
     /// Before the check has succeeded (or when it failed) the drawer says only what it knows. It
     /// must not say "up to date": nothing has been compared.
     /// </summary>
@@ -258,8 +333,9 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
         var shell = new DaqifiViewModel(new NullDialogService());
         var pane = Track(new DevicesPaneViewModel(shell));
         var device = Nq1("9090539562006014104", installed);
-        // The flag the version check sets on each device before it announces the newest release.
-        device.IsFirmwareOutdated = outdated;
+        // What the version check records for each device, against 3.9.0, before it announces the
+        // newest release.
+        shell.RecordFirmwareComparison(device, "3.9.0", outdated);
         pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(device));
         return (shell, pane, device);
     }

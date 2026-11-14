@@ -1020,6 +1020,7 @@ public class FirmwareUpdateCoordinator
                     includePreRelease: true);
                 var isOutdated = updateCheck.UpdateAvailable;
                 device.IsFirmwareOutdated = isOutdated;
+                _host.RecordFirmwareComparison(device, _latestFirmwareVersion, isOutdated);
 
                 if (!string.IsNullOrWhiteSpace(device.DeviceSerialNo))
                 {
@@ -1052,20 +1053,31 @@ public class FirmwareUpdateCoordinator
 
         if (existingNotification == null)
         {
-            _host.Notifications.Add(new Notifications
-            {
-                DeviceSerialNo = device.DeviceSerialNo,
-                Message = message,
-                IsFirmwareUpdate = true,
-                // Issue #569: the notification was text only, and the user had to find the update
-                // control without help. The button takes them to it.
-                ActionText = "Update",
-                Action = new RelayCommand(() => _host.ShowFirmwareSection(device)),
-            });
+            _host.Notifications.Add(OutdatedFirmwareNotice(device, message));
+        }
+        else if (existingNotification.Message != message)
+        {
+            // The text names the device by its serial only while another connected device has the
+            // same name, and it states the newest version, so it goes stale when a device with the
+            // same name connects or leaves, or a newer release appears (review of PR #576). The
+            // model's text is init-only: put a new notice in the same place.
+            var index = _host.Notifications.IndexOf(existingNotification);
+            _host.Notifications[index] = OutdatedFirmwareNotice(device, message);
         }
 
         _host.RefreshNotificationCount();
     }
+
+    private Notifications OutdatedFirmwareNotice(IStreamingDevice device, string message) => new()
+    {
+        DeviceSerialNo = device.DeviceSerialNo,
+        Message = message,
+        IsFirmwareUpdate = true,
+        // Issue #569: the notification was text only, and the user had to find the update
+        // control without help. The button takes them to it.
+        ActionText = "Update",
+        Action = new RelayCommand(() => _host.ShowFirmwareSection(device)),
+    };
 
     /// <summary>
     /// The text of the outdated-firmware notification: the name the user knows the device by, the

@@ -22,13 +22,14 @@ namespace Daqifi.Avalonia.Tests.Device.Firmware;
 public class OutdatedFirmwareNotificationTests : IDisposable
 {
     private readonly RecordingHost _host = new();
+    private readonly LatestIs390DownloadService _downloads = new();
     private readonly string _dataDirectory =
         Path.Combine(Path.GetTempPath(), "daqifi-outdated-notice-tests", Guid.NewGuid().ToString("N"));
 
     private FirmwareUpdateCoordinator CreateCoordinator() =>
         new(_host,
             new NoFlashUpdateService(),
-            new LatestIs390DownloadService(),
+            _downloads,
             NullLogger<FirmwareUpdateService>.Instance,
             new RecordingAppLogger(),
             _dataDirectory,
@@ -133,7 +134,136 @@ public class OutdatedFirmwareNotificationTests : IDisposable
         Assert.Equal("v3.9.0", coordinator.LatestFirmwareTag);
     }
 
+    #region A notice that already exists follows the text it should have (review of PR #576)
+    /// <summary>
+    /// The rule: the serial is in the text while another connected device has the same name, and
+    /// only then. The check runs again on every connect and disconnect, so the first device's notice
+    /// gains the serial when the second Nq1 connects and loses it when that device goes away.
+    /// </summary>
+    [Fact]
+    public async Task The_first_notice_gains_the_serial_when_a_second_Nq1_connects_and_loses_it_when_it_leaves()
+    {
+        var first = Nq1("9090539562006014104", "3.8.0");
+        var second = Nq1("9090539562006014105", "3.8.0");
+        var coordinator = CreateCoordinator();
+
+        _host.SetConnectedDevices(first);
+        await coordinator.RefreshFirmwareUpdatesAsync();
+        Assert.Equal("Nq1 has firmware 3.8.0. Version 3.9.0 is available.", NoticeFor(first).Message);
+
+        _host.SetConnectedDevices(first, second);
+        await coordinator.RefreshFirmwareUpdatesAsync();
+        Assert.Equal("Nq1 (serial 9090539562006014104) has firmware 3.8.0. Version 3.9.0 is available.", NoticeFor(first).Message);
+        Assert.Equal(2, _host.Notifications.Count);
+
+        _host.SetConnectedDevices(first);
+        await coordinator.RefreshFirmwareUpdatesAsync();
+        Assert.Equal("Nq1 has firmware 3.8.0. Version 3.9.0 is available.", NoticeFor(first).Message);
+    }
+
+    [Fact]
+    public async Task A_newer_release_updates_the_text_of_an_existing_notice()
+    {
+        var device = Nq1("9090539562006014104", "3.8.0");
+        _host.SetConnectedDevices(device);
+        var coordinator = CreateCoordinator();
+        await coordinator.RefreshFirmwareUpdatesAsync();
+
+        _downloads.Latest = Release(3, 10, 0);
+        await coordinator.RefreshFirmwareUpdatesAsync();
+
+        var notice = Assert.Single(_host.Notifications);
+        Assert.Equal("Nq1 has firmware 3.8.0. Version 3.10.0 is available.", notice.Message);
+    }
+
+    /// <summary>
+    /// The replacement is a new item (the model's text is init-only). It stays where the old one
+    /// was, it is still a firmware notice for the same serial, and its button still opens that device.
+    /// </summary>
+    [Fact]
+    public async Task A_replaced_notice_keeps_its_place_and_its_Update_button_opens_that_device()
+    {
+        var first = Nq1("9090539562006014104", "3.8.0");
+        var second = Nq1("9090539562006014105", "3.8.0");
+        var coordinator = CreateCoordinator();
+        _host.Notifications.Add(new Notifications { Message = "An unrelated notice above it" });
+        _host.SetConnectedDevices(first);
+        await coordinator.RefreshFirmwareUpdatesAsync();
+        var before = NoticeFor(first);
+        var index = _host.Notifications.IndexOf(before);
+
+        _host.SetConnectedDevices(first, second);
+        await coordinator.RefreshFirmwareUpdatesAsync();
+
+        var after = NoticeFor(first);
+        Assert.NotSame(before, after);
+        Assert.Equal(index, _host.Notifications.IndexOf(after));
+        Assert.True(after.IsFirmwareUpdate);
+        Assert.Equal("Update", after.ActionText);
+        after.Action!.Execute(null);
+        Assert.Same(first, Assert.Single(_host.FirmwareSectionRequests));
+    }
+
+    /// <summary>A notice whose text did not change is left alone, so the list does not flicker on every connect.</summary>
+    [Fact]
+    public async Task A_notice_whose_text_did_not_change_is_not_replaced()
+    {
+        var device = Nq1("9090539562006014104", "3.8.0");
+        _host.SetConnectedDevices(device);
+        var coordinator = CreateCoordinator();
+        await coordinator.RefreshFirmwareUpdatesAsync();
+        var before = Assert.Single(_host.Notifications);
+
+        await coordinator.RefreshFirmwareUpdatesAsync();
+
+        Assert.Same(before, Assert.Single(_host.Notifications));
+    }
+    #endregion
+
+    #region The check records each device's own comparison (review of PR #576)
+    [Fact]
+    public async Task The_check_records_each_device_comparison_against_the_newest_version()
+    {
+        var outdated = Nq1("9090539562006014104", "3.8.0");
+        var current = Nq1("9090539562006014105", "3.9.0");
+        _host.SetConnectedDevices(outdated, current);
+
+        await CreateCoordinator().RefreshFirmwareUpdatesAsync();
+
+        Assert.Equal(
+            [(outdated, "3.9.0", true), (current, "3.9.0", false)],
+            _host.Comparisons);
+    }
+
+    /// <summary>
+    /// The release lookup works but the comparison fails: nothing is recorded, so the drawer keeps
+    /// showing only the installed version and never says "up to date".
+    /// </summary>
+    [Fact]
+    public async Task A_failed_comparison_records_nothing()
+    {
+        _host.SetConnectedDevices(Nq1("9090539562006014104", "3.9.0"));
+        _downloads.ThrowOnCheck = true;
+        var coordinator = CreateCoordinator();
+
+        await coordinator.RefreshFirmwareUpdatesAsync();
+
+        Assert.Equal("3.9.0", coordinator.LatestFirmwareVersion);
+        Assert.Empty(_host.Comparisons);
+    }
+    #endregion
+
     #region Helpers and fakes
+    private Notifications NoticeFor(DesktopStreamingDevice device) =>
+        _host.Notifications.Single(n => n.IsFirmwareUpdate && n.DeviceSerialNo == device.DeviceSerialNo);
+
+    private static FirmwareReleaseInfo Release(int major, int minor, int patch) => new()
+    {
+        Version = new FirmwareVersion(major, minor, patch, PreLabel: null, PreNumber: 0),
+        TagName = $"v{major}.{minor}.{patch}",
+        IsPreRelease = false
+    };
+
     private static SerialStreamingDevice Nq1(string serial, string firmwareVersion)
     {
         var device = new SerialStreamingDevice("COM-TEST-569", "DAQiFi Nq1", serial, firmwareVersion);
@@ -147,6 +277,8 @@ public class OutdatedFirmwareNotificationTests : IDisposable
         private List<DesktopStreamingDevice> _connected = [];
 
         public List<DesktopStreamingDevice> FirmwareSectionRequests { get; } = [];
+
+        public List<(DesktopStreamingDevice Device, string Latest, bool IsOutdated)> Comparisons { get; } = [];
 
         public void SetConnectedDevices(params DesktopStreamingDevice[] devices) => _connected = [.. devices];
 
@@ -167,20 +299,21 @@ public class OutdatedFirmwareNotificationTests : IDisposable
         public void ShowFirmwareUpdateSucceeded() { }
         public Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
         public void ShowFirmwareSection(DesktopStreamingDevice device) => FirmwareSectionRequests.Add(device);
+        public void RecordFirmwareComparison(DesktopStreamingDevice device, string latestVersion, bool isOutdated) =>
+            Comparisons.Add((device, latestVersion, isOutdated));
     }
 
     /// <summary>
-    /// Reports 3.9.0 as the newest release, and an update for every device older than it — the
-    /// comparison Core makes, reduced to the two versions these tests use.
+    /// Reports <see cref="Latest"/> (3.9.0 unless a test changes it) as the newest release, and an
+    /// update for every device that does not have exactly that version — the comparison Core makes,
+    /// reduced to the versions these tests use. <see cref="ThrowOnCheck"/> makes the per-device
+    /// comparison fail.
     /// </summary>
     private sealed class LatestIs390DownloadService : IFirmwareDownloadService
     {
-        private static readonly FirmwareReleaseInfo Latest = new()
-        {
-            Version = new FirmwareVersion(3, 9, 0, PreLabel: null, PreNumber: 0),
-            TagName = "v3.9.0",
-            IsPreRelease = false
-        };
+        public FirmwareReleaseInfo Latest { get; set; } = Release(3, 9, 0);
+
+        public bool ThrowOnCheck { get; set; }
 
         public Task<FirmwareReleaseInfo?> GetLatestReleaseAsync(
             bool includePreRelease = false, CancellationToken cancellationToken = default) =>
@@ -188,11 +321,13 @@ public class OutdatedFirmwareNotificationTests : IDisposable
 
         public Task<FirmwareUpdateCheckResult> CheckForUpdateAsync(
             string deviceVersionString, bool includePreRelease = false, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new FirmwareUpdateCheckResult
-            {
-                UpdateAvailable = deviceVersionString != "3.9.0",
-                LatestRelease = Latest
-            });
+            ThrowOnCheck
+                ? throw new HttpRequestException("firmware release lookup failed")
+                : Task.FromResult(new FirmwareUpdateCheckResult
+                {
+                    UpdateAvailable = deviceVersionString != Latest.Version.ToString(),
+                    LatestRelease = Latest
+                });
 
         public Task<(string ExtractedPath, string Version)?> DownloadWifiFirmwareAsync(
             string destinationDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default) =>

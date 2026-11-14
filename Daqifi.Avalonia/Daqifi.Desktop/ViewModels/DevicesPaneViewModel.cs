@@ -128,18 +128,19 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
     public string LatestFirmwareVersion => _shell?.LatestFirmwareVersion ?? string.Empty;
 
     /// <summary>
-    /// True when the newest version is known and the selected device is older. The flag is the one
-    /// the version check sets on the device, so the drawer agrees with the outdated-firmware
-    /// notification and with the tile.
+    /// True when the selected device's own comparison with the newest version completed and found
+    /// it older. The result is the one the version check also uses for the outdated-firmware
+    /// notification.
     /// </summary>
     // Downstream-only: no upstream counterpart.
-    public bool SelectedDeviceHasFirmwareUpdate =>
-        SelectedDevice?.IsFirmwareOutdated == true && LatestFirmwareVersion.Length > 0;
+    public bool SelectedDeviceHasFirmwareUpdate => _shell?.FirmwareComparisonFor(SelectedDevice) == true;
 
-    /// <summary>True when the newest version is known and the selected device does not need it.</summary>
+    /// <summary>
+    /// True when the selected device's own comparison completed and found it not older. False
+    /// before that comparison and when it failed: the drawer says "up to date" only after it checked.
+    /// </summary>
     // Downstream-only: no upstream counterpart.
-    public bool SelectedDeviceFirmwareIsCurrent =>
-        SelectedDevice is { IsFirmwareOutdated: false } && LatestFirmwareVersion.Length > 0;
+    public bool SelectedDeviceFirmwareIsCurrent => _shell?.FirmwareComparisonFor(SelectedDevice) == false;
 
     /// <summary>
     /// One line at the top of the FIRMWARE section: the installed version, and either the newer
@@ -359,7 +360,7 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         {
             OnPropertyChanged(nameof(FrequencyHz));
         }
-        else if (e.PropertyName is nameof(IStreamingDevice.IsFirmwareOutdated) or nameof(IStreamingDevice.DeviceVersion))
+        else if (e.PropertyName == nameof(IStreamingDevice.DeviceVersion))
         {
             RaiseFirmwareAvailabilityChanged();
         }
