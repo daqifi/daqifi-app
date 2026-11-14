@@ -333,6 +333,52 @@ public class WifiFlashPlatformGateTests : IDisposable
     }
 
     /// <summary>
+    /// Core accepts any nonempty version string in the chip reply. A reply the app cannot parse as
+    /// a version is not a version, so the notice must not quote it as "the module has firmware …":
+    /// it gets the unreadable wording, the same as a module that did not answer. Both strings fail
+    /// Core's pattern (at most three numeric parts, an optional letter suffix): a word, and a
+    /// four-part dotted string such as an IP address.
+    /// </summary>
+    [Theory]
+    [InlineData("not-a-version")]
+    [InlineData("192.168.1.1")]
+    public async Task A_version_the_app_cannot_parse_gets_the_unreadable_notice(string reply)
+    {
+        var coordinator = CreateCoordinator(canFlashWifiModule: false);
+        var device = ScriptedWincDevice.Answering(reply);
+
+        await coordinator.UpdateWifiModuleAsync(device, CancellationToken.None);
+
+        var notice = Assert.Single(_host.Notifications);
+        Assert.Contains("could not read", notice.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(reply, notice.Message);
+        Assert.Contains(FirmwareUpdateCoordinator.MinimumWifiFirmwareVersion, notice.Message);
+        Assert.Equal(1, device.Queries);
+        Assert.False(_downloads.WifiDownloadWasRequested);
+    }
+
+    /// <summary>
+    /// The Windows half of the case above, to show the flash decision did not move: a reply the app
+    /// cannot parse is still treated as needing a flash where the tool can run
+    /// (<c>WifiFirmwareNeedsFlash</c> maps it to "flash"), so the download is requested and no notice
+    /// is raised.
+    /// </summary>
+    [Theory]
+    [InlineData("not-a-version")]
+    [InlineData("192.168.1.1")]
+    public async Task A_version_the_app_cannot_parse_is_still_flashed_where_the_tool_can_run(string reply)
+    {
+        var coordinator = CreateCoordinator(canFlashWifiModule: true);
+        var device = ScriptedWincDevice.Answering(reply);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => coordinator.UpdateWifiModuleAsync(device, CancellationToken.None));
+
+        Assert.True(_downloads.WifiDownloadWasRequested);
+        Assert.Empty(_host.Notifications);
+    }
+
+    /// <summary>
     /// The text now varies with what the module reported, so deduplication can no longer match on
     /// the whole message. Two runs that read different versions still leave one notice per device,
     /// and it carries the latest reading.
@@ -353,15 +399,18 @@ public class WifiFlashPlatformGateTests : IDisposable
     }
 
     /// <summary>
-    /// A notice is withdrawn once it stops being true. A WINC that is slow to start after the PIC32
-    /// reboot can miss the probe on one run and answer on the next; the first run's "could not read"
-    /// must not outlive a later reading of a current module.
+    /// A notice is withdrawn once it stops being true: a later reading of a current module removes
+    /// whatever an earlier run left. The earlier run here reads an outdated version, which raises the
+    /// same notice as an unreadable module through the same lookup, without spending the real
+    /// four-second retry budget a second time —
+    /// <see cref="An_unreadable_module_gets_one_notice_that_says_it_could_not_be_read"/> is the one
+    /// test that runs it.
     /// </summary>
     [Fact]
     public async Task A_later_current_reading_withdraws_an_earlier_notice()
     {
         var coordinator = CreateCoordinator(canFlashWifiModule: false);
-        var device = ScriptedWincDevice.Answering(null);
+        var device = ScriptedWincDevice.Answering("19.5.4");
 
         await coordinator.UpdateWifiModuleAsync(device, CancellationToken.None);
         Assert.Single(_host.Notifications);

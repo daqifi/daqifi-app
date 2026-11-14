@@ -548,8 +548,20 @@ public class FirmwareUpdateCoordinator
                     return;
                 }
 
-                // A blank version maps to "Unknown" above; the notice words that as "not read".
-                reportedModuleVersion = string.IsNullOrWhiteSpace(chipInfo.FwVersion) ? null : reportedWifiVersion;
+                // Only a version the app can parse is quoted in the notice. Core accepts any nonempty
+                // string in the chip reply, and WifiFirmwareNeedsFlash maps a blank or unparseable one
+                // to "flash" — which stays the decision on Windows — but a string that is not a
+                // version must not be presented to the user as the module's firmware. The notice
+                // words it as "could not read", the same as a module that did not answer.
+                if (FirmwareVersion.TryParse(chipInfo.FwVersion, out _))
+                {
+                    reportedModuleVersion = reportedWifiVersion;
+                }
+                else
+                {
+                    _appLogger.Warning(
+                        $"WiFi module reported a version the app cannot parse ('{chipInfo.FwVersion}'); treating it as unreadable.");
+                }
 
                 if (_canFlashWifiModule)
                 {
