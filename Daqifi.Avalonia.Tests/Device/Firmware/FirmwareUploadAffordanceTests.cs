@@ -205,13 +205,12 @@ public class FirmwareUploadAffordanceTests : IDisposable
     /// <summary>
     /// The device pane drives both the combined update and the WiFi-only flash, and both write the
     /// same status line and raise the same uploading flag — so one cancel and one status line serve
-    /// both. Desktop and mobile are separate views over the same view model and must not drift.
+    /// both.
     /// </summary>
-    [Theory]
-    [InlineData("Daqifi.Avalonia/Daqifi.Desktop/View/Prototype/DevicesPanePrototype.axaml")]
-    [InlineData("Daqifi.Avalonia/Views/Mobile/DevicesMobileView.axaml")]
-    public void The_device_pane_binds_cancel_and_the_status_line(string viewPath)
+    [Fact]
+    public void The_device_pane_binds_cancel_and_the_status_line()
     {
+        const string viewPath = "Daqifi.Avalonia/Daqifi.Desktop/View/Prototype/DevicesPanePrototype.axaml";
         BindingFacts.AssertBinds(viewPath, "{Binding Shell.CancelFirmwareUploadCommand}");
         BindingFacts.AssertBinds(viewPath, "{Binding Shell.FirmwareUpdateStatusText}");
 

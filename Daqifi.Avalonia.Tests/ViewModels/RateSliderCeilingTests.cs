@@ -19,13 +19,15 @@ namespace Daqifi.Avalonia.Tests.ViewModels;
 /// </para>
 ///
 /// <para>
-/// The view half of these facts is deliberately textual, through <see cref="BindingFacts"/> —
-/// neither device view declares an <c>x:DataType</c>, so their bindings are resolved by reflection
-/// at runtime and a missing or misspelled member fails silently while both heads build green.
+/// The view half of these facts is deliberately textual, through <see cref="BindingFacts"/>. When
+/// it was written the device view declared no <c>x:DataType</c>, so its bindings were resolved by
+/// reflection at runtime and a missing or misspelled member failed silently while both heads built
+/// green.
 /// </para>
 ///
 /// <para>
-/// Scope: only the two views whose slider drives a connected device's live rate. The Profiles
+/// Scope: only the view whose slider drives a connected device's live rate. The mobile
+/// projection of the same pane was never hosted and was deleted (issue #524). The Profiles
 /// pane's sliders edit a <c>ProfileDevice</c> — an <c>ObservableObject</c> loaded from XML with no
 /// device behind it, which can name a board that is not connected and can appear several times in
 /// one profile with different ceilings — so there is no device there to read a bound from. Their
@@ -37,25 +39,19 @@ namespace Daqifi.Avalonia.Tests.ViewModels;
 /// </summary>
 public class RateSliderCeilingTests
 {
-    /// <summary>Repo-relative paths of the two views whose slider sets a connected device's rate.</summary>
+    /// <summary>Repo-relative path of the view whose slider sets a connected device's rate.</summary>
     private const string DesktopDevicesView =
         "Daqifi.Avalonia/Daqifi.Desktop/View/Prototype/DevicesPanePrototype.axaml";
 
-    private const string MobileDevicesView =
-        "Daqifi.Avalonia/Views/Mobile/DevicesMobileView.axaml";
-
     #region The slider's bound comes from the device
     /// <summary>
-    /// Desktop and mobile are two views over one view model and must not drift: both take the
-    /// slider's upper bound from <c>MaxFrequencyHz</c>, which reads the selected device's
-    /// advertised maximum.
+    /// The view takes the slider's upper bound from <c>MaxFrequencyHz</c>, which reads the
+    /// selected device's advertised maximum.
     /// </summary>
-    [Theory]
-    [InlineData(DesktopDevicesView)]
-    [InlineData(MobileDevicesView)]
-    public void The_devices_pane_takes_its_rate_ceiling_from_the_device(string viewPath)
+    [Fact]
+    public void The_devices_pane_takes_its_rate_ceiling_from_the_device()
     {
-        BindingFacts.AssertBinds(viewPath, "Maximum=\"{Binding MaxFrequencyHz}\"");
+        BindingFacts.AssertBinds(DesktopDevicesView, "Maximum=\"{Binding MaxFrequencyHz}\"");
 
         BindingFacts.AssertExposes(typeof(DevicesPaneViewModel), "MaxFrequencyHz");
     }
@@ -65,12 +61,10 @@ public class RateSliderCeilingTests
     /// one board, silently wrong for every other, and nothing downstream can tell that the rate the
     /// user wanted was never offered.
     /// </summary>
-    [Theory]
-    [InlineData(DesktopDevicesView)]
-    [InlineData(MobileDevicesView)]
-    public void Neither_devices_view_writes_a_rate_ceiling_of_its_own(string viewPath)
+    [Fact]
+    public void The_devices_view_writes_no_rate_ceiling_of_its_own()
     {
-        Assert.DoesNotContain("Maximum=\"1000\"", BindingFacts.Source(viewPath), StringComparison.Ordinal);
+        Assert.DoesNotContain("Maximum=\"1000\"", BindingFacts.Source(DesktopDevicesView), StringComparison.Ordinal);
     }
     #endregion
 
