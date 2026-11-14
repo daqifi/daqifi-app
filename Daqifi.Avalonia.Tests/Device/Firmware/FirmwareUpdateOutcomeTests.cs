@@ -342,7 +342,7 @@ public class FirmwareUpdateOutcomeTests : IDisposable
         public void Dispose()
         {
             transport.CloseStream();
-            core.Dispose();
+            Core.Dispose();
             transport.Dispose();
         }
     }
