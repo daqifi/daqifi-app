@@ -225,6 +225,8 @@ internal sealed class ScriptedDevice : IStreamingDevice
 
     public int PwmFrequencyHz { get; set; }
 
+    public int PwmFrequencyFloorHz => Daqifi.Core.Device.DaqifiStreamingDevice.MinPwmFrequencyHz;
+
     public void Reboot() { }
 
     public void SwitchMode(DeviceMode newMode) => Mode = newMode;
