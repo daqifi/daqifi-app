@@ -415,6 +415,49 @@ public sealed class PreviousSessionImportTests : IDisposable
     }
 
     [Fact]
+    public async Task A_copy_does_not_block_a_replacement_old_session_that_reuses_its_first_sample_ID()
+    {
+        // Without AUTOINCREMENT, SQLite gives a new sample the highest ID in the table plus one, so
+        // after a delete it gives the deleted IDs again.
+        CreatePreviousDatabase(autoincrement: false);
+        AddPreviousSession(1, SameSecond, "Card log", 1, 2);
+        AddBulkPreviousSession(2, "2026-09-01 12:05:00", 3, PreviousSessionImport.BatchSpan + 10);
+
+        // The import copies session 1 in full, then stops in session 2, so the offer stays open.
+        // Progress report 1 is the start, 2 is session 1, 3 is the first batch of session 2.
+        using (var stop = new CancellationTokenSource())
+        {
+            var reports = 0;
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Import().ImportAsync(
+                new ImportOutcome(), new SynchronousProgress(_ => { if (++reports == 3) stop.Cancel(); }), stop.Token));
+        }
+
+        var copy = Scalar<long>(_current, $"SELECT ID FROM Sessions WHERE Status = {(int)SessionStatus.Complete}");
+        Assert.Equal(1L, Scalar<long>(_current, $"SELECT PreviousFirstSampleId FROM Sessions WHERE ID = {copy}"));
+
+        // The earlier version then deletes both sessions and imports a different card log from the
+        // same second. It gets session ID 1 and the same start, and SQLite gives its first sample
+        // ID 1 again.
+        Execute(_previous,
+            "DELETE FROM Samples; DELETE FROM Sessions;" +
+            $"INSERT INTO Sessions (ID, SessionStart, Name, SampleCount) VALUES (1, '{SameSecond}', 'Another card log', 1);" +
+            "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            "VALUES (1, 7.5, 70, 'Nq1', 'AI0', 'Unknown', '#FF0000', 1);");
+        Assert.Equal(1L, Scalar<long>(_previous, "SELECT MIN(ID) FROM Samples"));
+
+        Assert.True(Import().HasSessionsToImport());
+        var outcome = await RunImport();
+
+        Assert.Single(outcome.Imported);
+        Assert.Equal(7.5, Scalar<double>(_current, $"SELECT Value FROM Samples WHERE LoggingSessionID = {outcome.Imported[0]}"));
+        // The complete copy of the first card log stays.
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+        Assert.Equal(2L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions WHERE Status = 0"));
+        // Nothing can be proved a copy here, so a finished import ends the offer itself.
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
     public async Task An_interrupted_session_is_deleted_and_imported_again_in_full()
     {
         CreatePreviousDatabase();
