@@ -702,6 +702,8 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.Connect
     public virtual bool Connect()
     {
+        LastConnectError = null;
+
         // Ensure any previous connection state is cleaned up first
         CleanupConnection();
 
@@ -760,11 +762,23 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         }
         catch (Exception ex)
         {
+            LastConnectError = ex;
             LogConnectFailure(ex);
             CleanupConnection();
             return false;
         }
     }
+
+    /// <summary>
+    /// Why the last <see cref="Connect"/> failed: the exception it caught, or <c>null</c> when it
+    /// succeeded, has not run, or failed without an exception.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Connect"/> returns only <c>false</c>, and the reason went only to the log. The
+    /// phone has no screen that shows the log, so it could not tell the user why (#593).
+    /// </remarks>
+    // @port-divergence: upstream Connect() keeps the reason in the log only.
+    public Exception? LastConnectError { get; private set; }
 
     /// <summary>
     /// Disconnects from the device: stops streaming, unsubscribes Core events, clears
