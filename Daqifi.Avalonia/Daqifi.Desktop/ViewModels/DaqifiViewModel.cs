@@ -1287,6 +1287,14 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             return;
         }
 
+        // Issue #538: leave a device in a firmware update untouched — its channels, the
+        // selection the update reads after the write, and its connection.
+        if (ConnectionManager.Instance.IsDeviceBeingUpdated(deviceToDisconnect))
+        {
+            _appLogger.Warning($"Ignoring disconnect of {deviceToDisconnect.Name}: a firmware update is in progress on it.");
+            return;
+        }
+
         foreach (var channel in deviceToDisconnect.DataChannels)
         {
             if (channel.IsActive)
@@ -1796,6 +1804,14 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     {
         if (deviceToReboot == null)
         {
+            return;
+        }
+
+        // Issue #538: leave a device in a firmware update untouched — its channels, the
+        // selection the update reads after the write, and its connection.
+        if (ConnectionManager.Instance.IsDeviceBeingUpdated(deviceToReboot))
+        {
+            _appLogger.Warning($"Ignoring reboot of {deviceToReboot.Name}: a firmware update is in progress on it.");
             return;
         }
 

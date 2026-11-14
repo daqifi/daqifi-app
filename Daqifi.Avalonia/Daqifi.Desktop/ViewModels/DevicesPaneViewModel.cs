@@ -292,8 +292,8 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         OpenSettingsCommand = new RelayCommand<DeviceTileViewModel>(OpenSettings);
         CloseSettingsCommand = new RelayCommand(CloseSettings);
         AddDeviceCommand = new RelayCommand(AddDevice);
-        DisconnectSelectedCommand = new RelayCommand(DisconnectSelected, () => SelectedDevice != null);
-        RebootSelectedCommand = new RelayCommand(RebootSelected, () => SelectedDevice != null);
+        DisconnectSelectedCommand = new RelayCommand(DisconnectSelected, CanUseDeviceActions);
+        RebootSelectedCommand = new RelayCommand(RebootSelected, CanUseDeviceActions);
         SetLoggingModeCommand = new RelayCommand<string>(SetLoggingMode);
 
         if (_shell != null)
@@ -341,7 +341,30 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         {
             tile.IsUpdatingFirmware = updating != null && ReferenceEquals(tile.Device, updating);
         }
+
+        // Issue #538: DISCONNECT and REBOOT follow the same state.
+        DisconnectSelectedCommand.NotifyCanExecuteChanged();
+        RebootSelectedCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(DeviceActionsToolTip));
     }
+
+    /// <summary>
+    /// Condition of DISCONNECT and REBOOT: a device is selected, and no firmware update is in
+    /// progress (issue #538). Both commands dispose the connection, and the update uses that
+    /// connection until it ends — CANCEL UPDATE is the control that stops an update.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    private bool CanUseDeviceActions() =>
+        SelectedDevice != null && !ConnectionManager.Instance.IsFirmwareUpdateInProgress;
+
+    /// <summary>
+    /// The tooltip of DISCONNECT and REBOOT: why they are disabled during a firmware update, and
+    /// <c>null</c> (no tooltip) at other times.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    public string? DeviceActionsToolTip => ConnectionManager.Instance.IsFirmwareUpdateInProgress
+        ? "Not available during a firmware update."
+        : null;
 
     // @port: Daqifi.Desktop.ViewModels.DevicesPaneViewModel.OnSelectedTileChanged
     partial void OnSelectedTileChanged(DeviceTileViewModel? oldValue, DeviceTileViewModel? newValue)
