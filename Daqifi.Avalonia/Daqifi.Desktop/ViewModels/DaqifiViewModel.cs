@@ -452,6 +452,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
             OnPropertyChanged(nameof(IsLogging));
             OnPropertyChanged(nameof(IsSdCardLoggingActive));
+            RefreshCanToggleLogging();
         }
     }
 
@@ -911,9 +912,8 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // Device Logs View Model
                     DeviceLogsViewModel = new DeviceLogsViewModel();
 
-                    //Xml profiles load
-                    LoggingManager.Instance.AddAndRemoveProfileXml(null, false);
-                    _ = new ObservableCollection<Profile>(LoggingManager.Instance.LoadProfilesFromXml());
+                    // The profiles file is read by LoggingManager.Instance as it is created, on
+                    // every head (#544) — not here, which only the desktop ever reached.
 
                     // Notifications
                     _ = CheckForAppUpdateAsync();
@@ -926,6 +926,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // Startup moved an unreadable database aside — say so, or the Logged Data pane
                     // is simply empty with no explanation of where the sessions went.
                     ReportQuarantinedDatabase();
+
+                    // #540: a channel's scale expression had no valid result for a sample, and the
+                    // app dropped it. Said once per channel per session, here in the bell.
+                    AbstractChannel.ScaleResultsRejected += OnScaleResultsRejected;
 
                     // #353: data no longer follows elevation into %ProgramData%. If sessions are
                     // still there, offer to bring them over (checked in the background).
@@ -1675,9 +1679,20 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             return;
         }
 
-        // DeviceSerialNo is deliberately left unset (null): this is an app-level condition with no
-        // owning device, and a null serial is what exempts it from RemoveNotification's per-device
-        // pruning. Link is left unset too — the flyout hides its "Click here" button when it is null.
+        AddAppNotification(message);
+    }
+
+    /// <summary>
+    /// Adds a standing notification that has no owning device: one sentence, no link, no action.
+    /// </summary>
+    /// <remarks>
+    /// DeviceSerialNo is deliberately left unset (null): a null serial is what exempts the
+    /// notification from <see cref="RemoveNotification"/>'s per-device pruning, so it survives the
+    /// next UpdateUi pass. Link is left unset too — the flyout hides its "Click here" button when
+    /// it is null.
+    /// </remarks>
+    internal void AddAppNotification(string message)
+    {
         NotificationList.Add(new Notifications
         {
             IsFirmwareUpdate = false,
@@ -1699,12 +1714,38 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             return;
         }
 
-        // Null DeviceSerialNo for the same reason as ReportHotplugDetectionUnavailable above: an
-        // app-level condition with no owning device, which is what exempts it from
-        // RemoveNotification's per-device pruning so it survives the next UpdateUi pass.
+        AddAppNotification(message);
+    }
+
+    /// <summary>
+    /// Raised from the streaming thread for the first sample of a session that a channel's scale
+    /// expression could not scale (#540). The list is an <c>ObservableCollection</c>, and Avalonia
+    /// does not marshal <c>CollectionChanged</c>, so the add goes to the UI thread.
+    /// </summary>
+    private void OnScaleResultsRejected(AbstractChannel channel) =>
+        Dispatcher.UIThread.Post(() => AddScaleResultsRejectedNotice(channel));
+
+    /// <summary>
+    /// Adds the "samples were not recorded" notice for <paramref name="channel"/>, unless the same
+    /// notice for the same device is already in the list: a second session with the same fault
+    /// does not stack a second copy of one sentence.
+    /// </summary>
+    internal void AddScaleResultsRejectedNotice(AbstractChannel channel)
+    {
+        // A device-owned notice, so the per-device pruning in RemoveNotification takes it away when
+        // the device disconnects. An empty serial is stored as null instead: the pruning would
+        // match an empty serial to no device and remove the notice on the same UpdateUi pass.
+        var serial = string.IsNullOrEmpty(channel.DeviceSerialNo) ? null : channel.DeviceSerialNo;
+        var message = channel.RejectedScaleResultsNotification;
+
+        if (NotificationList.Any(n => n.Message == message && n.DeviceSerialNo == serial))
+        {
+            return;
+        }
+
         NotificationList.Add(new Notifications
         {
-            IsFirmwareUpdate = false,
+            DeviceSerialNo = serial,
             Message = message
         });
         NotificationCount = NotificationList.Count;
@@ -1751,6 +1792,19 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     }
 
     /// <summary>The offer (or a retry after a failure): a short line, Import, and Dismiss.</summary>
+    /// <summary>
+    /// The refusal with the size it needs, so a user knows whether freeing a little space is enough
+    /// (#532). Sizes in the same units as the log list and Windows Explorer.
+    /// </summary>
+    internal static string NotEnoughSpaceNotice(long bytesNeeded)
+    {
+        const double GB = 1024.0 * 1024 * 1024;
+        var size = bytesNeeded >= 10 * GB ? $"{bytesNeeded / GB:0} GB"
+            : bytesNeeded >= GB ? $"{bytesNeeded / GB:0.#} GB"
+            : $"{Math.Max(1, Math.Ceiling(bytesNeeded / (1024.0 * 1024))):0} MB";
+        return $"Not enough disk space to import: it needs about {size}.";
+    }
+
     private Notifications OfferedImportNotice(PreviousSessionImport import, string message) => new()
     {
         Message = message,
@@ -1859,7 +1913,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         catch (NotEnoughDiskSpaceException ex)
         {
             _appLogger.Warning(ex.Message);
-            ShowPreviousSessionNotice(OfferedImportNotice(import, "Not enough disk space to import."));
+            ShowPreviousSessionNotice(OfferedImportNotice(import, NotEnoughSpaceNotice(ex.BytesNeeded)));
         }
         catch (Exception ex)
         {
@@ -1920,18 +1974,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             _appLogger.Warning($"{title}: {message}");
         }
 
-        // Null DeviceSerialNo, as above: an app-level condition with no owning device, which exempts
-        // it from RemoveNotification's per-device pruning. A refusal can name several devices, so it
-        // has no single owner to prune it by either.
-        //
-        // The message alone, not the title with it: the notification list is a flat list of
-        // sentences, and every message passed here is written to stand on its own in it.
-        NotificationList.Add(new Notifications
-        {
-            IsFirmwareUpdate = false,
-            Message = message
-        });
-        NotificationCount = NotificationList.Count;
+        // A refusal can name several devices, so it has no single owner and is an app-level
+        // notification. The message alone, not the title with it: the notification list is a flat
+        // list of sentences, and every message passed here is written to stand on its own in it.
+        AddAppNotification(message);
 
         // Fire-and-forget for the same reason the disk-space gate in this same setter does it: the
         // toggle's two-way binding is mid-write, so there is nothing here that can await a modal.
@@ -2170,8 +2216,24 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     {
         OnPropertyChanged(nameof(IsLogging));
         OnPropertyChanged(nameof(IsSdCardLoggingActive));
+        RefreshCanToggleLogging();
         UpdateSdLoggingTimer();
     }
+
+    /// <summary>
+    /// A running session can always be stopped from the toggle that started it, and with no
+    /// session running the toggle needs an active channel to start one.
+    /// </summary>
+    /// <remarks>
+    /// Without the <see cref="IsLogging"/> term the toggle could read ON and be disabled at once: a
+    /// device still logging to its SD card after a reconnect has no subscribed channel (#537). The
+    /// rule reads <see cref="IsLogging"/>, so it is evaluated again everywhere that announces a
+    /// change of it which <see cref="UpdateUi"/> does not see: the device's own SD state (here, via
+    /// <see cref="RaiseLoggingStateChanged"/>) and a refused stop in the setter. Without that, the
+    /// end of an SD-only run left the toggle enabled with no active channel.
+    /// </remarks>
+    private void RefreshCanToggleLogging()
+        => CanToggleLogging = IsLogging || ActiveChannels.Count > 0;
 
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.UpdateSdLoggingTimer
     private void UpdateSdLoggingTimer()
@@ -2243,6 +2305,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     LoggingManager.Instance.Unsubscribe(orphan);
                 }
 
+                // The user's own DISCONNECT and REBOOT reach here and never the NotifyConnection
+                // case below, so the last device leaving that way must close the session too (#537).
+                CloseSessionIfNoDeviceIsLeft();
+
                 // Probe the WiFi module version now that the device list (and each device's
                 // initialization) has settled — this runs AFTER UpdateConnectedDeviceUI, so it never
                 // races the connection handshake. The WiFi version is shown inline on the device pane,
@@ -2294,22 +2360,29 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // LoggingManager.Active, and this view model is subscribed to that singleton
                     // too — so the write re-enters UpdateUi. With NotifyConnection still raised,
                     // that re-entry would show a second dialog for the same drop.
-                    CloseSessionIfTheDropTookTheLastDevice();
+                    CloseSessionIfNoDeviceIsLeft();
                 }
                 break;
         }
-        CanToggleLogging = ActiveChannels.Count > 0;
+        RefreshCanToggleLogging();
         _ = _firmwareCoordinator.RefreshFirmwareUpdatesAsync();
         RemoveNotification();
     }
 
     /// <summary>
-    /// Ends the logging session when the spontaneous disconnect that raised the notification took
-    /// the LAST connected device with it (issue #525).
+    /// Ends the logging session when the LAST connected device has gone, whatever took it: a
+    /// spontaneous drop (issue #525) or the user's own DISCONNECT or REBOOT (issue #537).
     /// </summary>
     /// <remarks>
     /// <para>
-    /// A drop tears the device's channels out of <c>LoggingManager</c> — deliberately, see
+    /// Called from two cases of <see cref="UpdateUi"/>. <c>"ConnectedDevices"</c> is the one every
+    /// removal raises — <c>ConnectionManager.Disconnect</c> and <c>Reboot</c> raise only that, and
+    /// the drop teardown reaches it through <c>Disconnect</c> as well. <c>"NotifyConnection"</c>
+    /// also calls it, after its dialog flag is consumed; by then the first call has usually closed
+    /// the session already, and this one is a no-op.
+    /// </para>
+    /// <para>
+    /// A drop, like a manual disconnect, tears the device's channels out of <c>LoggingManager</c> — deliberately, see
     /// <c>ConnectionManager.TearDownDroppedDevice</c> — and that is what drives
     /// <see cref="CanToggleLogging"/> to false at the end of this handler. Without this, the
     /// session those channels belonged to was left running: the header kept reading LOGGING ON, the toggle that
@@ -2347,7 +2420,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// still has devices behind it.
     /// </para>
     /// </remarks>
-    private void CloseSessionIfTheDropTookTheLastDevice()
+    private void CloseSessionIfNoDeviceIsLeft()
     {
         if (ConnectionManager.Instance.ConnectedDevices.Count > 0)
         {
@@ -2362,7 +2435,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         }
 
         _appLogger.Information(
-            "The last connected device dropped while logging; closing the session.");
+            "The last connected device went away while logging; closing the session.");
 
         IsLogging = false;
     }
@@ -2974,12 +3047,14 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     public string WifiFlashUnavailableMessage => FirmwareUpdateCoordinator.WifiFlashUnavailableMessage;
 
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.AddWifiNotification
-    private void AddWifiNotification(IStreamingDevice device, string reportedVersion)
+    internal void AddWifiNotification(IStreamingDevice device, string reportedVersion)
     {
         var versionText = string.Equals(reportedVersion, "Unknown", StringComparison.OrdinalIgnoreCase)
             ? "could not be read"
             : $"is out of date ({reportedVersion})";
-        var message = $"Device {device.DeviceSerialNo}: WiFi module firmware {versionText} " +
+        // The text shows the serial in its display form (#493); the notice keeps the stored serial
+        // below, because de-duplication and the per-device pruning compare that one.
+        var message = $"Device {DeviceSerials.ToDisplay(device.DeviceSerialNo)}: WiFi module firmware {versionText} " +
                       $"(minimum {FirmwareUpdateCoordinator.MinimumWifiFirmwareVersion}). Click below to update just the WiFi module.";
 
         var existingNotification = NotificationList.FirstOrDefault(n => n.IsWifiFirmwareUpdate
@@ -3388,6 +3463,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         // e.g. in non-window-init construction paths.)
         ConnectionManager.Instance.PropertyChanged -= UpdateUi;
         LoggingManager.Instance.PropertyChanged -= UpdateUi;
+        AbstractChannel.ScaleResultsRejected -= OnScaleResultsRejected;
         ConnectedDevices.CollectionChanged -= OnConnectedDevicesCollectionChanged;
         NotificationList.CollectionChanged -= OnNotificationListCollectionChanged;
 

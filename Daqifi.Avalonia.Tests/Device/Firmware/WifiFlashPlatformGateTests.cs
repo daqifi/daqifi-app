@@ -35,9 +35,16 @@ namespace Daqifi.Avalonia.Tests.Device.Firmware;
 /// </para>
 ///
 /// <para>
-/// No hardware and no flash: the platform decision is taken before anything is downloaded or any
-/// serial port is touched, so the seam these tests observe is the injected download service — which
-/// on the unavailable branch must never be reached at all.
+/// No hardware and no flash: the platform decision is taken before anything is downloaded, so the
+/// seam these tests observe is the injected download service — which on the unavailable branch must
+/// never be reached at all.
+/// </para>
+///
+/// <para>
+/// Issue #567 moved the automatic path's module-version read ahead of that decision, because a
+/// gate that ran first could not tell a current module from an outdated one and so told every
+/// macOS and Linux user their module was not updated. The read is a query, not a flash; a scripted
+/// <see cref="ILanChipInfoProvider"/> stands in for the module.
 /// </para>
 /// </summary>
 [Collection(AppHostCollection.Name)]
@@ -256,6 +263,221 @@ public class WifiFlashPlatformGateTests : IDisposable
     }
     #endregion
 
+    #region The automatic path reads the module version before the platform gate (issue #567)
+    /// <summary>
+    /// The defect itself. On macOS and Linux the automatic WiFi step returned at the platform gate
+    /// before it read the module version, so every update added "the WiFi module firmware was not
+    /// updated" — also for a module already at the minimum version, which needed no update. The
+    /// bench Nyquist 1 reported <c>19.7.7</c> before and after the 3.8.0 → 3.9.0 update that found
+    /// this. A current module gets no notice, and nothing is downloaded or flashed.
+    /// </summary>
+    [Fact]
+    public async Task A_current_module_gets_no_notice_where_the_tool_cannot_run()
+    {
+        var coordinator = CreateCoordinator(canFlashWifiModule: false);
+        var device = ScriptedWincDevice.Answering(FirmwareUpdateCoordinator.MinimumWifiFirmwareVersion);
+
+        await coordinator.UpdateWifiModuleAsync(device, CancellationToken.None);
+
+        Assert.Empty(_host.Notifications);
+        Assert.True(device.Queries > 0, "the module version was never read.");
+        Assert.False(_downloads.WifiDownloadWasRequested);
+        Assert.DoesNotContain(
+            FirmwareUpdateCoordinator.WifiFlashUnavailableMessage,
+            _host.Writes.Select(write => write.Text));
+    }
+
+    /// <summary>
+    /// An outdated module on a computer that cannot flash it: one notice, and it says what the module
+    /// has and what is necessary, so the user can tell a real gap from a formality. The flash is
+    /// still never started — issue #330's rule that the device is not put into WiFi update mode
+    /// where the tool cannot run. The download is the first step of a flash, so it not being asked
+    /// for is the proof.
+    /// </summary>
+    [Fact]
+    public async Task An_outdated_module_gets_one_notice_naming_both_versions()
+    {
+        var coordinator = CreateCoordinator(canFlashWifiModule: false);
+        var device = ScriptedWincDevice.Answering("19.5.4");
+
+        await coordinator.UpdateWifiModuleAsync(device, CancellationToken.None);
+
+        var notice = Assert.Single(_host.Notifications);
+        Assert.Contains("19.5.4", notice.Message);
+        Assert.Contains(FirmwareUpdateCoordinator.MinimumWifiFirmwareVersion, notice.Message);
+        Assert.Contains(FirmwareUpdateCoordinator.WifiFlashUnavailableMessage, notice.Message);
+        Assert.Equal(device.DeviceSerialNo, notice.DeviceSerialNo);
+        Assert.False(_downloads.WifiDownloadWasRequested);
+    }
+
+    /// <summary>
+    /// A module that never answers cannot be called current, so the notice stays — worded as "could
+    /// not read" rather than as a version the module never reported, and still naming the version
+    /// that is necessary. Runs the app's real three-attempt probe budget, so it takes about four
+    /// seconds.
+    /// </summary>
+    [Fact]
+    public async Task An_unreadable_module_gets_one_notice_that_says_it_could_not_be_read()
+    {
+        var coordinator = CreateCoordinator(canFlashWifiModule: false);
+        var device = ScriptedWincDevice.Answering(null);
+
+        await coordinator.UpdateWifiModuleAsync(device, CancellationToken.None);
+
+        var notice = Assert.Single(_host.Notifications);
+        Assert.Contains("could not read", notice.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(FirmwareUpdateCoordinator.MinimumWifiFirmwareVersion, notice.Message);
+        Assert.DoesNotContain("Unknown", notice.Message);
+        Assert.Equal(3, device.Queries);
+        Assert.False(_downloads.WifiDownloadWasRequested);
+    }
+
+    /// <summary>
+    /// Core accepts any nonempty version string in the chip reply. A reply the app cannot parse as
+    /// a version is not a version, so the notice must not quote it as "the module has firmware …":
+    /// it gets the unreadable wording, the same as a module that did not answer. Both strings fail
+    /// Core's pattern (at most three numeric parts, an optional letter suffix): a word, and a
+    /// four-part dotted string such as an IP address.
+    /// </summary>
+    [Theory]
+    [InlineData("not-a-version")]
+    [InlineData("192.168.1.1")]
+    public async Task A_version_the_app_cannot_parse_gets_the_unreadable_notice(string reply)
+    {
+        var coordinator = CreateCoordinator(canFlashWifiModule: false);
+        var device = ScriptedWincDevice.Answering(reply);
+
+        await coordinator.UpdateWifiModuleAsync(device, CancellationToken.None);
+
+        var notice = Assert.Single(_host.Notifications);
+        Assert.Contains("could not read", notice.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(reply, notice.Message);
+        Assert.Contains(FirmwareUpdateCoordinator.MinimumWifiFirmwareVersion, notice.Message);
+        Assert.Equal(1, device.Queries);
+        Assert.False(_downloads.WifiDownloadWasRequested);
+    }
+
+    /// <summary>
+    /// The Windows half of the case above, to show the flash decision did not move: a reply the app
+    /// cannot parse is still treated as needing a flash where the tool can run
+    /// (<c>WifiFirmwareNeedsFlash</c> maps it to "flash"), so the download is requested and no notice
+    /// is raised.
+    /// </summary>
+    [Theory]
+    [InlineData("not-a-version")]
+    [InlineData("192.168.1.1")]
+    public async Task A_version_the_app_cannot_parse_is_still_flashed_where_the_tool_can_run(string reply)
+    {
+        var coordinator = CreateCoordinator(canFlashWifiModule: true);
+        var device = ScriptedWincDevice.Answering(reply);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => coordinator.UpdateWifiModuleAsync(device, CancellationToken.None));
+
+        Assert.True(_downloads.WifiDownloadWasRequested);
+        Assert.Empty(_host.Notifications);
+    }
+
+    /// <summary>
+    /// The text now varies with what the module reported, so deduplication can no longer match on
+    /// the whole message. Two runs that read different versions still leave one notice per device,
+    /// and it carries the latest reading.
+    /// </summary>
+    [Fact]
+    public async Task A_second_reading_replaces_the_notice_rather_than_stacking_a_second()
+    {
+        var coordinator = CreateCoordinator(canFlashWifiModule: false);
+        var device = ScriptedWincDevice.Answering("19.5.4");
+
+        await coordinator.UpdateWifiModuleAsync(device, CancellationToken.None);
+        device.Answer = Chip("19.6.0");
+        await coordinator.UpdateWifiModuleAsync(device, CancellationToken.None);
+
+        var notice = Assert.Single(_host.Notifications);
+        Assert.Contains("19.6.0", notice.Message);
+        Assert.DoesNotContain("19.5.4", notice.Message);
+    }
+
+    /// <summary>
+    /// A notice is withdrawn once it stops being true: a later reading of a current module removes
+    /// whatever an earlier run left. The earlier run here reads an outdated version, which raises the
+    /// same notice as an unreadable module through the same lookup, without spending the real
+    /// four-second retry budget a second time —
+    /// <see cref="An_unreadable_module_gets_one_notice_that_says_it_could_not_be_read"/> is the one
+    /// test that runs it.
+    /// </summary>
+    [Fact]
+    public async Task A_later_current_reading_withdraws_an_earlier_notice()
+    {
+        var coordinator = CreateCoordinator(canFlashWifiModule: false);
+        var device = ScriptedWincDevice.Answering("19.5.4");
+
+        await coordinator.UpdateWifiModuleAsync(device, CancellationToken.None);
+        Assert.Single(_host.Notifications);
+
+        device.Answer = Chip(FirmwareUpdateCoordinator.MinimumWifiFirmwareVersion);
+        await coordinator.UpdateWifiModuleAsync(device, CancellationToken.None);
+
+        Assert.Empty(_host.Notifications);
+    }
+
+    /// <summary>
+    /// Withdrawal is scoped like the notice: per device, and only the WiFi notice. Another board's
+    /// notice and this board's other notifications stay.
+    /// </summary>
+    [Fact]
+    public async Task Withdrawing_leaves_other_devices_and_other_notifications_alone()
+    {
+        var coordinator = CreateCoordinator(canFlashWifiModule: false);
+        var other = ScriptedWincDevice.Answering("19.5.4", serial: "SN-0002");
+        var device = ScriptedWincDevice.Answering("19.5.4", serial: "SN-0001");
+        var unrelated = new Notifications { Message = "Nq1: unrelated", DeviceSerialNo = "SN-0001" };
+        _host.Notifications.Add(unrelated);
+
+        await coordinator.UpdateWifiModuleAsync(other, CancellationToken.None);
+        await coordinator.UpdateWifiModuleAsync(device, CancellationToken.None);
+        device.Answer = Chip(FirmwareUpdateCoordinator.MinimumWifiFirmwareVersion);
+        await coordinator.UpdateWifiModuleAsync(device, CancellationToken.None);
+
+        Assert.Equal(2, _host.Notifications.Count);
+        Assert.Contains(unrelated, _host.Notifications);
+        Assert.Contains(_host.Notifications, notice => notice.DeviceSerialNo == "SN-0002");
+    }
+
+    /// <summary>
+    /// The negative control on the computer that can flash: a current module is still skipped there
+    /// with no notice and no download. Moving the check ahead of the gate must not change Windows.
+    /// </summary>
+    [Fact]
+    public async Task A_current_module_is_still_skipped_where_the_tool_can_run()
+    {
+        var coordinator = CreateCoordinator(canFlashWifiModule: true);
+        var device = ScriptedWincDevice.Answering(FirmwareUpdateCoordinator.MinimumWifiFirmwareVersion);
+
+        await coordinator.UpdateWifiModuleAsync(device, CancellationToken.None);
+
+        Assert.Empty(_host.Notifications);
+        Assert.False(_downloads.WifiDownloadWasRequested);
+    }
+
+    /// <summary>
+    /// And an outdated module there still goes on to the flash. The download reports no package,
+    /// the cheapest clean exit from a flash that has started.
+    /// </summary>
+    [Fact]
+    public async Task An_outdated_module_is_still_flashed_where_the_tool_can_run()
+    {
+        var coordinator = CreateCoordinator(canFlashWifiModule: true);
+        var device = ScriptedWincDevice.Answering("19.5.4");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => coordinator.UpdateWifiModuleAsync(device, CancellationToken.None));
+
+        Assert.True(_downloads.WifiDownloadWasRequested);
+        Assert.Empty(_host.Notifications);
+    }
+    #endregion
+
     #region The standalone FLASH WIFI affordance
     /// <summary>
     /// The button must be enabled exactly where the flash can happen. It matters beyond the greying:
@@ -335,9 +557,43 @@ public class WifiFlashPlatformGateTests : IDisposable
         device.Metadata.Capabilities.HasWincWifiModule = true;
         return device;
     }
+
+    private static LanChipInfo Chip(string version) =>
+        new() { ChipId = 0x1503A0, FwVersion = version, BuildDate = "2020-01-01" };
     #endregion
 
     #region Fakes
+    /// <summary>
+    /// A USB device with a WINC module whose answer to the version query is scripted. The real
+    /// <see cref="SerialStreamingDevice.GetLanChipInfoAsync"/> asks the Core device, which a unit
+    /// test does not have; re-implementing <see cref="ILanChipInfoProvider"/> here routes the
+    /// coordinator's <c>is ILanChipInfoProvider</c> probe to the script instead. With no Core device,
+    /// the coordinator's <c>PowerOnWifiModule</c> call sends nothing and logs a warning.
+    /// </summary>
+    private sealed class ScriptedWincDevice : SerialStreamingDevice, ILanChipInfoProvider
+    {
+        private ScriptedWincDevice(string serial)
+            : base("COM-TEST-567", "Nq1", serial, firmwareVersion: "3.9.0")
+        {
+            Metadata.Capabilities.HasWincWifiModule = true;
+        }
+
+        /// <summary>What the module answers; null is a module that does not answer.</summary>
+        public LanChipInfo? Answer { get; set; }
+
+        /// <summary>How many times the module was asked for its version.</summary>
+        public int Queries { get; private set; }
+
+        public static ScriptedWincDevice Answering(string? version, string serial = "SN-0567") =>
+            new(serial) { Answer = version is null ? null : Chip(version) };
+
+        public new Task<LanChipInfo?> GetLanChipInfoAsync(CancellationToken cancellationToken = default)
+        {
+            Queries++;
+            return Task.FromResult(Answer);
+        }
+    }
+
     /// <summary>
     /// Download service that records whether the WiFi package was ever asked for — the observable
     /// difference between a flash that started and one the gate stopped — and reports no package, the

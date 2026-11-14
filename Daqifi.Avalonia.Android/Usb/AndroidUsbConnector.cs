@@ -1,6 +1,7 @@
 using Android.Content;
 using Android.Hardware.Usb;
 using Daqifi.Avalonia.Services;
+using Daqifi.Desktop.Device;
 
 // NOTE: inside a `Daqifi.Avalonia.Android` namespace the root `Android.*`
 // namespace is shadowed — reference Android types UNqualified via the usings
@@ -48,7 +49,7 @@ public sealed class AndroidUsbConnector : IMobileUsbConnector
 
         return connected is not null
             ? new UsbConnectResult(connected,
-                $"USB connected: {connected.Name} (SN {connected.DeviceSerialNo}).")
+                $"USB connected: {connected.Name} (SN {DeviceSerials.ToDisplay(connected.DeviceSerialNo)}).")
             : new UsbConnectResult(null,
                 "USB connect failed — permission denied or transport error (see device log).");
     }

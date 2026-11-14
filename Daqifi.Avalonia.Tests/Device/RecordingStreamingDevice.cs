@@ -71,6 +71,14 @@ internal sealed class RecordingStreamingDevice : IStreamingDevice
 
     public bool IsLoggingToSdCard { get; private set; }
 
+    /// <summary>
+    /// When set, <see cref="StartSdCardLogging"/> and <see cref="StopSdCardLogging"/> announce
+    /// <see cref="IsLoggingToSdCard"/> the way <c>AbstractStreamingDevice</c> does after the device
+    /// answers. Opt-in, because a view model that hears the start runs the SD elapsed-time
+    /// <c>DispatcherTimer</c>, which the tests that do not ask for it have no reason to start.
+    /// </summary>
+    internal bool AnnouncesSdCardLogging { get; init; }
+
     public void SwitchMode(DeviceMode newMode)
     {
         Accept($"SwitchMode({newMode})");
@@ -85,12 +93,22 @@ internal sealed class RecordingStreamingDevice : IStreamingDevice
     {
         Accept("StartSdCardLogging");
         IsLoggingToSdCard = true;
+        AnnounceSdCardLogging();
     }
 
     public void StopSdCardLogging()
     {
         Accept("StopSdCardLogging");
         IsLoggingToSdCard = false;
+        AnnounceSdCardLogging();
+    }
+
+    private void AnnounceSdCardLogging()
+    {
+        if (AnnouncesSdCardLogging)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsLoggingToSdCard)));
+        }
     }
 
     public string DeviceDisplayName => DeviceSerialNo;
@@ -103,9 +121,11 @@ internal sealed class RecordingStreamingDevice : IStreamingDevice
     public event EventHandler<CoreDeviceErrorEventArgs>? ErrorOccurred;
 
     public event EventHandler<CoreSendFailedEventArgs>? SendFailed;
-
-    public event PropertyChangedEventHandler? PropertyChanged;
 #pragma warning restore CS0067
+
+    /// <summary>Raised only for <see cref="IsLoggingToSdCard"/>, and only when
+    /// <see cref="AnnouncesSdCardLogging"/> is set.</summary>
+    public event PropertyChangedEventHandler? PropertyChanged;
 
     public int Id { get; set; }
 
@@ -210,10 +230,18 @@ internal sealed class RecordingStreamingDevice : IStreamingDevice
 
     public Task UpdateNetworkConfiguration() => Task.CompletedTask;
 
+    /// <summary>
+    /// What <see cref="DownloadSdCardFileAsync"/> does. Unset, the download is not supported. Issue
+    /// #548's tests set it to write a log file and then take the device's channels away before
+    /// returning, which is what a DISCONNECT during the download does.
+    /// </summary>
+    internal Func<string, CancellationToken, Task<SdCardDownloadResult>>? OnDownload { get; set; }
+
     public Task<SdCardDownloadResult> DownloadSdCardFileAsync(
         string fileName,
         IProgress<SdCardTransferProgress>? progress = null,
-        CancellationToken ct = default) => throw new NotSupportedException();
+        CancellationToken ct = default) =>
+        OnDownload?.Invoke(fileName, ct) ?? throw new NotSupportedException();
 
     public Task DeleteSdCardFileAsync(string fileName, CancellationToken ct = default)
         => throw new NotSupportedException();

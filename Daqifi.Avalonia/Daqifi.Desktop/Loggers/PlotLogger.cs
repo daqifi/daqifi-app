@@ -73,6 +73,19 @@ public partial class PlotLogger : ObservableObject, ILogger
     /// </summary>
     internal const long STATS_INTERVAL_MS = 1000;
 
+    /// <summary>
+    /// The fewest points each live series keeps once it is full: the width of the live window.
+    /// </summary>
+    private const int LIVE_WINDOW_POINTS = 5000;
+
+    /// <summary>
+    /// How far a live series may grow past <see cref="LIVE_WINDOW_POINTS"/> before its oldest points
+    /// are dropped in one go. A series holds 5,000 to 5,249 points, so the time axis stretches by at
+    /// most 5% before it snaps back, and the buffer copy happens once per 250 samples instead of on
+    /// every sample.
+    /// </summary>
+    private const int LIVE_TRIM_BATCH = 250;
+
     /// <summary>Whether enough time has passed since the last redraw for another one.</summary>
     internal static bool IsRedrawDue(long nowMs, long lastRedrawMs) => nowMs - lastRedrawMs >= REDRAW_INTERVAL_MS;
 
@@ -343,29 +356,27 @@ public partial class PlotLogger : ObservableObject, ILogger
             if (_gapDetector.IsGap(key, dataSample.FirmwareDeltaMs))
             {
                 points.Add(DataPoint.Undefined);
-                if (points.Count >= 5000)
-                {
-                    points.RemoveAt(0);
-                }
             }
 
             points.Add(new DataPoint(deltaTime, scaledSampleValue));
-            if (points.Count >= 5000)
+
+            // Trim in batches, not one point per sample: RemoveAt(0) on a full list moved the whole
+            // buffer (about 80 KB) on every sample, on this thread and under the redraw's lock.
+            if (points.Count >= LIVE_WINDOW_POINTS + LIVE_TRIM_BATCH)
             {
-                points.RemoveAt(0);
+                points.RemoveRange(0, points.Count - LIVE_WINDOW_POINTS);
             }
 
             _hasNewData = true;
         }
 
         // Change notifications are raised outside the lock so a binding handler can never re-enter the
-        // logger while it is held. AddChannelSeries used to raise the PlotModel one itself.
+        // logger while it is held. AddChannelSeries used to raise the PlotModel one itself. There is no
+        // per-sample LoggedPoints notification: nothing binds it, and it cost an event per sample.
         if (addedSeries)
         {
             OnPropertyChanged(nameof(PlotModel));
         }
-
-        OnPropertyChanged(nameof(LoggedPoints));
     }
 
     /// <summary>
@@ -393,9 +404,7 @@ public partial class PlotLogger : ObservableObject, ILogger
         var key = (DeviceSerialNo, channelName);
         var newDataPoints = new List<DataPoint>();
 
-        var serialSuffix = DeviceSerialNo?.Length > 4
-            ? $"...{DeviceSerialNo[^4..]}"
-            : DeviceSerialNo;
+        var serialSuffix = DeviceSerials.ToShortDisplay(DeviceSerialNo);
 
         var newLineSeries = new LineSeries
         {

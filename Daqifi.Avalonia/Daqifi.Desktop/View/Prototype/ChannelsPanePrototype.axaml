@@ -146,13 +146,14 @@
         </ControlTheme>
 
         <DataTemplate x:Key="ChannelTileTemplate" x:DataType="vm:ChannelTileViewModel">
+            <!-- Fill, border and border width come from the Border.channelTile styles below,
+                 keyed on the "active" class (issue #494). No local value here: a local value
+                 beats every style setter, so the active state could not override it. -->
             <Border Width="148" Height="88" Margin="0,0,10,10"
                     Classes="channelTile"
+                    Classes.active="{Binding IsActive}"
                     Classes.loggingLocked="{Binding $parent[UserControl].DataContext.IsLoggingActive}"
                     AutomationProperties.AutomationId="{Binding Name}"
-                    Background="{Binding TileBackground}"
-                    BorderBrush="{Binding TileBorderBrush}"
-                    BorderThickness="1"
                     CornerRadius="4">
                 <ia:Interaction.Behaviors>
                     <iac:EventTriggerBehavior EventName="Tapped">
@@ -161,6 +162,13 @@
                     </iac:EventTriggerBehavior>
                 </ia:Interaction.Behaviors>
                 <Grid ColumnDefinitions="3,*">
+                    <!-- Active fill: the channel's type colour at low opacity over the tile surface. -->
+                    <Rectangle Grid.ColumnSpan="2"
+                               Fill="{Binding StripeBrush}"
+                               Opacity="0.15"
+                               RadiusX="2" RadiusY="2"
+                               IsVisible="{Binding IsActive}"
+                               IsHitTestVisible="False"/>
                     <Rectangle Grid.Column="0" Fill="{Binding StripeBrush}"/>
                     <Grid Grid.Column="1" Margin="12,10,10,10">
                         <StackPanel>
@@ -208,22 +216,21 @@
                                        Margin="0,2,0,0"
                                        IsVisible="{Binding ShowDeviceLabel}"/>
                         </StackPanel>
+                        <!-- The same ACTIVE pill the mobile tile shows (issue #494). It replaces an
+                             upstream "×" badge that read as "close", and whose tooltip could never
+                             show because the badge is not hit-testable. -->
                         <Border HorizontalAlignment="Right"
                                 VerticalAlignment="Top"
-                                Width="18" Height="18"
-                                Background="#33000000"
-                                CornerRadius="9"
+                                Background="{DynamicResource SurfaceActive}"
+                                CornerRadius="8"
+                                Padding="6,1"
                                 Margin="0,-2,-2,0"
                                 IsVisible="{Binding IsActive}"
-                                ToolTip.Tip="Click tile to deactivate"
                                 IsHitTestVisible="False">
-                            <TextBlock Text="&#xD7;"
-                                       Foreground="{DynamicResource TextSecondary}"
-                                       FontSize="12"
-                                       FontWeight="Bold"
-                                       HorizontalAlignment="Center"
-                                       VerticalAlignment="Center"
-                                       Margin="0,-2,0,0"/>
+                            <TextBlock Text="ACTIVE"
+                                       Foreground="{DynamicResource StatusGreen}"
+                                       FontSize="9"
+                                       FontWeight="SemiBold"/>
                         </Border>
                         <Button HorizontalAlignment="Right"
                                 VerticalAlignment="Bottom"
@@ -332,6 +339,19 @@
              matching the WPF trigger order (DataTrigger after IsMouseOver Trigger). -->
         <Style Selector="Border.channelTile">
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Background" Value="{DynamicResource SurfaceRaised}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderDim}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <!-- Padding gives back the 1 px the active border takes, so the tile content
+                 does not move when the tile is toggled. -->
+            <Setter Property="Padding" Value="1"/>
+        </Style>
+        <!-- Active (issue #494): a 2 px border in the channel's type colour. With the tinted
+             fill and the ACTIVE pill in the template, the state does not rely on colour alone. -->
+        <Style Selector="Border.channelTile.active" x:DataType="vm:ChannelTileViewModel">
+            <Setter Property="BorderBrush" Value="{Binding StripeBrush}"/>
+            <Setter Property="BorderThickness" Value="2"/>
+            <Setter Property="Padding" Value="0"/>
         </Style>
         <Style Selector="Border.channelTile:pointerover">
             <Setter Property="Opacity" Value="0.92"/>
@@ -828,6 +848,23 @@
                                         <MultiBinding Converter="{StaticResource BoolAndToVis}">
                                             <Binding Path="SelectedChannel.IsScalingActive"/>
                                             <Binding Path="!SelectedChannel.HasValidExpression"/>
+                                        </MultiBinding>
+                                    </TextBlock.IsVisible>
+                                </TextBlock>
+                                <!-- The expression is valid but had no result for some samples,
+                                     which the app dropped (#540). Amber, not red: scaling still
+                                     runs. Last child of an Auto-height StackPanel and collapsed
+                                     when there is nothing to say, so it cannot move a sibling. -->
+                                <TextBlock Text="{Binding SelectedChannel.RejectedScaleResultsMessage}"
+                                           FontSize="10"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource StatusAmber}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,6,0,0">
+                                    <TextBlock.IsVisible>
+                                        <MultiBinding Converter="{StaticResource BoolAndToVis}">
+                                            <Binding Path="SelectedChannel.IsScalingActive"/>
+                                            <Binding Path="SelectedChannel.HasRejectedScaleResults"/>
                                         </MultiBinding>
                                     </TextBlock.IsVisible>
                                 </TextBlock>

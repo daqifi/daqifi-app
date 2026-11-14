@@ -127,4 +127,23 @@ public class NotificationsEmptyStateTests
         Assert.True(viewModel.HasNotifications);                  // the half the flyout binds
         Assert.NotEmpty(raised);
     }
+
+    /// <summary>
+    /// An app-level notification (an unsaved profile edit, #541; a quarantined database; a
+    /// logging refusal) has no owning device, so the per-device pruning that runs on every
+    /// UpdateUi pass must leave it in place.
+    /// </summary>
+    [Fact]
+    public void AnAppNotification_SurvivesDevicePruning()
+    {
+        var viewModel = NewViewModel();
+
+        viewModel.AddAppNotification("Could not save your changes to the profile 'Bench'.");
+        viewModel.RemoveNotification();
+
+        var notification = Assert.Single(viewModel.NotificationList);
+        Assert.Equal("Could not save your changes to the profile 'Bench'.", notification.Message);
+        Assert.Null(notification.DeviceSerialNo);
+        Assert.Equal(1, viewModel.NotificationCount);
+    }
 }

@@ -1,10 +1,12 @@
 using System;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Daqifi.Avalonia.Views.Mobile;
+using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.Logger;
 using Daqifi.Desktop.Models;
@@ -32,6 +34,7 @@ public partial class MobileMainView : UserControl
     private Control? _profilesPage;
     private Button[] _navButtons = Array.Empty<Button>();
     private Button[] _railButtons = Array.Empty<Button>();
+    private IActivatableLifetime? _activatable;
 
     // Standalone, WPF-free notifications VM (like the mobile SettingsViewModel). Shared between the
     // top-bar bell badge and the Notifications overlay list (#11).
@@ -59,6 +62,66 @@ public partial class MobileMainView : UserControl
         UpdateOrientation();
     }
 
+    /// <summary>
+    /// The phone's half of #540: a channel's scale expression had no valid result for a sample, and
+    /// the app dropped it. Subscribed while the shell is on screen, so a view the capture harness
+    /// builds and throws away does not stay rooted by the static event.
+    /// </summary>
+    /// <remarks>
+    /// Also listens for the app going to the background (#560). Android can stop a background app
+    /// at any time after that and gives no further signal, so it is the last point an edit left
+    /// open in the Profiles drawer can be saved. No lifetime offers the feature in the capture
+    /// harness, so there it is simply not subscribed.
+    /// </remarks>
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        AbstractChannel.ScaleResultsRejected += OnScaleResultsRejected;
+        _activatable = Application.Current?.TryGetFeature<IActivatableLifetime>();
+        if (_activatable is not null) { _activatable.Deactivated += OnAppDeactivated; }
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        AbstractChannel.ScaleResultsRejected -= OnScaleResultsRejected;
+        if (_activatable is not null) { _activatable.Deactivated -= OnAppDeactivated; }
+        _activatable = null;
+        // A destroyed activity takes the shell with it; save the open edit as desktop does when its
+        // pane detaches (#560).
+        SaveProfileEdit();
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    /// <summary>The app went to the background: HOME, the app switcher, a call (#560).</summary>
+    private void OnAppDeactivated(object? sender, ActivatedEventArgs e)
+    {
+        SaveProfileEdit();
+    }
+
+    /// <summary>
+    /// Saves an edit left open in the Profiles drawer (#560). The Profiles page is built once and
+    /// kept, so leaving it never detaches it and desktop's <c>Cleanup</c> never runs; this goes
+    /// through the close button's path instead. A failed write keeps the drawer open with the
+    /// reason, and the reason also goes to the notifications, because the drawer is not on screen.
+    /// <c>AddOnce</c>: every later tab change tries again and would stack copies of one sentence.
+    /// </summary>
+    private void SaveProfileEdit()
+    {
+        if (_profilesPage is { DataContext: ProfilesPaneViewModel profiles } &&
+            MobileProfileEdit.SaveOnLeave(profiles) is { } unsaved)
+        {
+            AppLogger.Instance.Warning(unsaved);
+            _notifications.AddOnce(new Notifications { Message = unsaved });
+        }
+    }
+
+    /// <summary>
+    /// Raised from the streaming thread. <see cref="MobileNotificationsViewModel.AddOnce"/>
+    /// marshals to the UI thread and does not stack a second copy of the same sentence.
+    /// </summary>
+    private void OnScaleResultsRejected(AbstractChannel channel) =>
+        _notifications.AddOnce(new Notifications { Message = channel.RejectedScaleResultsNotification });
+
     /// <summary>Landscape → desktop-style left rail; portrait → bottom nav.</summary>
     private void UpdateOrientation()
     {
@@ -71,6 +134,7 @@ public partial class MobileMainView : UserControl
 
     private void ShowStream()
     {
+        SaveProfileEdit();
         StreamView.IsVisible = true;
         SecondaryHost.IsVisible = false;
         SetActive(0);
@@ -78,6 +142,9 @@ public partial class MobileMainView : UserControl
 
     private void ShowSecondary(Control page, int index)
     {
+        // Leaving Profiles for another tab hides the cached page with its drawer still open (#560).
+        // Also on a tap of Profiles itself: the edit is saved and the user sees the list.
+        SaveProfileEdit();
         SecondaryHost.Content = page;
         StreamView.IsVisible = false;
         SecondaryHost.IsVisible = true;

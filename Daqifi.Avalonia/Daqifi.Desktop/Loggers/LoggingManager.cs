@@ -333,9 +333,15 @@ public partial class LoggingManager : ObservableObject
     // warning count where it was: CS8618 is reported once per constructor that does NOT chain, so
     // adding a second independent one would have duplicated the two _session/_selectedProfile
     // warnings this type already carries.
+    //
+    // The app's instance reads the profiles file here, once per process, on every head (#544).
+    // The read used to sit in DaqifiViewModel's startup, which only the desktop MainWindow
+    // constructs, so Android and iOS never read the file and showed 0 SAVED after every restart.
+    // The test constructor below does not read it: its callers drive the load themselves.
     private LoggingManager()
         : this(App.ServiceProvider.GetRequiredService<IDbContextFactory<LoggingContext>>())
     {
+        LoadSavedProfiles();
     }
 
     /// <summary>
@@ -523,6 +529,22 @@ public partial class LoggingManager : ObservableObject
         }
 
         return loadedProfiles;
+    }
+
+    /// <summary>
+    /// The startup read of the profiles file: creates it on a fresh install, moves a damaged one
+    /// aside (the Profiles pane reports it once, see <see cref="TakeProfileRecoveryNotice"/>), and
+    /// fills <see cref="SubscribedProfiles"/>.
+    /// </summary>
+    /// <remarks>
+    /// Called by the app's instance as it is created, which is what makes it run once and on every
+    /// head. Neither call throws — each reports a failure by its return value and its log line —
+    /// so a bad file cannot fail the construction that every logging feature depends on.
+    /// </remarks>
+    internal void LoadSavedProfiles()
+    {
+        AddAndRemoveProfileXml(null, false);
+        LoadProfilesFromXml();
     }
 
     // @port: Daqifi.Desktop.Logger.LoggingManager.UnsubscribeProfile

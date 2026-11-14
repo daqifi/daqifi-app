@@ -50,6 +50,20 @@
       <Setter Property="Foreground" Value="{DynamicResource TextTertiary}" />
       <Setter Property="TextWrapping" Value="Wrap" />
     </Style>
+    <!-- Tile fill, border and border width, keyed on the "active" class (issue #494). The same
+         rule as the desktop tile: a 2 px border in the channel's type colour when active, with
+         Padding giving back the extra 1 px so the content does not move on a toggle. -->
+    <Style Selector="Border.channelTile">
+      <Setter Property="Background" Value="{DynamicResource SurfaceRaised}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource BorderDim}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Padding" Value="1" />
+    </Style>
+    <Style Selector="Border.channelTile.active" x:DataType="vm:ChannelTileViewModel">
+      <Setter Property="BorderBrush" Value="{Binding StripeBrush}" />
+      <Setter Property="BorderThickness" Value="2" />
+      <Setter Property="Padding" Value="0" />
+    </Style>
     <!-- Desktop tile DataTrigger: dim + lock the tile while logging is active. -->
     <Style Selector="Border.loggingLocked">
       <Setter Property="Opacity" Value="0.55" />
@@ -59,21 +73,27 @@
   <UserControl.Resources>
     <!-- Shared channel-tile template, reused by the ANALOG / DIGITAL IN / DIGITAL OUT
          lists (desktop's ChannelTileTemplate). Item-scoped members (Name, StripeBrush,
-         TileBackground, Value, TypeLabel, IsActive, ...) come from the desktop
+         Value, TypeLabel, IsActive, ...) come from the desktop
          DataTemplate; the whole tile taps to toggle, the gear opens settings. -->
     <DataTemplate x:Key="ChannelTileTemplate" x:DataType="vm:ChannelTileViewModel">
       <!-- Tile STRETCHES to its UniformGrid column (no fixed width → the internal
            Grid gets the full column and never clips). The grid's column count is
            set by orientation in code-behind: 1 (full-width rows) in portrait,
            multiple in landscape. -->
-      <Border Classes.loggingLocked="{Binding $parent[ItemsControl].((vm:ChannelsPaneViewModel)DataContext).IsLoggingActive}"
-              Background="{Binding TileBackground}"
-              BorderBrush="{Binding TileBorderBrush}"
-              BorderThickness="1"
+      <Border Classes="channelTile"
+              Classes.active="{Binding IsActive}"
+              Classes.loggingLocked="{Binding $parent[ItemsControl].((vm:ChannelsPaneViewModel)DataContext).IsLoggingActive}"
               CornerRadius="10"
               Margin="0,0,8,8"
               AutomationProperties.AutomationId="{Binding Name}">
         <Grid ColumnDefinitions="5,*,Auto,Auto">
+          <!-- Active fill: the channel's type colour at low opacity, as on the desktop tile. -->
+          <Border Grid.ColumnSpan="4"
+                  Background="{Binding StripeBrush}"
+                  Opacity="0.15"
+                  CornerRadius="8"
+                  IsVisible="{Binding IsActive}"
+                  IsHitTestVisible="False" />
           <Border Grid.Column="0"
                   Background="{Binding StripeBrush}"
                   CornerRadius="2,0,0,2" />
@@ -585,6 +605,15 @@
                            Foreground="{DynamicResource StatusRed}"
                            TextWrapping="Wrap"
                            IsVisible="{Binding !SelectedChannel.HasValidExpression}" />
+                <!-- Valid expression, no result for some samples, which the app dropped (#540).
+                     Inside this unspaced panel rather than the Spacing="8" one above, so a
+                     collapsed label adds no gap. -->
+                <TextBlock Text="{Binding SelectedChannel.RejectedScaleResultsMessage}"
+                           FontSize="{DynamicResource FontSizeSmall}"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource StatusAmber}"
+                           TextWrapping="Wrap"
+                           IsVisible="{Binding SelectedChannel.HasRejectedScaleResults}" />
               </StackPanel>
             </StackPanel>
 

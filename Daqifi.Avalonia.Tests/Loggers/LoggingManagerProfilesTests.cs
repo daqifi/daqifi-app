@@ -236,4 +236,57 @@ public sealed class LoggingManagerProfilesTests : IDisposable
         Assert.Empty(Directory.GetFiles(_directory, "*.corrupt-*"));
         Assert.Equal(ProfilePath, Assert.Single(Directory.GetFiles(_directory)));
     }
+
+    /// <summary>
+    /// #544: the startup read lists what the file holds. It used to run on desktop only; it now
+    /// runs as the app's manager is created, on every head.
+    /// </summary>
+    [Fact]
+    public void The_startup_read_lists_every_saved_profile()
+    {
+        var writer = NewManager();
+        Assert.True(writer.SubscribeProfile(NewProfile("A")));
+        Assert.True(writer.SubscribeProfile(NewProfile("B")));
+
+        var manager = NewManager();
+        manager.LoadSavedProfiles();
+
+        Assert.Equal(["A", "B"], manager.SubscribedProfiles.Select(p => p.Name));
+    }
+
+    /// <summary>
+    /// A fresh install gets an empty profiles file at startup, as desktop always did.
+    /// </summary>
+    [Fact]
+    public void The_startup_read_creates_the_file_on_a_fresh_install()
+    {
+        var manager = NewManager();
+
+        manager.LoadSavedProfiles();
+
+        Assert.Empty(manager.SubscribedProfiles);
+        Assert.True(File.Exists(ProfilePath));
+        Assert.Empty(NewManager().LoadProfilesFromXml());
+    }
+
+    /// <summary>
+    /// A damaged file at startup gets the desktop treatment on every head: moved aside, replaced
+    /// with an empty file that saves normally, and reported to the Profiles pane once.
+    /// </summary>
+    [Fact]
+    public void The_startup_read_moves_a_damaged_file_aside_and_says_so_once()
+    {
+        File.WriteAllText(ProfilePath, "<Profiles><Profile><Name>Ben");
+        var manager = NewManager();
+
+        manager.LoadSavedProfiles();
+
+        Assert.Empty(manager.SubscribedProfiles);
+        var quarantined = Assert.Single(Directory.GetFiles(_directory, "*.corrupt-*"));
+        Assert.Equal("<Profiles><Profile><Name>Ben", File.ReadAllText(quarantined));
+        Assert.True(File.Exists(ProfilePath));
+        Assert.Empty(NewManager().LoadProfilesFromXml());
+        Assert.Contains(quarantined, manager.TakeProfileRecoveryNotice());
+        Assert.Null(manager.TakeProfileRecoveryNotice());
+    }
 }
