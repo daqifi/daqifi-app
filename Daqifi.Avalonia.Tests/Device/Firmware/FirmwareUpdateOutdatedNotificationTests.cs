@@ -91,7 +91,8 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     /// default, <see cref="PostRestartFirmwareVersion.ReadAsync"/>.
     /// </summary>
     private FirmwareUpdateCoordinator CreateCoordinator(
-        Func<DaqifiDevice, CancellationToken, Task<string?>>? readPostRestartVersion) =>
+        Func<DaqifiDevice, CancellationToken, Task<string?>>? readPostRestartVersion,
+        bool canFlashWifiModule = false) =>
         new(_host,
             _updates,
             _downloads,
@@ -99,7 +100,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
             _logger,
             _dataDirectory,
             wifiUpdateModeSettleDelay: TimeSpan.Zero,
-            canFlashWifiModule: false,
+            canFlashWifiModule: canFlashWifiModule,
             readPostRestartVersion: readPostRestartVersion);
 
     public void Dispose()
@@ -357,25 +358,72 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     }
 
     /// <summary>
-    /// The version read runs on the run's token, so Cancel during the wait ends the run as cancelled
-    /// rather than leaving it to time out.
+    /// Review finding on head <c>abcaccb</c>: once the write has completed, a Cancel during the
+    /// version read must not report the run as canceled — the device is already written, and a
+    /// "canceled" result invites the user to write it again. The read still runs on the run's token
+    /// (so Cancel ends the wait at once, and the reader throws), but the coordinator treats that as
+    /// "version unknown" and reports the completed manual write. Unknown changes nothing.
     /// </summary>
     [Fact]
-    public async Task Cancel_during_the_version_read_ends_the_run_as_cancelled()
+    public async Task A_cancel_during_the_version_read_after_a_manual_write_reports_the_completed_write()
     {
         await ConnectOn(Previous);
-        _downloads.LatestFirmwarePath = FirmwareFile();
+        _host.FirmwareFilePath = FirmwareFile();
         _reader.HangUntilCancelled = true;
+        _downloads.Lookup = LookupMode.Hang;
 
         var run = _coordinator.UploadFirmwareAsync();
         await _reader.WaitUntilReadingAsync(RunTimeout);
         _coordinator.CancelUpload();
         await run.WaitAsync(RunTimeout);
 
+        Assert.True(_reader.ReadWasCancelled, "The read did not observe the Cancel.");
+        Assert.True(_host.UpdateSucceeded, "The completed write was not reported.");
+        Assert.True(_host.IsUploadComplete);
+        Assert.False(_host.HasErrorOccured);
+        Assert.NotEqual("Firmware update canceled.", _host.FirmwareUpdateStatusText);
+        Assert.False(_host.IsFirmwareUploading);
+
+        // Unknown version: the notice and the flag are as they were.
+        Assert.Equal(Previous, _device.DeviceVersion);
+        Assert.True(_device.IsFirmwareOutdated);
+        Assert.Equal(1, _host.FirmwareNotificationsWhenSucceeded);
+        Assert.Single(_host.Notifications, n => n.IsFirmwareUpdate);
+    }
+
+    /// <summary>
+    /// The other half of the finding: cancellation is kept for every update step that has yet to
+    /// run. On the automatic path the WiFi-module step follows the read on the same token, so a
+    /// Cancel during the read still stops it — no WiFi package is downloaded and no WiFi flash
+    /// starts — and the run ends as it did before this PR for a Cancel in that step: "Firmware update
+    /// canceled.", no success dialog.
+    /// <para>
+    /// The step has work to do here: this machine can flash the module and the device carries one.
+    /// Its version is never read, because the cancelled token stops the step's version probe before
+    /// anything is sent — which is the point.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_cancel_during_the_version_read_still_stops_the_wifi_step()
+    {
+        var coordinator = CreateCoordinator(_reader.ReadAsync, canFlashWifiModule: true);
+        _device.Metadata.Capabilities.HasWincWifiModule = true;
+        await ConnectOn(Previous, coordinator);
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        _reader.HangUntilCancelled = true;
+
+        var run = coordinator.UploadFirmwareAsync();
+        await _reader.WaitUntilReadingAsync(RunTimeout);
+        coordinator.CancelUpload();
+        await run.WaitAsync(RunTimeout);
+
+        Assert.True(_reader.ReadWasCancelled);
+        Assert.Equal(0, _downloads.WifiDownloads);
+        Assert.Equal(0, _updates.WifiFlashes);
         Assert.Equal("Firmware update canceled.", _host.FirmwareUpdateStatusText);
         Assert.False(_host.UpdateSucceeded);
+        Assert.False(_host.IsUploadComplete);
         Assert.False(_host.IsFirmwareUploading);
-        Assert.True(_device.IsFirmwareOutdated);
         Assert.Single(_host.Notifications, n => n.IsFirmwareUpdate);
     }
 
@@ -541,11 +589,17 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         /// <summary>Frees any hung lookup so it cannot outlive the test.</summary>
         public void ReleaseHungLookups() => _releaseHung.Cancel();
 
+        /// <summary>How many times the WiFi package was asked for.</summary>
+        public int WifiDownloads { get; private set; }
+
         public Task<(string ExtractedPath, string Version)?> DownloadWifiFirmwareAsync(
             string destinationDirectory,
             IProgress<int>? progress = null,
             CancellationToken cancellationToken = default)
-            => Task.FromResult<(string ExtractedPath, string Version)?>(null);
+        {
+            WifiDownloads++;
+            return Task.FromResult<(string ExtractedPath, string Version)?>(null);
+        }
 
         public Task<string?> DownloadLatestFirmwareAsync(
             string destinationDirectory,
@@ -620,6 +674,9 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
 
         public bool HangUntilCancelled { get; set; }
 
+        /// <summary>True once a read observed the run's token being cancelled and threw.</summary>
+        public bool ReadWasCancelled { get; private set; }
+
         public int Reads { get; private set; }
 
         public Task WaitUntilReadingAsync(TimeSpan timeout) => _reading.Task.WaitAsync(timeout);
@@ -633,8 +690,17 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
 
             if (HangUntilCancelled)
             {
+                // Throws on cancellation, as PostRestartFirmwareVersion.ReadAsync does.
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _release.Token);
-                await Task.Delay(Timeout.InfiniteTimeSpan, linked.Token);
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, linked.Token);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    ReadWasCancelled = true;
+                    throw;
+                }
             }
 
             return Reported;
@@ -689,12 +755,19 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
             return Task.CompletedTask;
         }
 
+        /// <summary>How many WiFi-module flashes were started.</summary>
+        public int WifiFlashes { get; private set; }
+
         public Task UpdateWifiModuleAsync(
             Daqifi.Core.Device.IStreamingDevice device,
             string firmwarePath,
             IProgress<FirmwareUpdateProgress>? progress = null,
             CancellationToken cancellationToken = default,
-            bool skipVersionCheck = false) => Task.CompletedTask;
+            bool skipVersionCheck = false)
+        {
+            WifiFlashes++;
+            return Task.CompletedTask;
+        }
 
         public Task<WifiFirmwareStatus> CheckWifiFirmwareStatusAsync(
             Daqifi.Core.Device.IStreamingDevice device,

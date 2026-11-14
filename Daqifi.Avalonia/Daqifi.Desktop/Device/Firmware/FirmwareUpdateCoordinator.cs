@@ -336,7 +336,17 @@ public class FirmwareUpdateCoordinator
                     cancellationToken);
             }
 
-            var reportedVersion = await _readPostRestartVersion(coreDevice, cancellationToken);
+            // The write has completed. A Cancel during this read must not report the run as
+            // canceled: the device is already written. The version is then unknown (issues #566, #570).
+            string? reportedVersion;
+            try
+            {
+                reportedVersion = await _readPostRestartVersion(coreDevice, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                reportedVersion = null;
+            }
 
             if (!isManualUpload)
             {

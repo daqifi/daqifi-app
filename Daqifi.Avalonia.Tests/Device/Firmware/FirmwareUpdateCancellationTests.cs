@@ -46,14 +46,6 @@ public class FirmwareUpdateCancellationTests : IDisposable
     /// the platform gate added for issue #330 skips the WiFi step entirely where Microchip's
     /// Windows-only WINC tool cannot launch, which off Windows would take every assertion below out
     /// of reach. The gate itself is covered in <c>WifiFlashPlatformGateTests</c>.
-    /// <para>
-    /// The post-restart version read (issue #566) is replaced by a stand-in that answers "unknown"
-    /// and ignores the token. The real read runs on the run's token, so a Cancel that lands as the
-    /// PIC32 flash finishes now ends the run at that read, before the WiFi step — pinned in
-    /// <c>FirmwareUpdateOutdatedNotificationTests.Cancel_during_the_version_read_ends_the_run_as_cancelled</c>.
-    /// That would take the WiFi probe out of reach of the #409 test below, which exists to prove the
-    /// probe itself honours a cancelled token; the stand-in keeps the run on its way to the probe.
-    /// </para>
     /// </summary>
     private FirmwareUpdateCoordinator CreateCoordinator() =>
         new(_host,
@@ -63,8 +55,7 @@ public class FirmwareUpdateCancellationTests : IDisposable
             _logger,
             _dataDirectory,
             wifiUpdateModeSettleDelay: TimeSpan.Zero,
-            canFlashWifiModule: true,
-            readPostRestartVersion: (_, _) => Task.FromResult<string?>(null));
+            canFlashWifiModule: true);
 
     public void Dispose()
     {
