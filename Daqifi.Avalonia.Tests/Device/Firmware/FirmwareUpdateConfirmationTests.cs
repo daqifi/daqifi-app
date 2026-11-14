@@ -4,6 +4,8 @@ using Daqifi.Core.Firmware;
 using Daqifi.Desktop.Device.Firmware;
 using Daqifi.Desktop.Device.SerialDevice;
 using Daqifi.Desktop.Models;
+using Daqifi.Avalonia.Tests.ViewModels;
+using Daqifi.Desktop.ViewModels;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using DesktopStreamingDevice = Daqifi.Desktop.Device.IStreamingDevice;
@@ -406,7 +408,252 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
     }
     #endregion
 
+    #region Leaving while the update is being prepared (coordinator)
+    /// <summary>
+    /// Review finding 3 on PR #575: the release lookup awaits the network before the prompt opens.
+    /// A cancel during it ends the run at once — even though this lookup ignores its token — and the
+    /// lookup finishing afterwards opens nothing: no prompt, no error, no write.
+    /// </summary>
+    [Fact]
+    public async Task A_cancel_during_the_lookup_ends_the_run_and_a_late_lookup_opens_nothing()
+    {
+        _host.FirmwareFilePath = string.Empty;
+        var lookup = HoldTheLookup();
+        var coordinator = CreateCoordinator();
+
+        var run = coordinator.UploadFirmwareAsync();
+        Assert.False(run.IsCompleted);
+        coordinator.CancelPreparation();
+        await run.WaitAsync(Timeout);
+
+        Assert.True(_downloads.LookupTokens.Single().IsCancellationRequested);
+        lookup.SetResult(Release("3.9.0"));
+        await Task.Yield();
+
+        Assert.Equal(0, _host.PromptCount);
+        Assert.Empty(_host.Errors);
+        Assert.Equal(0, _downloads.DownloadCount);
+        Assert.Equal(0, _updates.Pic32FlashCount);
+        Assert.False(_host.FlagWasEverRaised);
+    }
+
+    /// <summary>
+    /// The check after the lookup does not depend on the cancel alone: a different device selected
+    /// during the lookup, with no cancel at all, still means no prompt.
+    /// </summary>
+    [Fact]
+    public async Task A_different_device_selected_during_the_lookup_means_no_prompt()
+    {
+        _host.FirmwareFilePath = string.Empty;
+        var lookup = HoldTheLookup();
+
+        var run = CreateCoordinator().UploadFirmwareAsync();
+        _host.SelectedDevice = new SerialStreamingDevice("COM-TEST-OTHER");
+        lookup.SetResult(Release("3.9.0"));
+        await run.WaitAsync(Timeout);
+
+        Assert.Equal(0, _host.PromptCount);
+        Assert.Empty(_host.Errors);
+        Assert.Equal(0, _updates.Pic32FlashCount);
+    }
+
+    /// <summary>
+    /// A lookup that completes with nothing changed opens the prompt as before, and the write uses
+    /// the tag that lookup resolved.
+    /// </summary>
+    [Fact]
+    public async Task A_lookup_that_completes_with_nothing_changed_prompts_and_writes_that_tag()
+    {
+        _host.FirmwareFilePath = string.Empty;
+        var lookup = HoldTheLookup();
+
+        var run = CreateCoordinator().UploadFirmwareAsync();
+        lookup.SetResult(Release("3.9.0"));
+        await run.WaitAsync(Timeout);
+
+        Assert.Equal(1, _host.PromptCount);
+        Assert.Contains("New version: 3.9.0", _host.LastMessage);
+        Assert.Equal(["v3.9.0"], _downloads.DownloadedTags);
+        Assert.Equal([_downloads.PathFor("v3.9.0")], _updates.FlashedPaths);
+    }
+
+    /// <summary>
+    /// The rule for a second UPDATE during a pending lookup: it is ignored. It returns at once, it
+    /// starts no second lookup, and the first request goes on to one prompt and one write.
+    /// </summary>
+    [Fact]
+    public async Task A_second_update_during_a_pending_lookup_is_ignored()
+    {
+        _host.FirmwareFilePath = string.Empty;
+        var lookup = HoldTheLookup();
+        var coordinator = CreateCoordinator();
+
+        var first = coordinator.UploadFirmwareAsync();
+        var second = coordinator.UploadFirmwareAsync();
+        await second.WaitAsync(Timeout);
+        Assert.Equal(1, _downloads.LookupCount);
+
+        lookup.SetResult(Release("3.9.0"));
+        await first.WaitAsync(Timeout);
+
+        Assert.Equal(1, _host.PromptCount);
+        Assert.Equal(1, _updates.Pic32FlashCount);
+    }
+
+    /// <summary>
+    /// The manual path has no lookup and keeps its behaviour: the prompt opens at once, and a cancel
+    /// of the preparation closes it with "no" and writes nothing — what a tab change did before.
+    /// </summary>
+    [Fact]
+    public async Task A_manual_update_has_no_lookup_and_a_cancel_closes_its_prompt()
+    {
+        var coordinator = CreateCoordinator();
+        _host.PendingAnswer = new TaskCompletionSource<bool>().Task;
+
+        var run = coordinator.UploadFirmwareAsync();
+        Assert.True(_host.IsPromptOpen);
+        coordinator.CancelPreparation();
+        await run.WaitAsync(Timeout);
+
+        Assert.Equal(0, _downloads.LookupCount);
+        Assert.False(_host.IsPromptOpen);
+        Assert.Equal(0, _updates.Pic32FlashCount);
+        Assert.False(_host.FlagWasEverRaised);
+    }
+
+    /// <summary>A cancel after a run has started does not touch the run.</summary>
+    [Fact]
+    public async Task A_cancel_of_the_preparation_does_not_stop_a_started_write()
+    {
+        var coordinator = CreateCoordinator();
+        _updates.OnFlash = coordinator.CancelPreparation;
+
+        await coordinator.UploadFirmwareAsync().WaitAsync(Timeout);
+
+        Assert.Equal(1, _updates.Pic32FlashCount);
+        Assert.Equal(1, _host.SucceededCount);
+    }
+    #endregion
+
+    #region Leaving while the update is being prepared (the real view models)
+    /// <summary>
+    /// The finding as the user meets it, on the real <see cref="DaqifiViewModel"/>: UPDATE, then
+    /// another tab while the lookup runs. The UPDATE command is no longer busy, nothing is written,
+    /// the late lookup opens no prompt, and going back to Devices shows none.
+    /// </summary>
+    /// <remarks>
+    /// Nothing here pumps <c>Dispatcher.UIThread</c>, which the test project cannot do: the command,
+    /// the coordinator and the overlay view model are all plain awaits and property writes.
+    /// </remarks>
+    [Fact]
+    public async Task Leaving_the_devices_tab_during_the_lookup_frees_the_command_and_opens_no_prompt()
+    {
+        var lookup = HoldTheLookup();
+        var shell = ShellOnDevicesTab();
+
+        var run = shell.UploadFirmwareCommand.ExecuteAsync(null);
+        Assert.True(shell.UploadFirmwareCommand.IsRunning);
+        shell.SelectedIndex = 0;
+        await run.WaitAsync(Timeout);
+
+        Assert.False(shell.UploadFirmwareCommand.IsRunning);
+        lookup.SetResult(Release("3.9.0"));
+        await Task.Yield();
+        shell.SelectedIndex = 3;
+
+        Assert.False(shell.FirmwareUpdateConfirm.IsOpen);
+        Assert.False(shell.IsFirmwareUploading);
+        Assert.Equal(0, _updates.Pic32FlashCount);
+    }
+
+    /// <summary>The drawer closed during the lookup: no prompt.</summary>
+    [Fact]
+    public async Task Closing_the_drawer_during_the_lookup_opens_no_prompt()
+    {
+        var lookup = HoldTheLookup();
+        var shell = ShellOnDevicesTab();
+        using var pane = new DevicesPaneViewModel(shell);
+        pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(_device));
+
+        var run = shell.UploadFirmwareCommand.ExecuteAsync(null);
+        pane.CloseSettingsCommand.Execute(null);
+        await run.WaitAsync(Timeout);
+        lookup.SetResult(Release("3.9.0"));
+        await Task.Yield();
+
+        Assert.False(shell.UploadFirmwareCommand.IsRunning);
+        Assert.False(shell.FirmwareUpdateConfirm.IsOpen);
+        Assert.Equal(0, _updates.Pic32FlashCount);
+    }
+
+    /// <summary>Another device selected during the lookup: the command ends at once, no prompt.</summary>
+    [Fact]
+    public async Task Selecting_another_device_during_the_lookup_opens_no_prompt()
+    {
+        var lookup = HoldTheLookup();
+        var shell = ShellOnDevicesTab();
+
+        var run = shell.UploadFirmwareCommand.ExecuteAsync(null);
+        shell.SelectedDevice = new SerialStreamingDevice("COM-TEST-OTHER");
+        await run.WaitAsync(Timeout);
+        lookup.SetResult(Release("3.9.0"));
+        await Task.Yield();
+
+        Assert.False(shell.FirmwareUpdateConfirm.IsOpen);
+        Assert.Equal(0, _updates.Pic32FlashCount);
+    }
+
+    /// <summary>
+    /// Nothing changed during the lookup: the prompt opens as before and names the resolved
+    /// release. (The write that follows a "yes" is pinned at the coordinator level above; here the
+    /// test answers CANCEL, because the success path shows a dialog through the UI dispatcher.)
+    /// </summary>
+    [Fact]
+    public async Task A_lookup_with_nothing_changed_opens_the_prompt_on_the_real_view_model()
+    {
+        var lookup = HoldTheLookup();
+        var shell = ShellOnDevicesTab();
+
+        var run = shell.UploadFirmwareCommand.ExecuteAsync(null);
+        lookup.SetResult(Release("3.9.0"));
+        for (var i = 0; i < 100 && !shell.FirmwareUpdateConfirm.IsOpen; i++)
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.True(shell.FirmwareUpdateConfirm.IsOpen);
+        Assert.Contains("New version: 3.9.0", shell.FirmwareUpdateConfirm.Message);
+
+        shell.FirmwareUpdateConfirm.NegativeCommand.Execute(null);
+        await run.WaitAsync(Timeout);
+        Assert.Equal(0, _updates.Pic32FlashCount);
+    }
+
+    /// <summary>
+    /// A shell over this test's services, with the device selected and the Devices tab showing —
+    /// the state the drawer's UPDATE button is clicked in. An auto-update, so the lookup runs.
+    /// </summary>
+    private DaqifiViewModel ShellOnDevicesTab()
+    {
+        var shell = new DaqifiViewModel(new NullDialogService(), _updates, _downloads)
+        {
+            SelectedIndex = 3,
+            SelectedDevice = _device,
+        };
+        shell.FirmwareFilePath = string.Empty;
+        return shell;
+    }
+    #endregion
+
     #region Helpers
+    /// <summary>Makes every release lookup wait until the test completes the returned source.</summary>
+    private TaskCompletionSource<FirmwareReleaseInfo?> HoldTheLookup()
+    {
+        var lookup = new TaskCompletionSource<FirmwareReleaseInfo?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _downloads.PendingLookup = lookup;
+        return lookup;
+    }
+
     private static FirmwareReleaseInfo Release(string version)
     {
         Assert.True(FirmwareVersion.TryParse(version, out var parsed));
@@ -494,12 +741,34 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
 
         public void ShowFirmwareUpdateSucceeded(string message) => SuccessMessages.Add(message);
 
-        public Task<bool> ConfirmFirmwareUpdateAsync(string title, string message)
+        /// <summary>True while a prompt is open: shown and neither answered nor closed.</summary>
+        public bool IsPromptOpen { get; private set; }
+
+        /// <summary>
+        /// Behaves as the real host does: a cancelled token opens nothing, and cancelling the token
+        /// closes an open prompt with "no".
+        /// </summary>
+        public async Task<bool> ConfirmFirmwareUpdateAsync(
+            string title,
+            string message,
+            CancellationToken cancellationToken)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return false;
+            }
+
             PromptCount++;
             LastTitle = title;
             LastMessage = message;
-            return PendingAnswer ?? Task.FromResult(Answer);
+            IsPromptOpen = true;
+            var closed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using (cancellationToken.Register(() => closed.TrySetResult(false)))
+            {
+                var answer = await Task.WhenAny(PendingAnswer ?? Task.FromResult(Answer), closed.Task);
+                IsPromptOpen = false;
+                return await answer;
+            }
         }
 
         public Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default)
@@ -549,9 +818,13 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
             Daqifi.Core.Device.IStreamingDevice device,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
+        /// <summary>Runs inside the flash, while the write is in progress.</summary>
+        public Action? OnFlash { get; set; }
+
         private Task Flash(string hexFilePath)
         {
             FlashedPaths.Add(hexFilePath);
+            OnFlash?.Invoke();
             return Fail
                 ? Task.FromException(new InvalidOperationException("simulated flash failure"))
                 : Task.CompletedTask;
@@ -572,6 +845,13 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
         public List<FirmwareReleaseInfo?> Releases { get; } = [];
 
         public Exception? LookupFailure { get; set; }
+
+        /// <summary>When set, every lookup returns this task, which the test completes by hand.</summary>
+        public TaskCompletionSource<FirmwareReleaseInfo?>? PendingLookup { get; set; }
+
+        public int LookupCount { get; private set; }
+
+        public List<CancellationToken> LookupTokens { get; } = [];
 
         public int LatestFirmwareDownloadCount { get; private set; }
 
@@ -609,9 +889,18 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
             bool includePreRelease = false,
             CancellationToken cancellationToken = default)
         {
+            LookupCount++;
+            LookupTokens.Add(cancellationToken);
             if (LookupFailure != null)
             {
                 return Task.FromException<FirmwareReleaseInfo?>(LookupFailure);
+            }
+
+            // A lookup the test completes by hand. It deliberately ignores the token, the worst
+            // case: the coordinator must stop waiting on its own when the preparation is cancelled.
+            if (PendingLookup != null)
+            {
+                return PendingLookup.Task;
             }
 
             if (Releases.Count == 0)

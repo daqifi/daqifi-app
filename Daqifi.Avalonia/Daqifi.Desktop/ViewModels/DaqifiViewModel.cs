@@ -561,9 +561,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             // delete) doesn't get stranded when the user navigates away from the
             // pane that owns the overlay.
             ConfirmOverlay.Cancel();
-            // The same for the firmware prompt: the Devices pane that shows it detaches on a tab
-            // change, and a "yes" must never arrive for a prompt the user can no longer see.
-            FirmwareUpdateConfirm.Cancel();
+            // The same for a firmware update that is being prepared: the Devices pane that shows its
+            // prompt detaches on a tab change, and a "yes" must never arrive for a prompt the user
+            // can no longer see — nor a prompt open later for a lookup that finishes now (#564).
+            CancelFirmwareUpdatePreparation();
             OnPropertyChanged();
         }
     }
@@ -1329,6 +1330,12 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.OnSelectedDeviceChanged
     partial void OnSelectedDeviceChanged(IStreamingDevice? oldValue, IStreamingDevice? newValue)
     {
+        // A firmware update prepared for one device must not prompt, or write, for another (#564).
+        if (!ReferenceEquals(oldValue, newValue))
+        {
+            CancelFirmwareUpdatePreparation();
+        }
+
         if (oldValue is INotifyPropertyChanged oldNotifier)
         {
             oldNotifier.PropertyChanged -= OnSelectedDeviceFriendlyNameChanged;
@@ -2578,8 +2585,35 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// the danger style because the write can erase the device's WiFi settings and calibration; the
     /// pane moves focus to CANCEL, so Enter does not start a write.
     /// </summary>
-    Task<bool> IFirmwareUpdateHost.ConfirmFirmwareUpdateAsync(string title, string message)
-        => FirmwareUpdateConfirm.ShowAsync(title, message, "UPDATE", isDestructive: true);
+    async Task<bool> IFirmwareUpdateHost.ConfirmFirmwareUpdateAsync(
+        string title,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        var answer = FirmwareUpdateConfirm.ShowAsync(title, message, "UPDATE", isDestructive: true);
+
+        // The preparation's token closes the prompt, so CancelFirmwareUpdatePreparation is the one
+        // place that ends both a pending lookup and an open prompt. Cancel() runs the callback on
+        // the thread that cancels, which is the UI thread for every caller.
+        await using (cancellationToken.Register(FirmwareUpdateConfirm.Cancel))
+        {
+            return await answer;
+        }
+    }
+
+    /// <summary>
+    /// Ends a firmware update that is being prepared (issue #564): stops a pending release lookup
+    /// and closes an open "Update firmware?" prompt. Called whenever the place the user clicked
+    /// UPDATE goes away — another tab, a closed drawer, another device, the Devices pane detaching —
+    /// so a lookup that finishes later opens nothing. Never stops a write that has already started;
+    /// the drawer's CANCEL UPDATE button does that.
+    /// </summary>
+    public void CancelFirmwareUpdatePreparation() => _firmwareCoordinator.CancelPreparation();
 
     /// <summary>
     /// Cancels any in-flight connect-time WiFi firmware probe AND waits for it to fully unwind before

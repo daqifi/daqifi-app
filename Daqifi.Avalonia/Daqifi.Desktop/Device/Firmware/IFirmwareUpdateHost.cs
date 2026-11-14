@@ -116,7 +116,11 @@ public interface IFirmwareUpdateHost
     /// </summary>
     /// <param name="title">The title of the prompt.</param>
     /// <param name="message">The body of the prompt: device, versions, duration and the risks.</param>
-    Task<bool> ConfirmFirmwareUpdateAsync(string title, string message);
+    /// <param name="cancellationToken">
+    /// The preparation's token. When it is cancelled the host closes the prompt and resolves
+    /// <c>false</c>; a token that is already cancelled opens nothing.
+    /// </param>
+    Task<bool> ConfirmFirmwareUpdateAsync(string title, string message, CancellationToken cancellationToken);
 
     /// <summary>
     /// Cancels any in-flight connect-time WiFi firmware probe and awaits its full unwind. Called by the

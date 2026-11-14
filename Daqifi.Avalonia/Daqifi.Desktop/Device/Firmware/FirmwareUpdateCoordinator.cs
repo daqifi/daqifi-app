@@ -222,50 +222,15 @@ public class FirmwareUpdateCoordinator
         }
 
         // Issue #564: one click on UPDATE used to start the write. Ask first, and touch nothing —
-        // not the flag, not the status line, not the WiFi probe — until the user says yes.
-        //
-        // Pin the exact firmware BEFORE the prompt, and write only that after it. The prompt names a
-        // version or a file; reading the bound path again, or downloading "whatever is latest now",
-        // after the user answers would let a newly published release or an edited path put firmware
-        // on the device that the user never agreed to.
-        var manualFirmwarePath = _host.FirmwareFilePath;
-        var isManualUpload = !string.IsNullOrWhiteSpace(manualFirmwarePath);
-        FirmwareReleaseInfo? release = null;
-        if (isManualUpload)
-        {
-            if (!File.Exists(manualFirmwarePath))
-            {
-                _host.ShowFirmwareError(
-                    $"The firmware file {Path.GetFileName(manualFirmwarePath)} does not exist. Select the file again.");
-                return;
-            }
-        }
-        else
-        {
-            release = await ResolveReleaseToInstallAsync();
-            if (release == null)
-            {
-                // A prompt that cannot name the version must not start a write.
-                _host.ShowFirmwareError(ReleaseNotFoundMessage);
-                return;
-            }
-        }
-
-        var confirmed = await _host.ConfirmFirmwareUpdateAsync(
-            FirmwareUpdateConfirmTitle,
-            DescribeFirmwareUpdate(serialStreamingDevice, release?.Version.ToString(), manualFirmwarePath));
-        if (!confirmed)
+        // not the flag, not the status line, not the WiFi probe — until the user says yes. The
+        // preparation pins the exact firmware the prompt names; see PrepareUploadAsync.
+        var prepared = await PrepareUploadAsync(serialStreamingDevice);
+        if (prepared is not { } firmware)
         {
             return;
         }
 
-        // The prompt is awaited, so the state the guards above checked can move under it: another
-        // run can start, or the drawer can be pointed at a different device. Proceed only if the
-        // user's "yes" still describes what would run.
-        if (_host.IsFirmwareUploading || !ReferenceEquals(_host.SelectedDevice, serialStreamingDevice))
-        {
-            return;
-        }
+        var isManualUpload = firmware.Release is null;
 
         _host.SelectedDeviceSupportsFirmwareUpdate = true;
         _host.HasErrorOccured = false;
@@ -324,13 +289,13 @@ public class FirmwareUpdateCoordinator
             {
                 _host.FirmwareUpdateStatusText = "Downloading latest firmware package...";
                 effectiveFirmwarePath = await _firmwareDownloadService.DownloadFirmwareByTagAsync(
-                    release!.TagName,
+                    firmware.Release!.TagName,
                     GetFirmwareDownloadDirectory(),
                     cancellationToken: cancellationToken);
             }
             else
             {
-                effectiveFirmwarePath = manualFirmwarePath;
+                effectiveFirmwarePath = firmware.ManualFirmwarePath;
             }
 
             if (string.IsNullOrWhiteSpace(effectiveFirmwarePath) || !File.Exists(effectiveFirmwarePath))
@@ -410,6 +375,131 @@ public class FirmwareUpdateCoordinator
         }
     }
 
+    /// <summary>
+    /// The firmware a confirmed preparation pinned: the manual file the prompt named, or the release
+    /// it named. Exactly one is set.
+    /// </summary>
+    private readonly record struct PreparedFirmware(string? ManualFirmwarePath, FirmwareReleaseInfo? Release);
+
+    /// <summary>
+    /// The pending preparation — the release lookup and the prompt in front of a write — or null when
+    /// none is pending (issue #564). Written on the UI thread only, like <see cref="_firmwareUploadCts"/>,
+    /// and for the same reason never disposed: a <see cref="CancelPreparation"/> that has already read
+    /// it can then only signal a live or finished source.
+    /// </summary>
+    private CancellationTokenSource? _preparationCts;
+
+    /// <summary>
+    /// Stops the pending preparation, if any: the release lookup stops waiting, and the host closes
+    /// the prompt, because the host ties the prompt to the same token. Called by the host whenever the
+    /// surface the user clicked UPDATE on goes away — another tab, a closed drawer, another device —
+    /// so a lookup that finishes later can never open a prompt nobody asked to see. A no-op when
+    /// nothing is pending, and it never touches a run that has already started.
+    /// </summary>
+    public void CancelPreparation()
+    {
+        var preparation = _preparationCts;
+        _preparationCts = null;
+        preparation?.Cancel();
+    }
+
+    /// <summary>
+    /// Pins the firmware for a write and asks the user to confirm it. Returns null, and leaves the
+    /// device untouched and the uploading flag down, unless the user confirmed and the request is
+    /// still current.
+    /// <para>
+    /// Pin BEFORE the prompt, write only that after it: the manual path is read once, and an
+    /// auto-update resolves its release here and downloads that release by tag later. Reading the
+    /// bound path again, or downloading "whatever is latest now", after the user answers would let a
+    /// newly published release or an edited path put firmware on the device that the prompt never
+    /// named.
+    /// </para>
+    /// <para>
+    /// <b>One preparation at a time.</b> A second call while one is pending is ignored: it returns
+    /// null at once and the pending one goes on. The UPDATE command is busy for the whole preparation
+    /// anyway, so a second click cannot normally reach here; the rule makes the coordinator safe on its
+    /// own rather than only behind a disabled button.
+    /// </para>
+    /// <para>
+    /// <b>A stale request ends silently.</b> The lookup awaits the network, and the user can leave
+    /// while it runs. <see cref="CancelPreparation"/> stops the wait, and after it — whether or not the
+    /// download service honoured the token — the request must still be the current one, not
+    /// cancelled, and for the same selected device. Otherwise there is no prompt, no error dialog and
+    /// no write: the user went somewhere else, which is not an error.
+    /// </para>
+    /// </summary>
+    private async Task<PreparedFirmware?> PrepareUploadAsync(SerialStreamingDevice device)
+    {
+        if (_preparationCts != null)
+        {
+            return null;
+        }
+
+        var preparation = new CancellationTokenSource();
+        _preparationCts = preparation;
+        try
+        {
+            var manualFirmwarePath = _host.FirmwareFilePath;
+            FirmwareReleaseInfo? release = null;
+            if (!string.IsNullOrWhiteSpace(manualFirmwarePath))
+            {
+                if (!File.Exists(manualFirmwarePath))
+                {
+                    _host.ShowFirmwareError(
+                        $"The firmware file {Path.GetFileName(manualFirmwarePath)} does not exist. Select the file again.");
+                    return null;
+                }
+            }
+            else
+            {
+                release = await ResolveReleaseToInstallAsync(preparation.Token);
+                if (!IsStillCurrent(preparation, device))
+                {
+                    return null;
+                }
+
+                if (release == null)
+                {
+                    // A prompt that cannot name the version must not start a write.
+                    _host.ShowFirmwareError(ReleaseNotFoundMessage);
+                    return null;
+                }
+            }
+
+            var confirmed = await _host.ConfirmFirmwareUpdateAsync(
+                FirmwareUpdateConfirmTitle,
+                DescribeFirmwareUpdate(device, release?.Version.ToString(), manualFirmwarePath),
+                preparation.Token);
+
+            // The prompt is awaited too, so the same checks apply after it: the user's "yes" must
+            // still describe what would run, and another run must not have started meanwhile.
+            if (!confirmed || !IsStillCurrent(preparation, device) || _host.IsFirmwareUploading)
+            {
+                return null;
+            }
+
+            return release is null
+                ? new PreparedFirmware(manualFirmwarePath, null)
+                : new PreparedFirmware(null, release);
+        }
+        finally
+        {
+            if (ReferenceEquals(_preparationCts, preparation))
+            {
+                _preparationCts = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="preparation"/> is still the request the user is looking at: not
+    /// cancelled, not replaced, and for the device the drawer still shows.
+    /// </summary>
+    private bool IsStillCurrent(CancellationTokenSource preparation, SerialStreamingDevice device) =>
+        !preparation.IsCancellationRequested
+        && ReferenceEquals(_preparationCts, preparation)
+        && ReferenceEquals(_host.SelectedDevice, device);
+
     /// <summary>The title of the prompt <see cref="UploadFirmwareAsync"/> shows before a write.</summary>
     internal const string FirmwareUpdateConfirmTitle = "Update firmware?";
 
@@ -467,15 +557,19 @@ public class FirmwareUpdateCoordinator
 
     /// <summary>
     /// Resolves the release an auto-update will write, before the prompt names it (issue #564).
-    /// Returns null, and logs why, when the lookup fails or finds nothing. Asynchronous, so the UI
-    /// stays live while it runs, and it runs before the uploading flag goes up, so a failure leaves
-    /// nothing to lower.
+    /// Returns null, and logs why, when the lookup fails or finds nothing, and returns null silently
+    /// when <paramref name="cancellationToken"/> is cancelled. Asynchronous, so the UI stays live while
+    /// it runs, and it runs before the uploading flag goes up, so a failure leaves nothing to lower.
     /// </summary>
-    private async Task<FirmwareReleaseInfo?> ResolveReleaseToInstallAsync()
+    private async Task<FirmwareReleaseInfo?> ResolveReleaseToInstallAsync(CancellationToken cancellationToken)
     {
         try
         {
-            var release = await _firmwareDownloadService.GetLatestReleaseAsync(includePreRelease: true);
+            // WaitAsync as well as the token: if the service does not honour the token, the wait
+            // still ends at once, so a cancelled preparation never keeps the UPDATE command busy.
+            var release = await _firmwareDownloadService
+                .GetLatestReleaseAsync(includePreRelease: true, cancellationToken)
+                .WaitAsync(cancellationToken);
             if (release == null || string.IsNullOrWhiteSpace(release.TagName))
             {
                 _appLogger.Warning("Firmware update not started: no firmware release was found.");
@@ -483,6 +577,10 @@ public class FirmwareUpdateCoordinator
             }
 
             return release;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return null;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {

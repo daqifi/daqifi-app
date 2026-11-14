@@ -287,6 +287,9 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
     {
         IsSettingsOpen = false;
         SelectedTile = null;
+        // The drawer holds the UPDATE button, so a firmware update prepared from it ends with it
+        // (#564). Rebuild also lands here when the drawer's device goes away.
+        _shell?.CancelFirmwareUpdatePreparation();
     }
 
     // @port: Daqifi.Desktop.ViewModels.DevicesPaneViewModel.AddDevice
@@ -337,6 +340,8 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         if (_disposed) return;
         _disposed = true;
 
+        // The pane is leaving the visual tree, and its prompt with it (#564).
+        _shell?.CancelFirmwareUpdatePreparation();
         ConnectionManager.Instance.PropertyChanged -= OnConnectionManagerPropertyChanged;
         Unfollow(SelectedDevice);
 
