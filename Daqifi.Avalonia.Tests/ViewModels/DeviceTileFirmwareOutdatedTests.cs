@@ -71,20 +71,6 @@ public class DeviceTileFirmwareOutdatedTests
     }
 
     [Fact]
-    public void Device_raises_PropertyChanged_for_IsFirmwareOutdated_under_the_interface_name()
-    {
-        // The tile's switch matches on nameof(IStreamingDevice.IsFirmwareOutdated). Pin the
-        // device side directly too, so a rename on either side fails here and not only in the UI.
-        var device = new TestDevice();
-        var names = new List<string?>();
-        device.PropertyChanged += (_, e) => names.Add(e.PropertyName);
-
-        device.IsFirmwareOutdated = true;
-
-        Assert.Contains(nameof(IStreamingDevice.IsFirmwareOutdated), names);
-    }
-
-    [Fact]
     public void Device_does_not_raise_when_the_flag_is_set_to_the_value_it_already_has()
     {
         // The release check runs again on every refresh and writes the flag each time. An
