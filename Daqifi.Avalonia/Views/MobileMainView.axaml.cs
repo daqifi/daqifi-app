@@ -79,12 +79,14 @@ public partial class MobileMainView : UserControl
         AbstractChannel.ScaleResultsRejected += OnScaleResultsRejected;
         _activatable = Application.Current?.TryGetFeature<IActivatableLifetime>();
         if (_activatable is not null) { _activatable.Deactivated += OnAppDeactivated; }
+        if (_activatable is not null) { _activatable.Activated += OnAppActivated; }
     }
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         AbstractChannel.ScaleResultsRejected -= OnScaleResultsRejected;
         if (_activatable is not null) { _activatable.Deactivated -= OnAppDeactivated; }
+        if (_activatable is not null) { _activatable.Activated -= OnAppActivated; }
         _activatable = null;
         // A destroyed activity takes the shell with it; save the open edit as desktop does when its
         // pane detaches (#560).
@@ -96,6 +98,20 @@ public partial class MobileMainView : UserControl
     private void OnAppDeactivated(object? sender, ActivatedEventArgs e)
     {
         SaveProfileEdit();
+    }
+
+    /// <summary>
+    /// The app came back to the foreground (#590). A layout change made while it was in the
+    /// background (the drawer that <see cref="OnAppDeactivated"/> closes, or the busy overlay that
+    /// changes while the save picker is open) was arranged 0 wide, and the pane showed nothing
+    /// until a rotation. This lays out the whole shell again, as a rotation does.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ResumeRelayout.ScheduleAfterResume"/> says when, and why more than once.
+    /// </remarks>
+    private void OnAppActivated(object? sender, ActivatedEventArgs e)
+    {
+        if (TopLevel.GetTopLevel(this) is { } top) { ResumeRelayout.ScheduleAfterResume(top, this); }
     }
 
     /// <summary>
