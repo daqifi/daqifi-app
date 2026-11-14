@@ -278,7 +278,10 @@ public class SerialIdentityCasingTests : IDisposable
 
         public void ShowFirmwareError(string message) { }
 
-        public void ShowFirmwareUpdateSucceeded() { }
+        public void ShowFirmwareUpdateSucceeded(string message) { }
+
+        /// <summary>Confirms at once: these facts are about the run, not the prompt in front of it (issue #564).</summary>
+        public Task<bool> ConfirmFirmwareUpdateAsync(string title, string message, CancellationToken cancellationToken) => Task.FromResult(true);
 
         public Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default)
             => Task.CompletedTask;

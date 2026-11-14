@@ -231,6 +231,17 @@ public class FirmwareUpdateCoordinator
             return;
         }
 
+        // Issue #564: one click on UPDATE used to start the write. Ask first, and touch nothing —
+        // not the flag, not the status line, not the WiFi probe — until the user says yes. The
+        // preparation pins the exact firmware the prompt names; see PrepareUploadAsync.
+        var prepared = await PrepareUploadAsync(serialStreamingDevice);
+        if (prepared is not { } firmware)
+        {
+            return;
+        }
+
+        var isManualUpload = firmware.Release is null;
+
         _host.SelectedDeviceSupportsFirmwareUpdate = true;
         _host.HasErrorOccured = false;
         _host.IsUploadComplete = false;
@@ -250,8 +261,6 @@ public class FirmwareUpdateCoordinator
         {
             _host.FirmwareUpdateStatusText = "Preparing firmware update...";
             _host.DeviceBeingUpdated = _host.SelectedDevice;
-
-            var isManualUpload = !string.IsNullOrWhiteSpace(_host.FirmwareFilePath);
 
             _appLogger.AddBreadcrumb("firmware", $"Firmware update started for {serialStreamingDevice.Name}");
 
@@ -282,18 +291,21 @@ public class FirmwareUpdateCoordinator
             // would make the NEXT in-session update look like a manual upload (isManualUpload
             // is derived from FirmwareFilePath being non-empty), silently skipping the
             // WiFi-module step until the app is restarted. See issue #599.
-            string effectiveFirmwarePath;
+            //
+            // Both branches write what the prompt named (issue #564): the release resolved before
+            // the prompt, downloaded by its tag, or the path read before the prompt.
+            string? effectiveFirmwarePath;
             if (!isManualUpload)
             {
                 _host.FirmwareUpdateStatusText = "Downloading latest firmware package...";
-                effectiveFirmwarePath = await _firmwareDownloadService.DownloadLatestFirmwareAsync(
+                effectiveFirmwarePath = await _firmwareDownloadService.DownloadFirmwareByTagAsync(
+                    firmware.Release!.TagName,
                     GetFirmwareDownloadDirectory(),
-                    includePreRelease: true,
                     cancellationToken: cancellationToken);
             }
             else
             {
-                effectiveFirmwarePath = _host.FirmwareFilePath;
+                effectiveFirmwarePath = firmware.ManualFirmwarePath;
             }
 
             if (string.IsNullOrWhiteSpace(effectiveFirmwarePath) || !File.Exists(effectiveFirmwarePath))
@@ -335,8 +347,10 @@ public class FirmwareUpdateCoordinator
             }
 
             _host.IsUploadComplete = true;
+            NotifyWifiSettingsMayBeErased(serialStreamingDevice);
             _appLogger.AddBreadcrumb("firmware", "Firmware update completed");
-            _host.ShowFirmwareUpdateSucceeded();
+            _host.ShowFirmwareUpdateSucceeded(
+                "Firmware update completed successfully.\n\n" + WifiSettingsMayBeErasedInstruction);
         }
         catch (OperationCanceledException)
         {
@@ -369,6 +383,249 @@ public class FirmwareUpdateCoordinator
             // explicitly re-selects a file. (The auto path never writes this property.)
             _host.FirmwareFilePath = string.Empty;
         }
+    }
+
+    /// <summary>
+    /// The firmware a confirmed preparation pinned: the manual file the prompt named, or the release
+    /// it named. Exactly one is set.
+    /// </summary>
+    private readonly record struct PreparedFirmware(string? ManualFirmwarePath, FirmwareReleaseInfo? Release);
+
+    /// <summary>
+    /// The pending preparation — the release lookup and the prompt in front of a write — or null when
+    /// none is pending (issue #564). Written on the UI thread only, like <see cref="_firmwareUploadCts"/>,
+    /// and for the same reason never disposed: a <see cref="CancelPreparation"/> that has already read
+    /// it can then only signal a live or finished source.
+    /// </summary>
+    private CancellationTokenSource? _preparationCts;
+
+    /// <summary>
+    /// Stops the pending preparation, if any: the release lookup stops waiting, and the host closes
+    /// the prompt, because the host ties the prompt to the same token. Called by the host whenever the
+    /// surface the user clicked UPDATE on goes away — another tab, a closed drawer, another device —
+    /// so a lookup that finishes later can never open a prompt nobody asked to see. A no-op when
+    /// nothing is pending, and it never touches a run that has already started.
+    /// </summary>
+    public void CancelPreparation()
+    {
+        var preparation = _preparationCts;
+        _preparationCts = null;
+        preparation?.Cancel();
+    }
+
+    /// <summary>
+    /// Pins the firmware for a write and asks the user to confirm it. Returns null, and leaves the
+    /// device untouched and the uploading flag down, unless the user confirmed and the request is
+    /// still current.
+    /// <para>
+    /// Pin BEFORE the prompt, write only that after it: the manual path is read once, and an
+    /// auto-update resolves its release here and downloads that release by tag later. Reading the
+    /// bound path again, or downloading "whatever is latest now", after the user answers would let a
+    /// newly published release or an edited path put firmware on the device that the prompt never
+    /// named.
+    /// </para>
+    /// <para>
+    /// <b>One preparation at a time.</b> A second call while one is pending is ignored: it returns
+    /// null at once and the pending one goes on. The UPDATE command is busy for the whole preparation
+    /// anyway, so a second click cannot normally reach here; the rule makes the coordinator safe on its
+    /// own rather than only behind a disabled button.
+    /// </para>
+    /// <para>
+    /// <b>A stale request ends silently.</b> The lookup awaits the network, and the user can leave
+    /// while it runs. <see cref="CancelPreparation"/> stops the wait, and after it — whether or not the
+    /// download service honoured the token — the request must still be the current one, not
+    /// cancelled, and for the same selected device. Otherwise there is no prompt, no error dialog and
+    /// no write: the user went somewhere else, which is not an error.
+    /// </para>
+    /// </summary>
+    private async Task<PreparedFirmware?> PrepareUploadAsync(SerialStreamingDevice device)
+    {
+        if (_preparationCts != null)
+        {
+            return null;
+        }
+
+        var preparation = new CancellationTokenSource();
+        _preparationCts = preparation;
+        try
+        {
+            var manualFirmwarePath = _host.FirmwareFilePath;
+            FirmwareReleaseInfo? release = null;
+            if (!string.IsNullOrWhiteSpace(manualFirmwarePath))
+            {
+                if (!File.Exists(manualFirmwarePath))
+                {
+                    _host.ShowFirmwareError(
+                        $"The firmware file {Path.GetFileName(manualFirmwarePath)} does not exist. Select the file again.");
+                    return null;
+                }
+            }
+            else
+            {
+                release = await ResolveReleaseToInstallAsync(preparation.Token);
+                if (!IsStillCurrent(preparation, device))
+                {
+                    return null;
+                }
+
+                if (release == null)
+                {
+                    // A prompt that cannot name the version must not start a write.
+                    _host.ShowFirmwareError(ReleaseNotFoundMessage);
+                    return null;
+                }
+            }
+
+            var confirmed = await _host.ConfirmFirmwareUpdateAsync(
+                FirmwareUpdateConfirmTitle,
+                DescribeFirmwareUpdate(device, release?.Version.ToString(), manualFirmwarePath),
+                preparation.Token);
+
+            // The prompt is awaited too, so the same checks apply after it: the user's "yes" must
+            // still describe what would run, and another run must not have started meanwhile.
+            if (!confirmed || !IsStillCurrent(preparation, device) || _host.IsFirmwareUploading)
+            {
+                return null;
+            }
+
+            return release is null
+                ? new PreparedFirmware(manualFirmwarePath, null)
+                : new PreparedFirmware(null, release);
+        }
+        finally
+        {
+            if (ReferenceEquals(_preparationCts, preparation))
+            {
+                _preparationCts = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="preparation"/> is still the request the user is looking at: not
+    /// cancelled, not replaced, and for the device the drawer still shows.
+    /// </summary>
+    private bool IsStillCurrent(CancellationTokenSource preparation, SerialStreamingDevice device) =>
+        !preparation.IsCancellationRequested
+        && ReferenceEquals(_preparationCts, preparation)
+        && ReferenceEquals(_host.SelectedDevice, device);
+
+    /// <summary>The title of the prompt <see cref="UploadFirmwareAsync"/> shows before a write.</summary>
+    internal const string FirmwareUpdateConfirmTitle = "Update firmware?";
+
+    /// <summary>
+    /// The body of the prompt <see cref="UploadFirmwareAsync"/> shows before a write (issue #564):
+    /// which device, from which version to which, how long it takes, what not to do during it, and
+    /// what it can erase.
+    /// <para>
+    /// The erase is the firmware's and the bootloader's, not this app's: the
+    /// <see href="https://github.com/daqifi/daqifi-nyquist-firmware/releases/tag/v3.9.0">v3.9.0
+    /// release notes</see> say that each in-app update before 3.9.0 erased the WiFi credentials and
+    /// the calibration, and that the correction reaches newly manufactured units only. The app cannot
+    /// yet tell which bootloader a unit carries, so the warning is given for every unit.
+    /// </para>
+    /// </summary>
+    /// <param name="device">The device the update would write.</param>
+    /// <param name="releaseVersion">
+    /// The version of the release the run will download, resolved before the prompt. Ignored for a
+    /// manual upload.
+    /// </param>
+    /// <param name="manualFirmwarePath">The user-selected <c>.hex</c> file, or empty for an auto-update.</param>
+    internal static string DescribeFirmwareUpdate(
+        IStreamingDevice device,
+        string? releaseVersion,
+        string manualFirmwarePath)
+    {
+        var installed = string.IsNullOrWhiteSpace(device.DeviceVersion) ? "unknown" : device.DeviceVersion;
+        var target = !string.IsNullOrWhiteSpace(manualFirmwarePath)
+            ? $"the file {Path.GetFileName(manualFirmwarePath)}"
+            : releaseVersion;
+
+        return $"Device: {device.DeviceDisplayName}\n" +
+               $"Installed version: {installed}\n" +
+               $"New version: {target}\n\n" +
+               "The update takes approximately 1 minute. Do not disconnect the USB cable during the update.\n\n" +
+               "The update can erase the WiFi settings and the calibration of the device. " +
+               "After the update, set the WiFi settings again.";
+    }
+
+    /// <summary>
+    /// What the user is told after a successful write (issue #564), in the success dialog and in the
+    /// device's notification. One text for both, so the two can never disagree.
+    /// </summary>
+    internal const string WifiSettingsMayBeErasedInstruction =
+        "The firmware update can erase the WiFi settings and the calibration of the device. " +
+        "Set the WiFi settings of the device again.";
+
+    /// <summary>
+    /// What the user is told when no release can be resolved for the prompt. The run stops there: a
+    /// prompt that cannot name the version it would write must not start a write.
+    /// </summary>
+    internal const string ReleaseNotFoundMessage =
+        "The app could not find the firmware release to install. " +
+        "Make sure that the computer is connected to the internet, then try again.";
+
+    /// <summary>
+    /// Resolves the release an auto-update will write, before the prompt names it (issue #564).
+    /// Returns null, and logs why, when the lookup fails or finds nothing, and returns null silently
+    /// when <paramref name="cancellationToken"/> is cancelled. Asynchronous, so the UI stays live while
+    /// it runs, and it runs before the uploading flag goes up, so a failure leaves nothing to lower.
+    /// </summary>
+    private async Task<FirmwareReleaseInfo?> ResolveReleaseToInstallAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            // WaitAsync as well as the token: if the service does not honour the token, the wait
+            // still ends at once, so a cancelled preparation never keeps the UPDATE command busy.
+            var release = await _firmwareDownloadService
+                .GetLatestReleaseAsync(includePreRelease: true, cancellationToken)
+                .WaitAsync(cancellationToken);
+            if (release == null || string.IsNullOrWhiteSpace(release.TagName))
+            {
+                _appLogger.Warning("Firmware update not started: no firmware release was found.");
+                return null;
+            }
+
+            return release;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            _appLogger.Warning($"Firmware update not started: the firmware release lookup failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Tells the user, after a successful write, that the device may have lost its WiFi settings
+    /// (issue #564). The success dialog says it too, but that dialog closes and the status line is
+    /// hidden once the run ends, so a notification is the one place this outlives the run. A device that was set to join a site
+    /// network comes back as its own access point and WiFi discovery no longer finds it.
+    /// <para>
+    /// Owned by the device's serial, like <see cref="NotifyWifiModuleWasNotUpdated"/>, and
+    /// deduplicated per device on the same terms, so a second update does not stack a second copy.
+    /// </para>
+    /// </summary>
+    private void NotifyWifiSettingsMayBeErased(SerialStreamingDevice serialStreamingDevice)
+    {
+        var message = $"{serialStreamingDevice.DeviceDisplayName}: {WifiSettingsMayBeErasedInstruction}";
+        var serial = serialStreamingDevice.DeviceSerialNo;
+
+        if (_host.Notifications.Any(notification =>
+                notification.Message == message && DeviceSerials.SameDevice(notification.DeviceSerialNo, serial)))
+        {
+            return;
+        }
+
+        _host.Notifications.Add(new Notifications
+        {
+            Message = message,
+            DeviceSerialNo = serial
+        });
+        _host.RefreshNotificationCount();
     }
 
     /// <summary>
@@ -466,7 +723,7 @@ public class FirmwareUpdateCoordinator
     }
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.UpdateWifiModuleAsync
-    private async Task UpdateWifiModuleAsync(
+    internal async Task UpdateWifiModuleAsync(
         SerialStreamingDevice serialStreamingDevice,
         CancellationToken cancellationToken,
         bool force = false)
@@ -481,21 +738,12 @@ public class FirmwareUpdateCoordinator
             return;
         }
 
-        // Pre-flight the one thing that cannot be recovered from mid-flash: whether this machine can
-        // run Microchip's WINC programmer at all (issue #330). Discovering it later is what turned a
-        // working update into a reported failure — by the time the external tool refuses to launch,
-        // the PIC32 image has been written and CRC-verified, the device has been put into LAN update
-        // mode and its managed connection dropped, and the launch exception reaches
-        // UploadFirmwareAsync's generic handler as "Firmware update failed. Please try again."
-        // Skipping here leaves the PIC32 half reported as what it is: a success.
-        if (!_canFlashWifiModule)
-        {
-            _host.FirmwareUpdateStatusText = WifiFlashUnavailableMessage;
-            _appLogger.Information(
-                $"Skipping the WiFi-module update for {serialStreamingDevice.Name}: {WifiFlashUnavailableMessage}");
-            NotifyWifiModuleWasNotUpdated(serialStreamingDevice);
-            return;
-        }
+        // What the version check found, carried to the platform gate below so that a notice about a
+        // module this computer cannot flash says what the module has: whether the module was asked
+        // at all (a forced flash skips the check), and the version it reported — null when it did
+        // not answer.
+        var moduleWasAsked = false;
+        string? reportedModuleVersion = null;
 
         // Core's WiFi updater also performs its own version probe when the passed device
         // implements ILanChipInfoProvider. Keep the explicit desktop-side check here so
@@ -503,8 +751,17 @@ public class FirmwareUpdateCoordinator
         // When force is true the caller is an explicit user-initiated WiFi flash, so skip the
         // up-to-date short-circuit and always flash; the auto path after a PIC32 update leaves
         // force false so an already-current module is still skipped.
+        //
+        // The check runs BEFORE the platform gate (issue #567). It used to run after it, so on
+        // macOS and Linux the version was never read and every automatic update told the user
+        // "the WiFi module firmware was not updated" — also for a module already at
+        // MinimumWifiFirmwareVersion, which needed no update. The check is safe ahead of the gate:
+        // it sends SYSTem:POWer:STATe 1 and GETChipInfo? only — the same two commands the
+        // connect-time probe sends on every platform — and it never puts the device into WiFi update
+        // mode, which is the step issue #330 keeps off a computer that cannot flash.
         if (!force && serialStreamingDevice is ILanChipInfoProvider lanChipProvider)
         {
+            moduleWasAsked = true;
             _host.FirmwareUpdateStatusText = "Checking WiFi firmware version...";
             _appLogger.Information("Checking WiFi firmware version before deciding whether to flash the WiFi module.");
 
@@ -524,9 +781,19 @@ public class FirmwareUpdateCoordinator
 
             if (chipInfo == null)
             {
-                _appLogger.Warning(
-                    $"WiFi chip info unavailable after startup retries{DescribeUnreadableModule(probe)}; continuing with WiFi update.");
-                _host.FirmwareUpdateStatusText = "WiFi firmware version unavailable; continuing with update.";
+                // Only promise to continue where something will continue; off Windows the gate
+                // below ends the step and writes its own status and log line.
+                if (_canFlashWifiModule)
+                {
+                    _appLogger.Warning(
+                        $"WiFi chip info unavailable after startup retries{DescribeUnreadableModule(probe)}; continuing with WiFi update.");
+                    _host.FirmwareUpdateStatusText = "WiFi firmware version unavailable; continuing with update.";
+                }
+                else
+                {
+                    _appLogger.Warning(
+                        $"WiFi chip info unavailable after startup retries{DescribeUnreadableModule(probe)}.");
+                }
             }
             else
             {
@@ -538,17 +805,55 @@ public class FirmwareUpdateCoordinator
                 // never disagree about whether a module is out of date.
                 if (!WifiFirmwareNeedsFlash(chipInfo, out var reportedWifiVersion))
                 {
+                    // Up to date: nothing to flash and nothing to tell, on every platform — and a
+                    // notice an earlier run left for this device is no longer true.
                     _host.FirmwareUpdateStatusText = $"WiFi firmware already up to date ({reportedWifiVersion}).";
                     _appLogger.Information(
                         $"WiFi firmware is already up to date (device: {reportedWifiVersion}, target: {MinimumWifiFirmwareVersion}); skipping WiFi flash.");
                     _host.UploadWiFiProgress = 100;
+                    WithdrawWifiModuleNotUpdatedNotice(serialStreamingDevice);
                     return;
                 }
 
-                _host.FirmwareUpdateStatusText = $"WiFi update available ({reportedWifiVersion} → {MinimumWifiFirmwareVersion}). Downloading...";
-                _appLogger.Information(
-                    $"WiFi firmware update required (device: {reportedWifiVersion}, target: {MinimumWifiFirmwareVersion}); proceeding with WiFi flash.");
+                // Only a version the app can parse is quoted in the notice. Core accepts any nonempty
+                // string in the chip reply, and WifiFirmwareNeedsFlash maps a blank or unparseable one
+                // to "flash" — which stays the decision on Windows — but a string that is not a
+                // version must not be presented to the user as the module's firmware. The notice
+                // words it as "could not read", the same as a module that did not answer.
+                if (FirmwareVersion.TryParse(chipInfo.FwVersion, out _))
+                {
+                    reportedModuleVersion = reportedWifiVersion;
+                }
+                else
+                {
+                    _appLogger.Warning(
+                        $"WiFi module reported a version the app cannot parse ('{chipInfo.FwVersion}'); treating it as unreadable.");
+                }
+
+                if (_canFlashWifiModule)
+                {
+                    _host.FirmwareUpdateStatusText = $"WiFi update available ({reportedWifiVersion} → {MinimumWifiFirmwareVersion}). Downloading...";
+                    _appLogger.Information(
+                        $"WiFi firmware update required (device: {reportedWifiVersion}, target: {MinimumWifiFirmwareVersion}); proceeding with WiFi flash.");
+                }
             }
+        }
+
+        // Pre-flight the one thing that cannot be recovered from mid-flash: whether this machine can
+        // run Microchip's WINC programmer at all (issue #330). Discovering it later is what turned a
+        // working update into a reported failure — by the time the external tool refuses to launch,
+        // the PIC32 image has been written and CRC-verified, the device has been put into LAN update
+        // mode and its managed connection dropped, and the launch exception reaches
+        // UploadFirmwareAsync's generic handler as "Firmware update failed. Please try again."
+        // Skipping here leaves the PIC32 half reported as what it is: a success. Reached only for a
+        // module that is outdated, unreadable, or was not asked (force); a current one returned above.
+        if (!_canFlashWifiModule)
+        {
+            _host.FirmwareUpdateStatusText = WifiFlashUnavailableMessage;
+            _appLogger.Information(
+                $"Skipping the WiFi-module update for {serialStreamingDevice.Name}: {WifiFlashUnavailableMessage}");
+            NotifyWifiModuleWasNotUpdated(serialStreamingDevice, moduleWasAsked, reportedModuleVersion);
+            return;
         }
 
         _host.FirmwareUpdateStatusText = "Downloading WiFi firmware package...";
@@ -1168,20 +1473,49 @@ public class FirmwareUpdateCoordinator
     /// scopes its own match, and not on the rendered message alone. <c>Name</c> is the model name
     /// Core's discovery reports, so two Nyquists on the same host carry the same one; deduplicating
     /// on the message would have given the pair a single notice and left the second owner with a
-    /// bare "Firmware update completed successfully" (Qodo round 2 on PR #337). The message is kept
-    /// in the match as well, so this never swallows the other notifications a device can have.
+    /// bare "Firmware update completed successfully" (Qodo round 2 on PR #337). The message's fixed
+    /// phrase is kept in the match as well, so this never swallows the other notifications a device
+    /// can have.
+    /// </para>
+    /// <para>
+    /// The message names the module's version and the necessary version where they are known
+    /// (issue #567), so the full text now differs between runs — "could not read" on one, "has
+    /// firmware 19.5.4" on the next. The match is therefore on the fixed
+    /// <see cref="WifiModuleNotUpdatedPhrase"/> and the serial, still never on the message alone,
+    /// and a notice with older text is replaced rather than joined: one notice per device, and it
+    /// says what the latest run found.
     /// </para>
     /// </summary>
-    private void NotifyWifiModuleWasNotUpdated(SerialStreamingDevice serialStreamingDevice)
+    /// <param name="serialStreamingDevice">The device whose WiFi module was not flashed.</param>
+    /// <param name="moduleWasAsked">
+    /// Whether the version check ran. False on a forced flash, which skips it; the notice then
+    /// says nothing about versions rather than claiming the module could not be read.
+    /// </param>
+    /// <param name="reportedModuleVersion">The version the module reported, or null if none was read.</param>
+    private void NotifyWifiModuleWasNotUpdated(
+        SerialStreamingDevice serialStreamingDevice,
+        bool moduleWasAsked,
+        string? reportedModuleVersion)
     {
+        var versionText = !moduleWasAsked
+            ? string.Empty
+            : reportedModuleVersion is null
+                ? $"The app could not read the firmware version of the module. Version {MinimumWifiFirmwareVersion} is necessary. "
+                : $"The module has firmware {reportedModuleVersion}. Version {MinimumWifiFirmwareVersion} is necessary. ";
         var message =
-            $"{serialStreamingDevice.Name}: the WiFi module firmware was not updated. {WifiFlashUnavailableMessage}";
+            $"{serialStreamingDevice.Name}: {WifiModuleNotUpdatedPhrase}. {versionText}{WifiFlashUnavailableMessage}";
         var serial = serialStreamingDevice.DeviceSerialNo;
 
-        if (_host.Notifications.Any(notification =>
-                notification.Message == message && DeviceSerials.SameDevice(notification.DeviceSerialNo, serial)))
+        var existing = FindWifiModuleNotUpdatedNotice(serial);
+
+        if (existing?.Message == message)
         {
             return;
+        }
+
+        if (existing != null)
+        {
+            _host.Notifications.Remove(existing);
         }
 
         _host.Notifications.Add(new Notifications
@@ -1189,6 +1523,39 @@ public class FirmwareUpdateCoordinator
             Message = message,
             DeviceSerialNo = serial
         });
+        _host.RefreshNotificationCount();
+    }
+
+    /// <summary>
+    /// The fixed part of <see cref="NotifyWifiModuleWasNotUpdated"/>'s message, and the key its
+    /// per-device deduplication matches on.
+    /// </summary>
+    private const string WifiModuleNotUpdatedPhrase = "the WiFi module firmware was not updated";
+
+    /// <summary>
+    /// The "WiFi module was not updated" notice standing for a device, if any. Matched on the fixed
+    /// phrase and the serial, so it finds the notice whatever version text an earlier run wrote,
+    /// and never matches the other notifications a device can have.
+    /// </summary>
+    private Notifications? FindWifiModuleNotUpdatedNotice(string? serial) =>
+        _host.Notifications.FirstOrDefault(notification =>
+            (notification.Message ?? string.Empty).Contains(WifiModuleNotUpdatedPhrase, StringComparison.Ordinal)
+            && DeviceSerials.SameDevice(notification.DeviceSerialNo, serial));
+
+    /// <summary>
+    /// Withdraws a standing "WiFi module was not updated" notice once a later run reads the module
+    /// as up to date. Without this, a module that did not answer on one run (notice: "could not
+    /// read") and answered 19.7.7 on the next would keep a notice that is no longer true.
+    /// </summary>
+    private void WithdrawWifiModuleNotUpdatedNotice(SerialStreamingDevice serialStreamingDevice)
+    {
+        var existing = FindWifiModuleNotUpdatedNotice(serialStreamingDevice.DeviceSerialNo);
+        if (existing == null)
+        {
+            return;
+        }
+
+        _host.Notifications.Remove(existing);
         _host.RefreshNotificationCount();
     }
 
