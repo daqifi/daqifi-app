@@ -780,7 +780,6 @@
           "Sentry": "[6.12.1, )",
           "System.Configuration.ConfigurationManager": "[10.0.14, )",
           "System.IO.Ports": "[10.0.14, )",
-          "System.Management": "[10.0.14, )",
           "Xaml.Behaviors.Avalonia": "[12.1.5, )"
         }
       },
