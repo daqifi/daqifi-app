@@ -713,7 +713,7 @@ public class FirmwareUpdateCoordinator
     }
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.UpdateWifiModuleAsync
-    private async Task UpdateWifiModuleAsync(
+    internal async Task UpdateWifiModuleAsync(
         SerialStreamingDevice serialStreamingDevice,
         CancellationToken cancellationToken,
         bool force = false)
@@ -728,21 +728,12 @@ public class FirmwareUpdateCoordinator
             return;
         }
 
-        // Pre-flight the one thing that cannot be recovered from mid-flash: whether this machine can
-        // run Microchip's WINC programmer at all (issue #330). Discovering it later is what turned a
-        // working update into a reported failure — by the time the external tool refuses to launch,
-        // the PIC32 image has been written and CRC-verified, the device has been put into LAN update
-        // mode and its managed connection dropped, and the launch exception reaches
-        // UploadFirmwareAsync's generic handler as "Firmware update failed. Please try again."
-        // Skipping here leaves the PIC32 half reported as what it is: a success.
-        if (!_canFlashWifiModule)
-        {
-            _host.FirmwareUpdateStatusText = WifiFlashUnavailableMessage;
-            _appLogger.Information(
-                $"Skipping the WiFi-module update for {serialStreamingDevice.Name}: {WifiFlashUnavailableMessage}");
-            NotifyWifiModuleWasNotUpdated(serialStreamingDevice);
-            return;
-        }
+        // What the version check found, carried to the platform gate below so that a notice about a
+        // module this computer cannot flash says what the module has: whether the module was asked
+        // at all (a forced flash skips the check), and the version it reported — null when it did
+        // not answer.
+        var moduleWasAsked = false;
+        string? reportedModuleVersion = null;
 
         // Core's WiFi updater also performs its own version probe when the passed device
         // implements ILanChipInfoProvider. Keep the explicit desktop-side check here so
@@ -750,8 +741,17 @@ public class FirmwareUpdateCoordinator
         // When force is true the caller is an explicit user-initiated WiFi flash, so skip the
         // up-to-date short-circuit and always flash; the auto path after a PIC32 update leaves
         // force false so an already-current module is still skipped.
+        //
+        // The check runs BEFORE the platform gate (issue #567). It used to run after it, so on
+        // macOS and Linux the version was never read and every automatic update told the user
+        // "the WiFi module firmware was not updated" — also for a module already at
+        // MinimumWifiFirmwareVersion, which needed no update. The check is safe ahead of the gate:
+        // it sends SYSTem:POWer:STATe 1 and GETChipInfo? only — the same two commands the
+        // connect-time probe sends on every platform — and it never puts the device into WiFi update
+        // mode, which is the step issue #330 keeps off a computer that cannot flash.
         if (!force && serialStreamingDevice is ILanChipInfoProvider lanChipProvider)
         {
+            moduleWasAsked = true;
             _host.FirmwareUpdateStatusText = "Checking WiFi firmware version...";
             _appLogger.Information("Checking WiFi firmware version before deciding whether to flash the WiFi module.");
 
@@ -771,9 +771,19 @@ public class FirmwareUpdateCoordinator
 
             if (chipInfo == null)
             {
-                _appLogger.Warning(
-                    $"WiFi chip info unavailable after startup retries{DescribeUnreadableModule(probe)}; continuing with WiFi update.");
-                _host.FirmwareUpdateStatusText = "WiFi firmware version unavailable; continuing with update.";
+                // Only promise to continue where something will continue; off Windows the gate
+                // below ends the step and writes its own status and log line.
+                if (_canFlashWifiModule)
+                {
+                    _appLogger.Warning(
+                        $"WiFi chip info unavailable after startup retries{DescribeUnreadableModule(probe)}; continuing with WiFi update.");
+                    _host.FirmwareUpdateStatusText = "WiFi firmware version unavailable; continuing with update.";
+                }
+                else
+                {
+                    _appLogger.Warning(
+                        $"WiFi chip info unavailable after startup retries{DescribeUnreadableModule(probe)}.");
+                }
             }
             else
             {
@@ -785,17 +795,55 @@ public class FirmwareUpdateCoordinator
                 // never disagree about whether a module is out of date.
                 if (!WifiFirmwareNeedsFlash(chipInfo, out var reportedWifiVersion))
                 {
+                    // Up to date: nothing to flash and nothing to tell, on every platform — and a
+                    // notice an earlier run left for this device is no longer true.
                     _host.FirmwareUpdateStatusText = $"WiFi firmware already up to date ({reportedWifiVersion}).";
                     _appLogger.Information(
                         $"WiFi firmware is already up to date (device: {reportedWifiVersion}, target: {MinimumWifiFirmwareVersion}); skipping WiFi flash.");
                     _host.UploadWiFiProgress = 100;
+                    WithdrawWifiModuleNotUpdatedNotice(serialStreamingDevice);
                     return;
                 }
 
-                _host.FirmwareUpdateStatusText = $"WiFi update available ({reportedWifiVersion} → {MinimumWifiFirmwareVersion}). Downloading...";
-                _appLogger.Information(
-                    $"WiFi firmware update required (device: {reportedWifiVersion}, target: {MinimumWifiFirmwareVersion}); proceeding with WiFi flash.");
+                // Only a version the app can parse is quoted in the notice. Core accepts any nonempty
+                // string in the chip reply, and WifiFirmwareNeedsFlash maps a blank or unparseable one
+                // to "flash" — which stays the decision on Windows — but a string that is not a
+                // version must not be presented to the user as the module's firmware. The notice
+                // words it as "could not read", the same as a module that did not answer.
+                if (FirmwareVersion.TryParse(chipInfo.FwVersion, out _))
+                {
+                    reportedModuleVersion = reportedWifiVersion;
+                }
+                else
+                {
+                    _appLogger.Warning(
+                        $"WiFi module reported a version the app cannot parse ('{chipInfo.FwVersion}'); treating it as unreadable.");
+                }
+
+                if (_canFlashWifiModule)
+                {
+                    _host.FirmwareUpdateStatusText = $"WiFi update available ({reportedWifiVersion} → {MinimumWifiFirmwareVersion}). Downloading...";
+                    _appLogger.Information(
+                        $"WiFi firmware update required (device: {reportedWifiVersion}, target: {MinimumWifiFirmwareVersion}); proceeding with WiFi flash.");
+                }
             }
+        }
+
+        // Pre-flight the one thing that cannot be recovered from mid-flash: whether this machine can
+        // run Microchip's WINC programmer at all (issue #330). Discovering it later is what turned a
+        // working update into a reported failure — by the time the external tool refuses to launch,
+        // the PIC32 image has been written and CRC-verified, the device has been put into LAN update
+        // mode and its managed connection dropped, and the launch exception reaches
+        // UploadFirmwareAsync's generic handler as "Firmware update failed. Please try again."
+        // Skipping here leaves the PIC32 half reported as what it is: a success. Reached only for a
+        // module that is outdated, unreadable, or was not asked (force); a current one returned above.
+        if (!_canFlashWifiModule)
+        {
+            _host.FirmwareUpdateStatusText = WifiFlashUnavailableMessage;
+            _appLogger.Information(
+                $"Skipping the WiFi-module update for {serialStreamingDevice.Name}: {WifiFlashUnavailableMessage}");
+            NotifyWifiModuleWasNotUpdated(serialStreamingDevice, moduleWasAsked, reportedModuleVersion);
+            return;
         }
 
         _host.FirmwareUpdateStatusText = "Downloading WiFi firmware package...";
@@ -1327,20 +1375,49 @@ public class FirmwareUpdateCoordinator
     /// scopes its own match, and not on the rendered message alone. <c>Name</c> is the model name
     /// Core's discovery reports, so two Nyquists on the same host carry the same one; deduplicating
     /// on the message would have given the pair a single notice and left the second owner with a
-    /// bare "Firmware update completed successfully" (Qodo round 2 on PR #337). The message is kept
-    /// in the match as well, so this never swallows the other notifications a device can have.
+    /// bare "Firmware update completed successfully" (Qodo round 2 on PR #337). The message's fixed
+    /// phrase is kept in the match as well, so this never swallows the other notifications a device
+    /// can have.
+    /// </para>
+    /// <para>
+    /// The message names the module's version and the necessary version where they are known
+    /// (issue #567), so the full text now differs between runs — "could not read" on one, "has
+    /// firmware 19.5.4" on the next. The match is therefore on the fixed
+    /// <see cref="WifiModuleNotUpdatedPhrase"/> and the serial, still never on the message alone,
+    /// and a notice with older text is replaced rather than joined: one notice per device, and it
+    /// says what the latest run found.
     /// </para>
     /// </summary>
-    private void NotifyWifiModuleWasNotUpdated(SerialStreamingDevice serialStreamingDevice)
+    /// <param name="serialStreamingDevice">The device whose WiFi module was not flashed.</param>
+    /// <param name="moduleWasAsked">
+    /// Whether the version check ran. False on a forced flash, which skips it; the notice then
+    /// says nothing about versions rather than claiming the module could not be read.
+    /// </param>
+    /// <param name="reportedModuleVersion">The version the module reported, or null if none was read.</param>
+    private void NotifyWifiModuleWasNotUpdated(
+        SerialStreamingDevice serialStreamingDevice,
+        bool moduleWasAsked,
+        string? reportedModuleVersion)
     {
+        var versionText = !moduleWasAsked
+            ? string.Empty
+            : reportedModuleVersion is null
+                ? $"The app could not read the firmware version of the module. Version {MinimumWifiFirmwareVersion} is necessary. "
+                : $"The module has firmware {reportedModuleVersion}. Version {MinimumWifiFirmwareVersion} is necessary. ";
         var message =
-            $"{serialStreamingDevice.Name}: the WiFi module firmware was not updated. {WifiFlashUnavailableMessage}";
+            $"{serialStreamingDevice.Name}: {WifiModuleNotUpdatedPhrase}. {versionText}{WifiFlashUnavailableMessage}";
         var serial = serialStreamingDevice.DeviceSerialNo;
 
-        if (_host.Notifications.Any(notification =>
-                notification.Message == message && DeviceSerials.SameDevice(notification.DeviceSerialNo, serial)))
+        var existing = FindWifiModuleNotUpdatedNotice(serial);
+
+        if (existing?.Message == message)
         {
             return;
+        }
+
+        if (existing != null)
+        {
+            _host.Notifications.Remove(existing);
         }
 
         _host.Notifications.Add(new Notifications
@@ -1348,6 +1425,39 @@ public class FirmwareUpdateCoordinator
             Message = message,
             DeviceSerialNo = serial
         });
+        _host.RefreshNotificationCount();
+    }
+
+    /// <summary>
+    /// The fixed part of <see cref="NotifyWifiModuleWasNotUpdated"/>'s message, and the key its
+    /// per-device deduplication matches on.
+    /// </summary>
+    private const string WifiModuleNotUpdatedPhrase = "the WiFi module firmware was not updated";
+
+    /// <summary>
+    /// The "WiFi module was not updated" notice standing for a device, if any. Matched on the fixed
+    /// phrase and the serial, so it finds the notice whatever version text an earlier run wrote,
+    /// and never matches the other notifications a device can have.
+    /// </summary>
+    private Notifications? FindWifiModuleNotUpdatedNotice(string? serial) =>
+        _host.Notifications.FirstOrDefault(notification =>
+            (notification.Message ?? string.Empty).Contains(WifiModuleNotUpdatedPhrase, StringComparison.Ordinal)
+            && DeviceSerials.SameDevice(notification.DeviceSerialNo, serial));
+
+    /// <summary>
+    /// Withdraws a standing "WiFi module was not updated" notice once a later run reads the module
+    /// as up to date. Without this, a module that did not answer on one run (notice: "could not
+    /// read") and answered 19.7.7 on the next would keep a notice that is no longer true.
+    /// </summary>
+    private void WithdrawWifiModuleNotUpdatedNotice(SerialStreamingDevice serialStreamingDevice)
+    {
+        var existing = FindWifiModuleNotUpdatedNotice(serialStreamingDevice.DeviceSerialNo);
+        if (existing == null)
+        {
+            return;
+        }
+
+        _host.Notifications.Remove(existing);
         _host.RefreshNotificationCount();
     }
 
