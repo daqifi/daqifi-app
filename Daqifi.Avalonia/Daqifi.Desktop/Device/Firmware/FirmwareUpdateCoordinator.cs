@@ -237,6 +237,17 @@ public class FirmwareUpdateCoordinator
             return;
         }
 
+        // Issue #564: one click on UPDATE used to start the write. Ask first, and touch nothing —
+        // not the flag, not the status line, not the WiFi probe — until the user says yes. The
+        // preparation pins the exact firmware the prompt names; see PrepareUploadAsync.
+        var prepared = await PrepareUploadAsync(serialStreamingDevice);
+        if (prepared is not { } firmware)
+        {
+            return;
+        }
+
+        var isManualUpload = firmware.Release is null;
+
         _host.SelectedDeviceSupportsFirmwareUpdate = true;
         _host.HasErrorOccured = false;
         _host.IsUploadComplete = false;
@@ -256,8 +267,6 @@ public class FirmwareUpdateCoordinator
         {
             _host.FirmwareUpdateStatusText = "Preparing firmware update...";
             _host.DeviceBeingUpdated = _host.SelectedDevice;
-
-            var isManualUpload = !string.IsNullOrWhiteSpace(_host.FirmwareFilePath);
 
             // Read before the flash for the success dialog (issue #570): the device still reports
             // the version it had.
@@ -292,18 +301,21 @@ public class FirmwareUpdateCoordinator
             // would make the NEXT in-session update look like a manual upload (isManualUpload
             // is derived from FirmwareFilePath being non-empty), silently skipping the
             // WiFi-module step until the app is restarted. See issue #599.
-            string effectiveFirmwarePath;
+            //
+            // Both branches write what the prompt named (issue #564): the release resolved before
+            // the prompt, downloaded by its tag, or the path read before the prompt.
+            string? effectiveFirmwarePath;
             if (!isManualUpload)
             {
                 _host.FirmwareUpdateStatusText = "Downloading latest firmware package...";
-                effectiveFirmwarePath = await _firmwareDownloadService.DownloadLatestFirmwareAsync(
+                effectiveFirmwarePath = await _firmwareDownloadService.DownloadFirmwareByTagAsync(
+                    firmware.Release!.TagName,
                     GetFirmwareDownloadDirectory(),
-                    includePreRelease: true,
                     cancellationToken: cancellationToken);
             }
             else
             {
-                effectiveFirmwarePath = _host.FirmwareFilePath;
+                effectiveFirmwarePath = firmware.ManualFirmwarePath;
             }
 
             if (string.IsNullOrWhiteSpace(effectiveFirmwarePath) || !File.Exists(effectiveFirmwarePath))
@@ -368,11 +380,16 @@ public class FirmwareUpdateCoordinator
             _host.UploadFirmwareProgress = 0;
             _host.UploadWiFiProgress = 0;
 
+            NotifyWifiSettingsMayBeErased(serialStreamingDevice);
             _appLogger.AddBreadcrumb("firmware", "Firmware update completed");
-            _host.ShowFirmwareUpdateSucceeded(FirmwareUpdateMessages.UpdateSucceeded(
-                FirmwareUpdateMessages.DeviceNameFor(serialStreamingDevice),
-                previousVersion,
-                reportedVersion));
+
+            // The device and both versions (issue #570), then what the user must do next (issue #564).
+            _host.ShowFirmwareUpdateSucceeded(
+                FirmwareUpdateMessages.UpdateSucceeded(
+                    FirmwareUpdateMessages.DeviceNameFor(serialStreamingDevice),
+                    previousVersion,
+                    reportedVersion)
+                + "\n\n" + WifiSettingsMayBeErasedInstruction);
         }
         catch (OperationCanceledException)
         {
@@ -405,6 +422,249 @@ public class FirmwareUpdateCoordinator
             // explicitly re-selects a file. (The auto path never writes this property.)
             _host.FirmwareFilePath = string.Empty;
         }
+    }
+
+    /// <summary>
+    /// The firmware a confirmed preparation pinned: the manual file the prompt named, or the release
+    /// it named. Exactly one is set.
+    /// </summary>
+    private readonly record struct PreparedFirmware(string? ManualFirmwarePath, FirmwareReleaseInfo? Release);
+
+    /// <summary>
+    /// The pending preparation — the release lookup and the prompt in front of a write — or null when
+    /// none is pending (issue #564). Written on the UI thread only, like <see cref="_firmwareUploadCts"/>,
+    /// and for the same reason never disposed: a <see cref="CancelPreparation"/> that has already read
+    /// it can then only signal a live or finished source.
+    /// </summary>
+    private CancellationTokenSource? _preparationCts;
+
+    /// <summary>
+    /// Stops the pending preparation, if any: the release lookup stops waiting, and the host closes
+    /// the prompt, because the host ties the prompt to the same token. Called by the host whenever the
+    /// surface the user clicked UPDATE on goes away — another tab, a closed drawer, another device —
+    /// so a lookup that finishes later can never open a prompt nobody asked to see. A no-op when
+    /// nothing is pending, and it never touches a run that has already started.
+    /// </summary>
+    public void CancelPreparation()
+    {
+        var preparation = _preparationCts;
+        _preparationCts = null;
+        preparation?.Cancel();
+    }
+
+    /// <summary>
+    /// Pins the firmware for a write and asks the user to confirm it. Returns null, and leaves the
+    /// device untouched and the uploading flag down, unless the user confirmed and the request is
+    /// still current.
+    /// <para>
+    /// Pin BEFORE the prompt, write only that after it: the manual path is read once, and an
+    /// auto-update resolves its release here and downloads that release by tag later. Reading the
+    /// bound path again, or downloading "whatever is latest now", after the user answers would let a
+    /// newly published release or an edited path put firmware on the device that the prompt never
+    /// named.
+    /// </para>
+    /// <para>
+    /// <b>One preparation at a time.</b> A second call while one is pending is ignored: it returns
+    /// null at once and the pending one goes on. The UPDATE command is busy for the whole preparation
+    /// anyway, so a second click cannot normally reach here; the rule makes the coordinator safe on its
+    /// own rather than only behind a disabled button.
+    /// </para>
+    /// <para>
+    /// <b>A stale request ends silently.</b> The lookup awaits the network, and the user can leave
+    /// while it runs. <see cref="CancelPreparation"/> stops the wait, and after it — whether or not the
+    /// download service honoured the token — the request must still be the current one, not
+    /// cancelled, and for the same selected device. Otherwise there is no prompt, no error dialog and
+    /// no write: the user went somewhere else, which is not an error.
+    /// </para>
+    /// </summary>
+    private async Task<PreparedFirmware?> PrepareUploadAsync(SerialStreamingDevice device)
+    {
+        if (_preparationCts != null)
+        {
+            return null;
+        }
+
+        var preparation = new CancellationTokenSource();
+        _preparationCts = preparation;
+        try
+        {
+            var manualFirmwarePath = _host.FirmwareFilePath;
+            FirmwareReleaseInfo? release = null;
+            if (!string.IsNullOrWhiteSpace(manualFirmwarePath))
+            {
+                if (!File.Exists(manualFirmwarePath))
+                {
+                    _host.ShowFirmwareError(
+                        $"The firmware file {Path.GetFileName(manualFirmwarePath)} does not exist. Select the file again.");
+                    return null;
+                }
+            }
+            else
+            {
+                release = await ResolveReleaseToInstallAsync(preparation.Token);
+                if (!IsStillCurrent(preparation, device))
+                {
+                    return null;
+                }
+
+                if (release == null)
+                {
+                    // A prompt that cannot name the version must not start a write.
+                    _host.ShowFirmwareError(ReleaseNotFoundMessage);
+                    return null;
+                }
+            }
+
+            var confirmed = await _host.ConfirmFirmwareUpdateAsync(
+                FirmwareUpdateConfirmTitle,
+                DescribeFirmwareUpdate(device, release?.Version.ToString(), manualFirmwarePath),
+                preparation.Token);
+
+            // The prompt is awaited too, so the same checks apply after it: the user's "yes" must
+            // still describe what would run, and another run must not have started meanwhile.
+            if (!confirmed || !IsStillCurrent(preparation, device) || _host.IsFirmwareUploading)
+            {
+                return null;
+            }
+
+            return release is null
+                ? new PreparedFirmware(manualFirmwarePath, null)
+                : new PreparedFirmware(null, release);
+        }
+        finally
+        {
+            if (ReferenceEquals(_preparationCts, preparation))
+            {
+                _preparationCts = null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="preparation"/> is still the request the user is looking at: not
+    /// cancelled, not replaced, and for the device the drawer still shows.
+    /// </summary>
+    private bool IsStillCurrent(CancellationTokenSource preparation, SerialStreamingDevice device) =>
+        !preparation.IsCancellationRequested
+        && ReferenceEquals(_preparationCts, preparation)
+        && ReferenceEquals(_host.SelectedDevice, device);
+
+    /// <summary>The title of the prompt <see cref="UploadFirmwareAsync"/> shows before a write.</summary>
+    internal const string FirmwareUpdateConfirmTitle = "Update firmware?";
+
+    /// <summary>
+    /// The body of the prompt <see cref="UploadFirmwareAsync"/> shows before a write (issue #564):
+    /// which device, from which version to which, how long it takes, what not to do during it, and
+    /// what it can erase.
+    /// <para>
+    /// The erase is the firmware's and the bootloader's, not this app's: the
+    /// <see href="https://github.com/daqifi/daqifi-nyquist-firmware/releases/tag/v3.9.0">v3.9.0
+    /// release notes</see> say that each in-app update before 3.9.0 erased the WiFi credentials and
+    /// the calibration, and that the correction reaches newly manufactured units only. The app cannot
+    /// yet tell which bootloader a unit carries, so the warning is given for every unit.
+    /// </para>
+    /// </summary>
+    /// <param name="device">The device the update would write.</param>
+    /// <param name="releaseVersion">
+    /// The version of the release the run will download, resolved before the prompt. Ignored for a
+    /// manual upload.
+    /// </param>
+    /// <param name="manualFirmwarePath">The user-selected <c>.hex</c> file, or empty for an auto-update.</param>
+    internal static string DescribeFirmwareUpdate(
+        IStreamingDevice device,
+        string? releaseVersion,
+        string manualFirmwarePath)
+    {
+        var installed = string.IsNullOrWhiteSpace(device.DeviceVersion) ? "unknown" : device.DeviceVersion;
+        var target = !string.IsNullOrWhiteSpace(manualFirmwarePath)
+            ? $"the file {Path.GetFileName(manualFirmwarePath)}"
+            : releaseVersion;
+
+        return $"Device: {device.DeviceDisplayName}\n" +
+               $"Installed version: {installed}\n" +
+               $"New version: {target}\n\n" +
+               "The update takes approximately 1 minute. Do not disconnect the USB cable during the update.\n\n" +
+               "The update can erase the WiFi settings and the calibration of the device. " +
+               "After the update, set the WiFi settings again.";
+    }
+
+    /// <summary>
+    /// What the user is told after a successful write (issue #564), in the success dialog and in the
+    /// device's notification. One text for both, so the two can never disagree.
+    /// </summary>
+    internal const string WifiSettingsMayBeErasedInstruction =
+        "The firmware update can erase the WiFi settings and the calibration of the device. " +
+        "Set the WiFi settings of the device again.";
+
+    /// <summary>
+    /// What the user is told when no release can be resolved for the prompt. The run stops there: a
+    /// prompt that cannot name the version it would write must not start a write.
+    /// </summary>
+    internal const string ReleaseNotFoundMessage =
+        "The app could not find the firmware release to install. " +
+        "Make sure that the computer is connected to the internet, then try again.";
+
+    /// <summary>
+    /// Resolves the release an auto-update will write, before the prompt names it (issue #564).
+    /// Returns null, and logs why, when the lookup fails or finds nothing, and returns null silently
+    /// when <paramref name="cancellationToken"/> is cancelled. Asynchronous, so the UI stays live while
+    /// it runs, and it runs before the uploading flag goes up, so a failure leaves nothing to lower.
+    /// </summary>
+    private async Task<FirmwareReleaseInfo?> ResolveReleaseToInstallAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            // WaitAsync as well as the token: if the service does not honour the token, the wait
+            // still ends at once, so a cancelled preparation never keeps the UPDATE command busy.
+            var release = await _firmwareDownloadService
+                .GetLatestReleaseAsync(includePreRelease: true, cancellationToken)
+                .WaitAsync(cancellationToken);
+            if (release == null || string.IsNullOrWhiteSpace(release.TagName))
+            {
+                _appLogger.Warning("Firmware update not started: no firmware release was found.");
+                return null;
+            }
+
+            return release;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            _appLogger.Warning($"Firmware update not started: the firmware release lookup failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Tells the user, after a successful write, that the device may have lost its WiFi settings
+    /// (issue #564). The success dialog says it too, but that dialog closes and the status line is
+    /// hidden once the run ends, so a notification is the one place this outlives the run. A device that was set to join a site
+    /// network comes back as its own access point and WiFi discovery no longer finds it.
+    /// <para>
+    /// Owned by the device's serial, like <see cref="NotifyWifiModuleWasNotUpdated"/>, and
+    /// deduplicated per device on the same terms, so a second update does not stack a second copy.
+    /// </para>
+    /// </summary>
+    private void NotifyWifiSettingsMayBeErased(SerialStreamingDevice serialStreamingDevice)
+    {
+        var message = $"{serialStreamingDevice.DeviceDisplayName}: {WifiSettingsMayBeErasedInstruction}";
+        var serial = serialStreamingDevice.DeviceSerialNo;
+
+        if (_host.Notifications.Any(notification =>
+                notification.Message == message && DeviceSerials.SameDevice(notification.DeviceSerialNo, serial)))
+        {
+            return;
+        }
+
+        _host.Notifications.Add(new Notifications
+        {
+            Message = message,
+            DeviceSerialNo = serial
+        });
+        _host.RefreshNotificationCount();
     }
 
     /// <summary>

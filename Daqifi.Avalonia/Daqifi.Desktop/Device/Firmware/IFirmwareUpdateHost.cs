@@ -103,10 +103,25 @@ public interface IFirmwareUpdateHost
     /// </summary>
     /// <param name="message">
     /// The dialog text. The coordinator writes it because only the coordinator knows the device,
-    /// the version it had and the version it has now (issue #570).
+    /// the version it had and the version it has now (issue #570), and so it can carry what the
+    /// user must do next, such as set the WiFi settings again (issue #564).
     /// </param>
     // @port: Daqifi.Desktop.Device.Firmware.IFirmwareUpdateHost.ShowFirmwareUpdateSucceeded
     void ShowFirmwareUpdateSucceeded(string message);
+
+    /// <summary>
+    /// Asks the user to confirm a firmware update before anything touches the device (issue #564).
+    /// Resolves to <c>true</c> only when the user confirms; a cancel, or a host reset that closes
+    /// the prompt, resolves to <c>false</c>. Presentation is a view concern, so the coordinator
+    /// supplies the text and the host decides how to show it.
+    /// </summary>
+    /// <param name="title">The title of the prompt.</param>
+    /// <param name="message">The body of the prompt: device, versions, duration and the risks.</param>
+    /// <param name="cancellationToken">
+    /// The preparation's token. When it is cancelled the host closes the prompt and resolves
+    /// <c>false</c>; a token that is already cancelled opens nothing.
+    /// </param>
+    Task<bool> ConfirmFirmwareUpdateAsync(string title, string message, CancellationToken cancellationToken);
 
     /// <summary>
     /// Cancels any in-flight connect-time WiFi firmware probe and awaits its full unwind. Called by the

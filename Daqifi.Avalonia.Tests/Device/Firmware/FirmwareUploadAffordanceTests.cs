@@ -295,6 +295,9 @@ public class FirmwareUploadAffordanceTests : IDisposable
 
         public void ShowFirmwareUpdateSucceeded(string message) { }
 
+        /// <summary>Confirms at once: these facts are about the run, not the prompt in front of it (issue #564).</summary>
+        public Task<bool> ConfirmFirmwareUpdateAsync(string title, string message, CancellationToken cancellationToken) => Task.FromResult(true);
+
         public Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default)
             => Task.CompletedTask;
     }
@@ -329,9 +332,14 @@ public class FirmwareUploadAffordanceTests : IDisposable
             IProgress<int>? progress = null,
             CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 
+        /// <summary>
+        /// A release to name in the prompt. The coordinator resolves one before it confirms an
+        /// auto-update (issue #564), and stops with no release; the package itself is still "none".
+        /// </summary>
         public Task<FirmwareReleaseInfo?> GetLatestReleaseAsync(
             bool includePreRelease = false,
-            CancellationToken cancellationToken = default) => Task.FromResult<FirmwareReleaseInfo?>(null);
+            CancellationToken cancellationToken = default) => Task.FromResult<FirmwareReleaseInfo?>(
+                new FirmwareReleaseInfo { Version = default, TagName = "v0.0.0-test", IsPreRelease = false });
 
         public Task<FirmwareReleaseInfo?> GetLatestWifiReleaseAsync(CancellationToken cancellationToken = default)
             => Task.FromResult<FirmwareReleaseInfo?>(null);

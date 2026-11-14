@@ -206,7 +206,7 @@ public class FirmwareUpdateOutcomeTests : IDisposable
 
         await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
 
-        Assert.Equal("Nq1 now has firmware 3.8.1. The old version was 3.8.0.", Assert.Single(_host.SuccessMessages));
+        Assert.Equal(SuccessDialogText("Nq1 now has firmware 3.8.1. The old version was 3.8.0."), Assert.Single(_host.SuccessMessages));
     }
 
     /// <summary>
@@ -242,7 +242,7 @@ public class FirmwareUpdateOutcomeTests : IDisposable
 
         await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
 
-        Assert.Equal("Nq1 now has firmware 3.9.0. The old version was 3.8.0.", Assert.Single(_host.SuccessMessages));
+        Assert.Equal(SuccessDialogText("Nq1 now has firmware 3.9.0. The old version was 3.8.0."), Assert.Single(_host.SuccessMessages));
         Assert.Equal(string.Empty, _host.FirmwareFilePath);
     }
 
@@ -445,6 +445,13 @@ public class FirmwareUpdateOutcomeTests : IDisposable
     #endregion
 
     #region Helpers
+    /// <summary>
+    /// The full success dialog text: the version paragraph (issue #570), an empty line, and the
+    /// instruction to set the WiFi settings again (issue #564).
+    /// </summary>
+    private static string SuccessDialogText(string versionParagraph) =>
+        versionParagraph + "\n\n" + FirmwareUpdateCoordinator.WifiSettingsMayBeErasedInstruction;
+
     /// <summary>A stand-in PIC32 image: the coordinator checks only that the file exists.</summary>
     private string FirmwareFile()
     {
@@ -494,7 +501,11 @@ public class FirmwareUpdateOutcomeTests : IDisposable
     {
         public string? LatestFirmwarePath { get; set; }
 
-        public string? LatestVersion { get; set; }
+        /// <summary>
+        /// The release the feed names. The automatic path resolves it before its prompt and then
+        /// downloads it by tag (issue #564), so it must exist for that path to run at all.
+        /// </summary>
+        public string? LatestVersion { get; set; } = "3.9.0";
 
         public Task<string?> DownloadLatestFirmwareAsync(
             string destinationDirectory,
@@ -523,7 +534,7 @@ public class FirmwareUpdateOutcomeTests : IDisposable
             string tagName,
             string destinationDirectory,
             IProgress<int>? progress = null,
-            CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
+            CancellationToken cancellationToken = default) => Task.FromResult(LatestFirmwarePath);
 
         public int WifiDownloads;
 
@@ -646,6 +657,9 @@ public class FirmwareUpdateOutcomeTests : IDisposable
         public void ShowFirmwareError(string message) { }
 
         public void ShowFirmwareUpdateSucceeded(string message) => SuccessMessages.Add(message);
+
+        /// <summary>Confirms at once: these facts are about the run, not the prompt in front of it (issue #564).</summary>
+        public Task<bool> ConfirmFirmwareUpdateAsync(string title, string message, CancellationToken cancellationToken) => Task.FromResult(true);
 
         public Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default)
             => Task.CompletedTask;
