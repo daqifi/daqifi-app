@@ -32,6 +32,32 @@ public class UpdateBlockerImportTests
     }
 
     /// <summary>
+    /// The SD card pane is in the main window, so the window count cannot see a transfer in it.
+    /// While the pane lists or imports the card's files, the update waits; when the last of
+    /// overlapping transfers ends, it may go ahead (#503 review).
+    /// </summary>
+    [Fact]
+    public void SdCardTransfer_HoldsTheUpdate_UntilTheLastTransferEnds()
+    {
+        var viewModel = NewViewModel();
+        var deviceLogs = new DeviceLogsViewModel(new RecordingAppLogger(), importer: null, marshalToUiThread: a => a());
+        // The app creates the pane only in a started host; a test puts one in place.
+        typeof(DaqifiViewModel).GetProperty(nameof(DaqifiViewModel.DeviceLogsViewModel))!
+            .SetValue(viewModel, deviceLogs);
+        Assert.Equal(UpdateBlocker.None, viewModel.CurrentUpdateBlocker());
+
+        deviceLogs.BeginBusy();     // an import starts
+        deviceLogs.BeginBusy();     // a file listing starts
+        Assert.Equal(UpdateBlocker.SdCardTransfer, viewModel.CurrentUpdateBlocker());
+
+        deviceLogs.EndBusy();
+        Assert.Equal(UpdateBlocker.SdCardTransfer, viewModel.CurrentUpdateBlocker());
+
+        deviceLogs.EndBusy();
+        Assert.Equal(UpdateBlocker.None, viewModel.CurrentUpdateBlocker());
+    }
+
+    /// <summary>
     /// An open profile editor saves only when it closes, so the restart would lose the edit.
     /// The update waits for it, and a pane that goes away with its editor open releases it.
     /// </summary>

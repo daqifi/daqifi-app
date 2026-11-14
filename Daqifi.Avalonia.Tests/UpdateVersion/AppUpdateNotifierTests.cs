@@ -455,6 +455,102 @@ public class AppUpdateNotifierTests
         Assert.Equal(1, h.Service.Applies);
     }
 
+    /// <summary>
+    /// The confirmation before the download says when the administrator prompt comes: the updater
+    /// shows it after DAQiFi closes, not at once (#503 review).
+    /// </summary>
+    [Fact]
+    public async Task AllUsersInstall_SaysThePromptComesWhenDaqifiRestarts()
+    {
+        var h = new Harness();
+        h.Service.ApplyNeedsElevation = true;
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(
+            "Installing needs administrator permission. Windows will ask when DAQiFi restarts.",
+            Assert.Single(h.Confirms));
+    }
+
+    /// <summary>
+    /// On an install for all users, an update that had to wait does not install by itself. The wait
+    /// can end hours later, when no one is at the PC or only a standard user is; the restart would
+    /// close DAQiFi and leave an administrator prompt that no one answers. So the wait ends with
+    /// "Update ready." and an "Install and restart" button, and only that click applies (#503 review).
+    /// </summary>
+    [Fact]
+    public async Task AllUsersInstall_AfterAWait_AppliesOnlyOnASecondClick()
+    {
+        var h = new Harness { Blocker = UpdateBlocker.SdCardTransfer };
+        h.Service.ApplyNeedsElevation = true;
+        h.OnDelay = n => { if (n == 2) { h.Blocker = UpdateBlocker.None; } };
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(0, h.Service.Applies);
+        Assert.Equal("Update ready.", h.Last.Message);
+        Assert.Equal("Install and restart", h.Last.ActionText);
+        Assert.Single(h.Confirms);
+
+        await ((IAsyncRelayCommand)h.Last.Action!).ExecuteAsync(null);
+
+        Assert.Equal(1, h.Service.Applies);
+        Assert.Equal(1, h.Service.Downloads);   // the click installs what was downloaded
+        Assert.Single(h.Confirms);              // the click is the answer; Windows asks next
+    }
+
+    /// <summary>While it waits, an update for all users says that it will ask, not that it will install.</summary>
+    [Fact]
+    public async Task AllUsersInstall_WhileWaiting_SaysItWillAsk()
+    {
+        var h = new Harness { Blocker = UpdateBlocker.Logging };
+        h.Service.ApplyNeedsElevation = true;
+        h.OnDelay = n => { if (n == 1) { h.Blocker = UpdateBlocker.None; } };
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Contains("Update ready. Asks to install when logging stops.", h.Messages);
+        Assert.DoesNotContain(h.Messages, m => m.Contains("Installs when"));
+    }
+
+    /// <summary>
+    /// Work that starts between "Update ready." and the click is waited for again, and the wait
+    /// again ends with a question, not with an install.
+    /// </summary>
+    [Fact]
+    public async Task AllUsersInstall_WorkStartedBeforeTheSecondClick_IsWaitedFor_ThenAsksAgain()
+    {
+        var h = new Harness { Blocker = UpdateBlocker.Logging };
+        h.Service.ApplyNeedsElevation = true;
+        h.OnDelay = n => { if (n == 1 || n == 2) { h.Blocker = UpdateBlocker.None; } };
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+        Assert.Equal("Update ready.", h.Last.Message);
+
+        h.Blocker = UpdateBlocker.FirmwareUpdate;   // a flash starts before the user clicks
+        await ((IAsyncRelayCommand)h.Last.Action!).ExecuteAsync(null);
+
+        Assert.Equal(0, h.Service.Applies);
+        Assert.Contains("Update ready. Asks to install when the firmware update finishes.", h.Messages);
+        Assert.Equal("Update ready.", h.Last.Message);
+
+        await ((IAsyncRelayCommand)h.Last.Action!).ExecuteAsync(null);
+        Assert.Equal(1, h.Service.Applies);
+    }
+
+    /// <summary>An install for one user needs no prompt, so it still installs by itself after a wait.</summary>
+    [Fact]
+    public async Task OneUserInstall_AfterAWait_StillInstallsByItself()
+    {
+        var h = new Harness { Blocker = UpdateBlocker.Logging };
+        h.OnDelay = n => { if (n == 2) { h.Blocker = UpdateBlocker.None; } };
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal(1, h.Service.Applies);
+        Assert.Empty(h.Confirms);
+    }
+
     [Fact]
     public async Task FailedDownload_SaysSoInOneLine_AndOffersARetry()
     {

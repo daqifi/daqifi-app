@@ -38,7 +38,9 @@ public enum UpdateBlocker
 /// update's state then lives in that one notification, replaced at each step: the download's
 /// percentage, what a waiting update waits for, or what went wrong. Each step has a button, and
 /// Cancel stops the download or the wait. Installing restarts the app, so when something is running
-/// that the restart would cut off, the update waits for it and then installs on its own.
+/// that the restart would cut off, the update waits for it and then installs on its own. On an
+/// install for all users it does not: the wait ends with "Update ready." and a button, because the
+/// administrator prompt must come only when a person is there to answer it.
 /// </remarks>
 public sealed class AppUpdateNotifier
 {
@@ -120,17 +122,21 @@ public sealed class AppUpdateNotifier
 
     /// <summary>
     /// Downloads <paramref name="offer"/>, waits until nothing would be cut off, then installs it and
-    /// restarts. Cancel on the notification stops it at any point before the restart. A second call
-    /// while one is under way does nothing.
+    /// restarts; on an install for all users, a wait ends with "Update ready." for the user to click.
+    /// Cancel on the notification stops it at any point before the restart. A second call while one
+    /// is under way does nothing.
     /// </summary>
-    public async Task InstallAsync(AppUpdateOffer offer)
+    public Task InstallAsync(AppUpdateOffer offer) => RunAsync(offer, DownloadAndInstallAsync);
+
+    /// <summary>Runs one install step that Cancel can stop. A second step while one is under way does nothing.</summary>
+    private async Task RunAsync(AppUpdateOffer offer, Func<AppUpdateOffer, CancellationToken, Task> step)
     {
         if (_installing is not null) { return; }
         using var cancel = new CancellationTokenSource();
         _installing = cancel;
         try
         {
-            await DownloadAndInstallAsync(offer, cancel.Token);
+            await step(offer, cancel.Token);
         }
         catch (OperationCanceledException) when (cancel.IsCancellationRequested)
         {
@@ -145,7 +151,7 @@ public sealed class AppUpdateNotifier
     private async Task DownloadAndInstallAsync(AppUpdateOffer offer, CancellationToken cancellationToken)
     {
         if (_service.ApplyNeedsElevation && !await _confirm(
-                "Installing needs administrator permission. Windows will ask next.", "Update"))
+                "Installing needs administrator permission. Windows will ask when DAQiFi restarts.", "Update"))
         {
             return;
         }
@@ -164,16 +170,38 @@ public sealed class AppUpdateNotifier
             return;
         }
 
+        await WaitThenApplyAsync(offer, cancellationToken);
+    }
+
+    /// <summary>
+    /// Waits until nothing would be cut off, then applies. On an install for all users, a wait ends
+    /// with "Update ready." instead, and the user's click on it applies.
+    /// </summary>
+    private async Task WaitThenApplyAsync(AppUpdateOffer offer, CancellationToken cancellationToken)
+    {
+        var asksFirst = _service.ApplyNeedsElevation;
+        var waited = false;
+
         // Asked again right before applying: anything may have started while waiting.
         var waitingFor = WaitingFor();
         while (waitingFor is not null)
         {
-            _show(Busy($"Update ready. Installs {waitingFor}."));
+            waited = true;
+            _show(Busy(asksFirst ? $"Update ready. Asks to install {waitingFor}." : $"Update ready. Installs {waitingFor}."));
             await _delay(RecheckInterval, cancellationToken);
             waitingFor = WaitingFor();
         }
 
         cancellationToken.ThrowIfCancellationRequested();
+
+        // The updater closes DAQiFi before Windows shows the administrator prompt. After a wait, which
+        // can end hours later, no one may be at the PC, or only a standard user who cannot approve it;
+        // DAQiFi would then stay closed while the prompt waits (#503 review). So the user decides.
+        if (waited && asksFirst)
+        {
+            _show(Ready(offer));
+            return;
+        }
 
         // Known gap, accepted for now (#509): on an install for all users, the updater's administrator
         // prompt comes after this last check. A copy another user starts while that prompt is open
@@ -195,6 +223,14 @@ public sealed class AppUpdateNotifier
         Message = message,
         ActionText = actionText,
         Action = new AsyncRelayCommand(() => InstallAsync(offer)),
+    };
+
+    // A downloaded update for all users that waited: the click applies it, unless something started again.
+    private Notifications Ready(AppUpdateOffer offer) => new()
+    {
+        Message = "Update ready.",
+        ActionText = "Install and restart",
+        Action = new AsyncRelayCommand(() => RunAsync(offer, WaitThenApplyAsync)),
     };
 
     // A step under way: its only button stops it.
