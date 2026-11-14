@@ -41,8 +41,28 @@ internal sealed class DroppableTestDevice : AbstractStreamingDevice
 
     public override ConnectionType ConnectionType => _connectionType;
 
-    protected override void SendMessage(IOutboundMessage<string> message) =>
-        throw new NotSupportedException();
+    protected override void SendMessage(IOutboundMessage<string> message)
+    {
+        if (!RecordSentMessages)
+        {
+            throw new NotSupportedException();
+        }
+
+        SentMessages.Add(message);
+    }
+
+    /// <summary>
+    /// When set, <see cref="SendMessage"/> records each command in <see cref="SentMessages"/>
+    /// instead of throwing, so a test can drive <c>Reboot</c> and see whether the reboot command
+    /// went out.
+    /// </summary>
+    public bool RecordSentMessages { get; init; }
+
+    /// <summary>The commands sent while <see cref="RecordSentMessages"/> is set.</summary>
+    public List<IOutboundMessage<string>> SentMessages { get; } = [];
+
+    /// <summary>How many times <see cref="Disconnect"/> ran — each call disposes the connection.</summary>
+    public int DisconnectCalls { get; private set; }
 
     /// <summary>
     /// Reports a successful connect without opening anything, so a test can drive
@@ -120,6 +140,7 @@ internal sealed class DroppableTestDevice : AbstractStreamingDevice
 
     public override bool Disconnect()
     {
+        DisconnectCalls++;
         _pretendConnected = false;
         return base.Disconnect();
     }

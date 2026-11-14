@@ -91,6 +91,11 @@
                 <Setter Property="Background" Value="#141821"/>
                 <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
             </Style>
+            <!-- Issue #538: without this a disabled pill (REBOOT, DISCONNECT during a firmware
+                 update) looks the same as an enabled one. Same value as AccentPillButton. -->
+            <Style Selector="^:disabled">
+                <Setter Property="Opacity" Value="0.4"/>
+            </Style>
         </ControlTheme>
 
         <ControlTheme x:Key="AccentPillButton" TargetType="Button" BasedOn="{StaticResource PillButton}">
@@ -1000,13 +1005,21 @@
 
                             <!-- ACTIONS -->
                             <TextBlock Text="ACTIONS" Classes="sectionLabel drawerSectionLabel"/>
+                            <!-- Issue #538: both are disabled during a firmware update. The tooltip says
+                                 why, and ShowOnDisabled is needed because a disabled control shows no
+                                 tooltip by default. -->
                             <StackPanel Orientation="Horizontal">
                                 <Button Theme="{StaticResource PillButton}"
                                         Content="REBOOT"
+                                        AutomationProperties.AutomationId="RebootSelectedButton"
+                                        ToolTip.Tip="{Binding DeviceActionsToolTip}"
+                                        ToolTip.ShowOnDisabled="True"
                                         Command="{Binding RebootSelectedCommand}"/>
                                 <Button Theme="{StaticResource DangerPillButton}"
                                         Content="DISCONNECT"
                                         AutomationProperties.AutomationId="DisconnectSelectedButton"
+                                        ToolTip.Tip="{Binding DeviceActionsToolTip}"
+                                        ToolTip.ShowOnDisabled="True"
                                         Command="{Binding DisconnectSelectedCommand}"/>
                             </StackPanel>
 

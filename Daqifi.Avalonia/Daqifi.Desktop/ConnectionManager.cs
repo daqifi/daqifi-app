@@ -460,6 +460,15 @@ public partial class ConnectionManager : ObservableObject
                     case DuplicateDeviceAction.Cancel:
                         return DAQiFiConnectionStatus.Disconnected;
                     case DuplicateDeviceAction.SwitchToNew:
+                        // Disconnect refuses the device of a firmware update (issue #538). Keep it
+                        // then, or the new connection would open beside the one the update uses.
+                        if (IsDeviceBeingUpdated(duplicate.ExistingDevice))
+                        {
+                            AppLogger.Instance.Warning(
+                                $"Keeping {duplicate.ExistingDevice.Name}: a firmware update is in progress on it.");
+                            return DAQiFiConnectionStatus.AlreadyConnected;
+                        }
+
                         // Disconnect the existing device and continue with connection
                         Disconnect(duplicate.ExistingDevice);
                         break;
@@ -548,6 +557,16 @@ public partial class ConnectionManager : ObservableObject
     // @port: Daqifi.Desktop.ConnectionManager.Disconnect
     public void Disconnect(IStreamingDevice device)
     {
+        // Issue #538: the firmware update uses this device's connection until it ends. A disconnect
+        // during the update disposes the Core device under the write, the same failure the drop
+        // paths avoid with this check (issue #738). The drawer already disables DISCONNECT; this
+        // is the barrier for every other caller. ReconcileDeviceAfterUpdate disconnects after the update clears the
+        // state, so it is not stopped here.
+        if (RefuseDuringFirmwareUpdate(device, "disconnect"))
+        {
+            return;
+        }
+
         var connectionType = device.ConnectionType == ConnectionType.Usb ? "usb" : "wifi";
         try
         {
@@ -705,6 +724,12 @@ public partial class ConnectionManager : ObservableObject
     // @port: Daqifi.Desktop.ConnectionManager.Reboot
     public void Reboot(IStreamingDevice device)
     {
+        // Issue #538: a reboot command in the middle of a firmware write. See Disconnect.
+        if (RefuseDuringFirmwareUpdate(device, "reboot"))
+        {
+            return;
+        }
+
         try
         {
             UnsubscribeDeviceEvents(device);
@@ -716,6 +741,23 @@ public partial class ConnectionManager : ObservableObject
         {
             AppLogger.Instance.Error(ex, "Failed in Reboot");
         }
+    }
+
+    /// <summary>
+    /// True, with a warning in the log, when <paramref name="device"/> is the device of the firmware
+    /// update in progress, so a user command must not touch its connection (issue #538).
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    private bool RefuseDuringFirmwareUpdate(IStreamingDevice device, string action)
+    {
+        if (!IsDeviceBeingUpdated(device))
+        {
+            return false;
+        }
+
+        AppLogger.Instance.Warning(
+            $"Refusing to {action} device {device.Name} while a firmware update is in progress on it.");
+        return true;
     }
 
     // @port: Daqifi.Desktop.ConnectionManager.UpdateStatusString
@@ -1088,7 +1130,7 @@ public partial class ConnectionManager : ObservableObject
     /// an unrelated same-named device's disconnect be wrongly skipped, leaving a zombie connection.
     /// </remarks>
     // @port: Daqifi.Desktop.ConnectionManager.IsDeviceBeingUpdated
-    private bool IsDeviceBeingUpdated(IStreamingDevice device)
+    public bool IsDeviceBeingUpdated(IStreamingDevice device)
     {
         var updating = DeviceBeingUpdated;
         if (updating == null)
