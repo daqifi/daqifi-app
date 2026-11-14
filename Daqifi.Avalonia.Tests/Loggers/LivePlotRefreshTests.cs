@@ -55,7 +55,9 @@ public class LivePlotDecimationTests
         var plotter = new PlotLogger();
 
         plotter.Log(Sample("AI0"));
+        plotter.DrainPendingSamples();
         plotter.Log(Sample("AI1"));
+        plotter.DrainPendingSamples();
 
         Assert.Equal(2, plotter.LoggedChannels.Count);
         Assert.All(plotter.LoggedChannels.Values,
@@ -71,6 +73,7 @@ public class LivePlotDecimationTests
         for (var i = 0; i < 100; i++)
         {
             plotter.Log(Sample("AI0", tickOffset: i * 10_000));
+            plotter.DrainPendingSamples();
         }
 
         Assert.Equal(100, plotter.LoggedPoints.Values.Single().Count);

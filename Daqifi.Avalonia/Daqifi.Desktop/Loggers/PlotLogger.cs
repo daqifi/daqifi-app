@@ -10,6 +10,7 @@ using Daqifi.Desktop.Helpers;
 using OxyPlot;
 using OxyPlot.Axes;
 using OxyPlot.Series;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using Avalonia;
@@ -31,11 +32,33 @@ public partial class PlotLogger : ObservableObject, ILogger
     private long _lastStatsMilliSeconds;
 
     /// <summary>
-    /// Set by <see cref="Log(DataSample)"/> when a point lands and cleared by the render tick when it
-    /// redraws, both under <c>PlotModel.SyncRoot</c>. Lets a plot with nothing new skip the redraw, so
-    /// the faster cadence costs nothing while the device is idle.
+    /// Set by the drain when a point lands and cleared by the render tick when it redraws, both on the
+    /// UI thread under <c>PlotModel.SyncRoot</c>. Lets a plot with nothing new skip the redraw, so the
+    /// faster cadence costs nothing while the device is idle.
     /// </summary>
     private bool _hasNewData;
+
+    /// <summary>
+    /// Samples <see cref="Log(DataSample)"/> has accepted and the render tick has not yet moved into
+    /// the series. The hand-off between the device transport thread and the UI thread (issue #595):
+    /// the transport thread only enqueues here, and never takes <c>PlotModel.SyncRoot</c>, so a long
+    /// redraw, or any other UI-thread job that holds the plot lock, can never stop the device reader.
+    /// Lock-free, and safe for several devices' transport threads at once.
+    /// </summary>
+    private readonly ConcurrentQueue<DataSample> _pendingSamples = new();
+
+    /// <summary>Samples in <see cref="_pendingSamples"/>, kept with <see cref="Interlocked"/>.</summary>
+    private int _pendingCount;
+
+    /// <summary>
+    /// 1 when <see cref="Log(DataSample)"/> dropped a pending sample because the UI thread had not
+    /// drained the queue for a long time. The next drain then breaks every line once, so the plot
+    /// shows a gap where it lost points instead of joining across them.
+    /// </summary>
+    private int _pendingOverflowed;
+
+    /// <summary><see cref="MAX_PENDING_SAMPLES"/>, or a smaller cap a test sets.</summary>
+    private readonly int _maxPendingSamples = MAX_PENDING_SAMPLES;
     private int _precision = 4;
     private Dictionary<(string deviceSerial, string channelName), List<DataPoint>> _loggedPoints = [];
     private Dictionary<(string deviceSerial, string channelName), LineSeries> _loggedChannels = [];
@@ -85,6 +108,15 @@ public partial class PlotLogger : ObservableObject, ILogger
     /// every sample.
     /// </summary>
     private const int LIVE_TRIM_BATCH = 250;
+
+    /// <summary>
+    /// The most samples the live plot holds between two drains. When the UI thread does not drain
+    /// for a long time, the oldest pending samples are dropped from the PLOT (never from the session
+    /// database, which has its own queue). This keeps memory and the next drain bounded however long
+    /// the UI stalls: 262,144 samples is 4.6 s of 16 channels at 3518 Hz, more than one full live
+    /// window (5,000 points a series), and a few milliseconds of work to drain.
+    /// </summary>
+    internal const int MAX_PENDING_SAMPLES = 1 << 18;
 
     /// <summary>Whether enough time has passed since the last redraw for another one.</summary>
     internal static bool IsRedrawDue(long nowMs, long lastRedrawMs) => nowMs - lastRedrawMs >= REDRAW_INTERVAL_MS;
@@ -215,6 +247,13 @@ public partial class PlotLogger : ObservableObject, ILogger
     #endregion
 
     #region Constructor
+    /// <summary>A plot whose pending queue holds at most <paramref name="maxPendingSamples"/>
+    /// samples. For tests, so the overflow path can be reached with a few samples.</summary>
+    internal PlotLogger(int maxPendingSamples) : this()
+    {
+        _maxPendingSamples = maxPendingSamples;
+    }
+
     public PlotLogger()
     {
         LoggedPoints = [];
@@ -302,81 +341,157 @@ public partial class PlotLogger : ObservableObject, ILogger
     // @port: Daqifi.Desktop.Logger.PlotLogger.Log
     public void Log(DataSample dataSample)
     {
-        var key = (dataSample.DeviceSerialNo, dataSample.ChannelName);
-        var addedSeries = false;
-
-        // Runs on the device transport thread, so the whole read-then-mutate sequence is held under
-        // PlotModel.SyncRoot -- the lock ClearPlot() and the render tick also take. The membership
-        // check and the FirstTime seed used to sit outside it, leaving two windows for a session-start
-        // ClearPlot() on the UI thread: the key could be present for ContainsKey and gone by the
-        // indexed access (KeyNotFoundException on a thread with no handler), and FirstTime could be
-        // nulled between the null check and the .Value dereference. See issue #759.
-        lock (PlotModel.SyncRoot)
+        // Runs on the device transport thread, once per sample, so it must never wait for the UI
+        // (issue #595). It used to take PlotModel.SyncRoot for each sample, and the UI thread holds
+        // that lock while OxyPlot updates and draws the plot. A long draw then stopped the USB reader,
+        // the board's buffer overflowed, and the session lost seconds of samples with no message. Now
+        // this only enqueues; the render tick moves the samples into the series on the UI thread.
+        if (dataSample is null)
         {
-            if (!LoggedChannels.TryGetValue(key, out var series))
-            {
-                // The series may be absent because this is a new channel, or because ClearPlot()
-                // removed it while this call waited for the lock. Either way it is re-created here
-                // rather than dropping the sample.
-                AddChannelSeries(dataSample.ChannelName, dataSample.DeviceSerialNo, dataSample.Type, dataSample.Color);
-                addedSeries = true;
-            }
-            // Check for a change in color, by comparing the sample's string against the STRING that
-            // produced the series' current colour rather than against that colour rendered back out.
-            // Raw-to-raw is what makes this an equality test: any value whose canonical form differs
-            // from its stored form — a fallback, a named colour, a six-digit hex — would never compare
-            // equal to `series.Color.ToString()`, so it would be re-converted on every single sample
-            // of the stream, and an unusable one would throw and be caught every time. It is also one
-            // less string allocated per sample, since nothing has to be rendered to compare.
-            // Ordinal, and case-SENSITIVE, so this stays a plain "is it the same string?" test. Case
-            // happens not to change meaning on OxyPlot 2.2.0 — hex is all it parses, and hex is
-            // case-insensitive — but that is a fact about a third-party parser, and resting a
-            // correctness decision on it means a version that added named colours (looked up by
-            // reflection, hence case-sensitively) would silently strand a series on the wrong colour.
-            // Ignoring case buys nothing anyway: a case-only change costs one conversion and settles,
-            // because the new spelling is what gets remembered. Ordinal, not the current culture,
-            // which mangles ASCII letters in e.g. the Turkish locale.
-            else if (!string.Equals(_rawSeriesColors.GetValueOrDefault(key), dataSample.Color, StringComparison.Ordinal))
-            {
-                // No ToLowerInvariant: the hex path is already case-insensitive, and lower-casing was
-                // the one thing that could break a named colour (OxyColors is looked up by reflection,
-                // which IS case-sensitive). It also dereferenced dataSample.Color, so a null colour
-                // threw here BEFORE Parse was reached.
-                series.Color = ChannelSeriesColor.ParseOrFallback(dataSample.Color);
-                _rawSeriesColors[key] = dataSample.Color;
-            }
-
-            FirstTime ??= new DateTime(dataSample.TimestampTicks);
-
-            // Ticks is 100 nanoseconds
-            var deltaTime = (dataSample.TimestampTicks - FirstTime.Value.Ticks) / 10000.0;
-            var scaledSampleValue = dataSample.Value;
-            var points = LoggedPoints[key];
-
-            if (_gapDetector.IsGap(key, dataSample.FirmwareDeltaMs))
-            {
-                points.Add(DataPoint.Undefined);
-            }
-
-            points.Add(new DataPoint(deltaTime, scaledSampleValue));
-
-            // Trim in batches, not one point per sample: RemoveAt(0) on a full list moved the whole
-            // buffer (about 80 KB) on every sample, on this thread and under the redraw's lock.
-            if (points.Count >= LIVE_WINDOW_POINTS + LIVE_TRIM_BATCH)
-            {
-                points.RemoveRange(0, points.Count - LIVE_WINDOW_POINTS);
-            }
-
-            _hasNewData = true;
+            return;
         }
 
-        // Change notifications are raised outside the lock so a binding handler can never re-enter the
-        // logger while it is held. AddChannelSeries used to raise the PlotModel one itself. There is no
-        // per-sample LoggedPoints notification: nothing binds it, and it cost an event per sample.
+        _pendingSamples.Enqueue(dataSample);
+        if (Interlocked.Increment(ref _pendingCount) > _maxPendingSamples
+            && _pendingSamples.TryDequeue(out _))
+        {
+            // The UI thread has not drained for seconds. Drop the oldest point from the plot rather
+            // than grow without bound or make this thread wait.
+            Interlocked.Decrement(ref _pendingCount);
+            Volatile.Write(ref _pendingOverflowed, 1);
+        }
+    }
+
+    /// <summary>
+    /// Moves the samples <see cref="Log(DataSample)"/> queued into the series and point buffers. Runs
+    /// on the UI thread; the render tick does the same work inline. Takes <c>PlotModel.SyncRoot</c>,
+    /// which only UI-thread code holds, and raises the <c>PlotModel</c> change notification after
+    /// releasing it when a new series was created.
+    /// </summary>
+    /// <returns>The number of samples moved.</returns>
+    internal int DrainPendingSamples()
+    {
+        int drained;
+        bool addedSeries;
+        lock (PlotModel.SyncRoot)
+        {
+            drained = DrainPendingSamplesLocked(out addedSeries);
+        }
+
         if (addedSeries)
         {
             OnPropertyChanged(nameof(PlotModel));
         }
+
+        return drained;
+    }
+
+    /// <summary>
+    /// The body of <see cref="DrainPendingSamples"/>. The caller must hold <c>PlotModel.SyncRoot</c>
+    /// and must raise the <c>PlotModel</c> change notification after releasing it when
+    /// <paramref name="addedSeries"/> is true.
+    /// </summary>
+    /// <remarks>
+    /// The work is bounded: it takes at most the samples that were queued when it started, so a
+    /// producer that never pauses cannot keep the UI thread here, and the queue itself never holds
+    /// more than <see cref="MAX_PENDING_SAMPLES"/>, so one drain is a few milliseconds at most.
+    /// </remarks>
+    private int DrainPendingSamplesLocked(out bool addedSeries)
+    {
+        addedSeries = false;
+
+        if (Interlocked.Exchange(ref _pendingOverflowed, 0) == 1)
+        {
+            // Points were dropped between the last drain and this one: break every line once, and
+            // let the gap detector start again, since the deltas across the hole mean nothing.
+            foreach (var points in LoggedPoints.Values)
+            {
+                points.Add(DataPoint.Undefined);
+            }
+
+            _gapDetector.Clear();
+        }
+
+        var budget = Volatile.Read(ref _pendingCount);
+        var drained = 0;
+        while (drained < budget && _pendingSamples.TryDequeue(out var dataSample))
+        {
+            Interlocked.Decrement(ref _pendingCount);
+            addedSeries |= AppendSample(dataSample);
+            drained++;
+        }
+
+        if (drained > 0)
+        {
+            _hasNewData = true;
+        }
+
+        return drained;
+    }
+
+    /// <summary>
+    /// Adds one sample to its channel's point buffer, creating the series on first sight. The caller
+    /// must hold <c>PlotModel.SyncRoot</c>. Returns true when a series was created.
+    /// </summary>
+    private bool AppendSample(DataSample dataSample)
+    {
+        var key = (dataSample.DeviceSerialNo, dataSample.ChannelName);
+        var addedSeries = false;
+
+        if (!LoggedChannels.TryGetValue(key, out var series))
+        {
+            // The series may be absent because this is a new channel, or because ClearPlot()
+            // removed it. Either way it is re-created here rather than dropping the sample.
+            AddChannelSeries(dataSample.ChannelName, dataSample.DeviceSerialNo, dataSample.Type, dataSample.Color);
+            addedSeries = true;
+        }
+        // Check for a change in color, by comparing the sample's string against the STRING that
+        // produced the series' current colour rather than against that colour rendered back out.
+        // Raw-to-raw is what makes this an equality test: any value whose canonical form differs
+        // from its stored form — a fallback, a named colour, a six-digit hex — would never compare
+        // equal to `series.Color.ToString()`, so it would be re-converted on every single sample
+        // of the stream, and an unusable one would throw and be caught every time. It is also one
+        // less string allocated per sample, since nothing has to be rendered to compare.
+        // Ordinal, and case-SENSITIVE, so this stays a plain "is it the same string?" test. Case
+        // happens not to change meaning on OxyPlot 2.2.0 — hex is all it parses, and hex is
+        // case-insensitive — but that is a fact about a third-party parser, and resting a
+        // correctness decision on it means a version that added named colours (looked up by
+        // reflection, hence case-sensitively) would silently strand a series on the wrong colour.
+        // Ignoring case buys nothing anyway: a case-only change costs one conversion and settles,
+        // because the new spelling is what gets remembered. Ordinal, not the current culture,
+        // which mangles ASCII letters in e.g. the Turkish locale.
+        else if (!string.Equals(_rawSeriesColors.GetValueOrDefault(key), dataSample.Color, StringComparison.Ordinal))
+        {
+            // No ToLowerInvariant: the hex path is already case-insensitive, and lower-casing was
+            // the one thing that could break a named colour (OxyColors is looked up by reflection,
+            // which IS case-sensitive). It also dereferenced dataSample.Color, so a null colour
+            // threw here BEFORE Parse was reached.
+            series.Color = ChannelSeriesColor.ParseOrFallback(dataSample.Color);
+            _rawSeriesColors[key] = dataSample.Color;
+        }
+
+        FirstTime ??= new DateTime(dataSample.TimestampTicks);
+
+        // Ticks is 100 nanoseconds
+        var deltaTime = (dataSample.TimestampTicks - FirstTime.Value.Ticks) / 10000.0;
+        var scaledSampleValue = dataSample.Value;
+        var points = LoggedPoints[key];
+
+        if (_gapDetector.IsGap(key, dataSample.FirmwareDeltaMs))
+        {
+            points.Add(DataPoint.Undefined);
+        }
+
+        points.Add(new DataPoint(deltaTime, scaledSampleValue));
+
+        // Trim in batches, not one point per sample: RemoveAt(0) on a full list moved the whole
+        // buffer (about 80 KB) on every sample.
+        if (points.Count >= LIVE_WINDOW_POINTS + LIVE_TRIM_BATCH)
+        {
+            points.RemoveRange(0, points.Count - LIVE_WINDOW_POINTS);
+        }
+
+        return addedSeries;
     }
 
     /// <summary>
@@ -394,9 +509,9 @@ public partial class PlotLogger : ObservableObject, ILogger
     /// </summary>
     /// <remarks>
     /// The caller must hold <c>PlotModel.SyncRoot</c> and raises the <c>PlotModel</c> change
-    /// notification after releasing it. These structural Adds race the render tick's enumeration and
-    /// <see cref="ClearPlot"/>'s removals, so without the lock a concurrent OxyPlot render or stats
-    /// recompute could observe a half-updated dictionary/series list.
+    /// notification after releasing it. Since issue #595 the only caller is the drain, on the UI
+    /// thread; the lock is what keeps OxyPlot's own update and render, which take the same lock, from
+    /// seeing a half-updated series list.
     /// </remarks>
     // @port: Daqifi.Desktop.Logger.PlotLogger.AddChannelSeries
     private void AddChannelSeries(string channelName, string DeviceSerialNo, ChannelType channelType, string newColor)
@@ -441,11 +556,8 @@ public partial class PlotLogger : ObservableObject, ILogger
             _ => newLineSeries.YAxisKey
         };
 
-        // Structural Adds to the shared collections. The caller (Log) already holds PlotModel.SyncRoot
-        // -- the same lock the render tick (InvalidatePlot + plot-stats recompute) and ClearPlot() take
-        // -- so these run under it; without the lock they raced the render-tick enumeration and a
-        // concurrent OxyPlot render or stats recompute could observe a half-updated dictionary/series
-        // list. The caller raises the PlotModel change notification after releasing the lock.
+        // Structural Adds to the shared collections, under PlotModel.SyncRoot, which the caller (the
+        // drain) holds. The caller raises the PlotModel change notification after releasing the lock.
         LoggedPoints.Add(key, newDataPoints);
         LoggedChannels.Add(key, newLineSeries);
         // Indexer, not Add. The key cannot be present today — LoggedChannels.Add above would have
@@ -474,8 +586,14 @@ public partial class PlotLogger : ObservableObject, ILogger
             return;
         }
 
+        bool addedSeries;
         lock (PlotModel.SyncRoot)
         {
+            // Move what the transport thread queued since the last redraw into the series. Here, on
+            // the UI thread and on the redraw's own cadence, so the transport thread never waits for
+            // this lock (issue #595).
+            DrainPendingSamplesLocked(out addedSeries);
+
             // Mirror each subscribed channel's visibility onto its series. A change here needs a redraw
             // even when no new sample has arrived, e.g. a channel hidden while the device is idle.
             var visibilityChanged = false;
@@ -518,12 +636,18 @@ public partial class PlotLogger : ObservableObject, ILogger
 
             _lastUpdateMilliSeconds = now;
         }
+
+        // Raised outside the lock, like every other change notification here.
+        if (addedSeries)
+        {
+            OnPropertyChanged(nameof(PlotModel));
+        }
     }
 
     /// <summary>
     /// Recomputes <see cref="PlotStatsSummary"/> from the currently buffered points. Called from the
     /// render tick every <see cref="STATS_INTERVAL_MS"/> while holding <c>PlotModel.SyncRoot</c>.
-    /// Every mutation of the per-channel collections — <see cref="Log(DataSample)"/>'s point-append and
+    /// Every mutation of the per-channel collections — the drain's point-append and
     /// <see cref="AddChannelSeries"/>'s series creation — takes that same lock, so enumerating the
     /// point lists here is consistent (no torn reads, no structural-modification race).
     /// Gap markers are inserted as <c>DataPoint.Undefined</c> (NaN X); a real sample always has a
@@ -611,13 +735,18 @@ public partial class PlotLogger : ObservableObject, ILogger
     // @port: Daqifi.Desktop.Logger.PlotLogger.ClearPlot
     public void ClearPlot()
     {
-        // ClearPlot runs on the UI thread while Log() runs on the transport thread; both mutate the
-        // same LoggedChannels/LoggedPoints/PlotModel.Series/FirstTime, so the structural clears take
-        // PlotModel.SyncRoot -- the lock Log(), AddChannelSeries and the render tick also hold -- or a
-        // clear could interleave with a locked Log() and tear the collections (KeyNotFoundException /
-        // FirstTime race). See issue #759.
+        // The structural clears take PlotModel.SyncRoot, the lock the drain, AddChannelSeries, the
+        // render tick and OxyPlot's own update and render hold, so a clear can never interleave with
+        // them and tear the collections (issue #759). Samples still queued from before the clear are
+        // discarded with it: they belong to the acquisition being cleared.
         lock (PlotModel.SyncRoot)
         {
+            while (_pendingSamples.TryDequeue(out _))
+            {
+                Interlocked.Decrement(ref _pendingCount);
+            }
+
+            Volatile.Write(ref _pendingOverflowed, 0);
             LoggedChannels.Clear();
             LoggedPoints.Clear();
             _rawSeriesColors.Clear();

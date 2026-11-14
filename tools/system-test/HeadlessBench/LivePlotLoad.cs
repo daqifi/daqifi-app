@@ -33,6 +33,16 @@ internal static partial class HeadlessBench
     /// <summary>Set by <c>--all-ai</c>: turn on every analog input, not only the first one.</summary>
     private static bool _allAi;
 
+    /// <summary>
+    /// Makes <see cref="Pump"/> fire due <c>DispatcherTimer</c>s, as the app's real dispatcher loop
+    /// does. Headless, nothing fires them: <c>Dispatcher.RunJobs</c> only runs queued jobs, and a
+    /// timer is promoted to a job only after some other job runs. On an idle UI the live plot's 16 ms
+    /// render timer then almost never ticks, so the plot never redraws during a stream and a load
+    /// test measures nothing. Posting one empty job per pump lets the dispatcher promote the due
+    /// timers. Only the load rows set it, so every other row keeps the pump it was written against.
+    /// </summary>
+    private static bool _pumpFiresTimers;
+
     /// <summary>Channels and rate <see cref="StatePlotIngest"/> feeds: the bench Nq1's 16 analog
     /// inputs at the 3518 Hz cap it publishes for that channel set — the load #595 was found at.</summary>
     private const int IngestChannels = 16;
@@ -68,6 +78,18 @@ internal static partial class HeadlessBench
         if (frames.Count == 0) { return (double.NaN, double.NaN, 0, 0); }
         var p99 = frames[(int)Math.Min(frames.Count - 1, Math.Floor(frames.Count * 0.99))];
         return (frames[^1], p99, frames.Count(l => l > 100), frames.Count);
+    }
+
+    /// <summary>The three slowest frames between two positions, each with its approximate offset into
+    /// the window (frames are evenly spread over <paramref name="seconds"/>), so a one-off first-draw
+    /// cost can be told from a stall that recurs.</summary>
+    private static string SlowestFrames(int from, int to, double seconds)
+    {
+        var count = to - from;
+        if (count <= 0) { return "none"; }
+        return string.Join(", ", Enumerable.Range(from, count)
+            .OrderByDescending(i => FrameLatenciesMs[i]).Take(3)
+            .Select(i => $"{FrameLatenciesMs[i]:F0} ms at {(i - from) * seconds / count:F1} s"));
     }
 
     /// <summary>The rest of the analog inputs, through the tile command a user clicks.</summary>
@@ -169,7 +191,7 @@ internal static partial class HeadlessBench
                  $"{missingSeconds:F3} s missing, largest {maxGapTicks / 10_000.0:F2} ms; " +
                  $"session holds {perChannelInSession?.ToString(CultureInfo.InvariantCulture) ?? "?"} per channel; " +
                  $"UI frame during the stream: max {pumpMax:F0} ms, p99 {pumpP99:F1} ms, {pumpsOver100} of {pumpCount} over 100 ms " +
-                 $"(dispatcher jobs alone: max {jobsMax:F0} ms); " +
+                 $"(dispatcher jobs alone: max {jobsMax:F0} ms; slowest {SlowestFrames(pumpsFrom, pumpsTo, window)}); " +
                  $"live redraw: median {redraw.MedianMs:F1} ms, max {redraw.MaxMs:F1} ms over {redraw.Count} " +
                  $"for {redraw.Points} buffered points"),
              shot, window);
@@ -185,6 +207,7 @@ internal static partial class HeadlessBench
     /// </summary>
     private static void RunPlotIngestRow(Window main, DaqifiViewModel shell)
     {
+        _pumpFiresTimers = true;
         shell.SelectedIndex = LiveGraphTabIndex;
         PumpFor(TimeSpan.FromMilliseconds(500));
 
@@ -246,11 +269,30 @@ internal static partial class HeadlessBench
         })
         { IsBackground = true, Name = "plot-ingest producer" };
 
+        // How many model updates (one per redraw) the UI thread managed while the producer ran: a
+        // plot that stops redrawing under load would otherwise read as a fast UI.
+        var updates = 0;
+        EventHandler countUpdate = (_, _) => updates++;
+        var statsTicks = 0;
+        System.ComponentModel.PropertyChangedEventHandler countStats = (_, e) =>
+        {
+            if (e.PropertyName == nameof(PlotLogger.PlotStatsSummary)) { statsTicks++; }
+        };
+        plotter.PropertyChanged += countStats;
+#pragma warning disable CS0618 // Updated is obsolete in OxyPlot 2.2 but still raised once per update.
+        plotter.PlotModel.Updated += countUpdate;
+#pragma warning restore CS0618
+
         var pumpsFrom = FrameLatenciesMs.Count;
         var wall = Stopwatch.StartNew();
         producer.Start();
         PumpFor(TimeSpan.FromSeconds(Math.Max(3, _seconds)));
         var pumpsTo = FrameLatenciesMs.Count;
+        var streamSeconds = wall.Elapsed.TotalSeconds;
+        plotter.PropertyChanged -= countStats;
+#pragma warning disable CS0618
+        plotter.PlotModel.Updated -= countUpdate;
+#pragma warning restore CS0618
         var redraw = MeasureLiveRedraw(main);
 
         // The long UI job, on purpose: the redraw's lock, held on the UI thread.
@@ -283,8 +325,9 @@ internal static partial class HeadlessBench
                  $"{produced} samples fed ({produced / expected:P1} of {IngestChannels} ch x {IngestRateHz} Hz over {wall.Elapsed.TotalSeconds:F1} s); " +
                  $"longest Log() outside the hold {maxLogMs:F1} ms, {logsOver10Ms} calls over 10 ms in all; longest Log() while the UI held the plot lock " +
                  $"for {IngestLockHold.TotalSeconds:F0} s: {maxLogHeldMs:F1} ms; producer fell up to {maxLagMs:F0} ms behind schedule; " +
+                 $"{updates / streamSeconds:F1} plot updates and {statsTicks / streamSeconds:F1} stats refreshes a second while streaming; " +
                  $"UI frame while streaming: max {pumpMax:F0} ms, p99 {pumpP99:F1} ms, {pumpsOver100} of {pumpCount} over 100 ms " +
-                 $"(dispatcher jobs alone: max {jobsMax:F0} ms); " +
+                 $"(dispatcher jobs alone: max {jobsMax:F0} ms; slowest {SlowestFrames(pumpsFrom, pumpsTo, streamSeconds)}); " +
                  $"live redraw: median {redraw.MedianMs:F1} ms, max {redraw.MaxMs:F1} ms for {redraw.Points} buffered points; " +
                  $"plot shows {series} series, {points} points" +
                  (producerFault is null ? "" : $"; producer threw {producerFault.GetType().Name}: {producerFault.Message}")),
