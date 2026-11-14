@@ -716,8 +716,8 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     /// <see cref="Dispose"/> — so the session is closed here, once, rather than on each path.
     /// </summary>
     /// <remarks>
-    /// Each of those paths stops the device before it clears the flag, so the samples still in
-    /// flight at the stop are recorded.
+    /// A user Stop stops the device before it clears the flag, so the samples still in flight at
+    /// the stop are recorded. On a lost link nothing more can arrive, so the order does not matter.
     /// </remarks>
     partial void OnIsStreamingChanged(bool value)
     {
