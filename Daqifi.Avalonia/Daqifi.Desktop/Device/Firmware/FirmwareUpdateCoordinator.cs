@@ -5,6 +5,7 @@
 
 using System.IO;
 using System.IO.Ports;
+using Daqifi.Core.Device;
 using Daqifi.Core.Firmware;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.Device.SerialDevice;
@@ -138,6 +139,13 @@ public class FirmwareUpdateCoordinator
     /// the same way <see cref="_wifiUpdateModeSettleDelay"/> is overridable.
     /// </summary>
     private readonly bool _canFlashWifiModule;
+
+    /// <summary>
+    /// Reads the version from a fresh status reply of the restarted device; <c>null</c> when it is
+    /// not known. See <see cref="PostRestartFirmwareVersion"/> for why this is not
+    /// <c>Metadata.FirmwareVersion</c>.
+    /// </summary>
+    private readonly Func<DaqifiDevice, CancellationToken, Task<string?>> _readPostRestartVersion;
     #endregion
 
     #region Constructor
@@ -165,6 +173,11 @@ public class FirmwareUpdateCoordinator
     /// <see cref="CanFlashWifiModule"/>; tests pass both values so the platform decision is covered
     /// on either side without needing two operating systems.
     /// </param>
+    /// <param name="readPostRestartVersion">
+    /// Reads the firmware version from a fresh status reply of the restarted device, or returns
+    /// <c>null</c> when it is not known. Null uses <see cref="PostRestartFirmwareVersion.ReadAsync"/>;
+    /// tests pass a fake so the reading is set without a device (issues #566 and #570).
+    /// </param>
     public FirmwareUpdateCoordinator(
         IFirmwareUpdateHost host,
         IFirmwareUpdateService firmwareUpdateService,
@@ -174,7 +187,8 @@ public class FirmwareUpdateCoordinator
         string firmwareDataDirectory,
         TimeSpan? wifiUpdateModeSettleDelay = null,
         IBootloaderWatcher? watcher = null,
-        bool? canFlashWifiModule = null)
+        bool? canFlashWifiModule = null,
+        Func<DaqifiDevice, CancellationToken, Task<string?>>? readPostRestartVersion = null)
     {
         _host = host ?? throw new ArgumentNullException(nameof(host));
         _firmwareUpdateService = firmwareUpdateService ?? throw new ArgumentNullException(nameof(firmwareUpdateService));
@@ -185,6 +199,8 @@ public class FirmwareUpdateCoordinator
         _wifiUpdateModeSettleDelay = wifiUpdateModeSettleDelay ?? DefaultWifiUpdateModeSettleDelay;
         _watcher = watcher;
         _canFlashWifiModule = canFlashWifiModule ?? CanFlashWifiModule;
+        _readPostRestartVersion = readPostRestartVersion
+            ?? ((device, token) => PostRestartFirmwareVersion.ReadAsync(device, cancellationToken: token));
     }
     #endregion
 
@@ -246,6 +262,7 @@ public class FirmwareUpdateCoordinator
         // a throw before the try would leave it raised with no finally to lower it — the pane stuck
         // "uploading" behind a Cancel button with nothing left to cancel. Every statement the
         // preamble used to run before opening the run therefore moved inside.
+        var refreshReleasesAfterRun = false;
         var cancellationToken = BeginUpload();
         try
         {
@@ -331,10 +348,25 @@ public class FirmwareUpdateCoordinator
                     cancellationToken);
             }
 
+            // The write has completed. A Cancel during this read must not report the run as
+            // canceled: the device is already written. The version is then unknown (issues #566, #570).
+            string? reportedVersion;
+            try
+            {
+                reportedVersion = await _readPostRestartVersion(coreDevice, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                reportedVersion = null;
+            }
+
             if (!isManualUpload)
             {
                 await UpdateWifiModuleAsync(serialStreamingDevice, cancellationToken);
             }
+
+            RecheckFirmwareAfterWrite(serialStreamingDevice, reportedVersion);
+            refreshReleasesAfterRun = true;
 
             _host.IsUploadComplete = true;
             NotifyWifiSettingsMayBeErased(serialStreamingDevice);
@@ -372,6 +404,97 @@ public class FirmwareUpdateCoordinator
             // case of issue #599. The next run defaults to a full auto-update unless the user
             // explicitly re-selects a file. (The auto path never writes this property.)
             _host.FirmwareFilePath = string.Empty;
+
+            // Refresh the release list only now that the run has closed, and do not await it: the
+            // lookup takes no token, so it must never hold IsFirmwareUploading up or delay the
+            // success dialog (issue #566). It catches its own failures. RecheckFirmwareAfterWrite
+            // has already settled the notification against the recorded release; this pass picks
+            // up a release published since that one was recorded.
+            if (refreshReleasesAfterRun)
+            {
+                _ = RefreshFirmwareUpdatesAsync();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Settles the outdated-firmware notification and
+    /// <see cref="Daqifi.Desktop.Device.IStreamingDevice.IsFirmwareOutdated"/> for the device a write
+    /// has just succeeded on, before the success dialog tells the user the update is done
+    /// (issue #566). Makes no network request.
+    /// <para>
+    /// <see cref="RefreshFirmwareUpdatesAsync"/> is otherwise reached only from the end of the
+    /// shell's <c>UpdateUi</c>, which runs on a connection-manager or logging-manager property
+    /// change. The device stays in the connected list for the whole update by design, so nothing
+    /// raises one when the update completes: a successful update left "has Outdated Firmware"
+    /// standing beside a tile that already showed the new version.
+    /// </para>
+    /// <para>
+    /// The comparison is against the release already recorded in <see cref="_latestFirmwareVersion"/>,
+    /// the one the standing notification was raised for, and not a fresh release lookup. That lookup
+    /// takes no token: run inside the write it would hold the upload open (Cancel enabled over a
+    /// finished write) for as long as GitHub takes to answer once the release cache has expired, and
+    /// on a failure it would leave the old notification standing. The release list is refreshed
+    /// separately, after the run has closed (see the end of <see cref="UploadFirmwareAsync"/>).
+    /// The rule is Core's own <c>CheckForUpdateAsync</c> rule — outdated when the release is newer
+    /// than the device by <see cref="FirmwareVersion"/> ordering — so pre-release ordering is the
+    /// same here as in the full check.
+    /// </para>
+    /// <para>
+    /// The device's version is <paramref name="reportedVersion"/>: the version in a fresh status
+    /// reply of the restarted device, read by <see cref="_readPostRestartVersion"/> once the write
+    /// has returned. It is NOT <c>Metadata.FirmwareVersion</c>. Core keeps that field when a reply
+    /// omits the version, and Core can complete the write even when its initialization after the
+    /// reconnect fails — so the field can still hold the version from before the write, and
+    /// comparing it would keep the obsolete notification with nothing to show it was stale.
+    /// </para>
+    /// <para>
+    /// Both directions are settled, not only removal: a manual <c>.hex</c> can install an OLDER
+    /// image, and the notification must then stay, or come back.
+    /// </para>
+    /// <para>
+    /// When the version is not known (<paramref name="reportedVersion"/> is <c>null</c>), nothing
+    /// changes: not <c>DeviceVersion</c>, not <c>IsFirmwareOutdated</c>, not the notification. The
+    /// same holds when no release has been recorded, or a version does not parse. The refresh after
+    /// the run then reads the wrapper's <c>DeviceVersion</c>, which is still the old value, so it
+    /// keeps the notification too: "unknown" is never turned into a guess in either direction.
+    /// </para>
+    /// </summary>
+    private void RecheckFirmwareAfterWrite(
+        SerialStreamingDevice serialStreamingDevice,
+        string? reportedVersion)
+    {
+        if (string.IsNullOrWhiteSpace(reportedVersion))
+        {
+            return;
+        }
+
+        var restartedVersion = reportedVersion;
+
+        serialStreamingDevice.DeviceVersion = restartedVersion;
+
+        var recordedRelease = _latestFirmwareVersion;
+        if (!FirmwareVersion.TryParse(recordedRelease, out var latest)
+            || !FirmwareVersion.TryParse(restartedVersion, out var installed))
+        {
+            return;
+        }
+
+        var isOutdated = latest > installed;
+        serialStreamingDevice.IsFirmwareOutdated = isOutdated;
+
+        if (string.IsNullOrWhiteSpace(serialStreamingDevice.DeviceSerialNo))
+        {
+            return;
+        }
+
+        if (isOutdated)
+        {
+            AddNotification(serialStreamingDevice, recordedRelease);
+        }
+        else
+        {
+            RemoveFirmwareNotification(serialStreamingDevice);
         }
     }
 

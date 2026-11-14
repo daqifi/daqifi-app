@@ -64,6 +64,12 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// The post-restart version read (issue #566) is replaced by a stand-in that answers "unknown"
+    /// at once. These tests are about the confirmation in front of the write, and the capturing
+    /// transport never answers a status request, so the real reader would wait its whole timeout
+    /// (5 s) after every write before it reported "unknown" anyway.
+    /// </summary>
     private FirmwareUpdateCoordinator CreateCoordinator() =>
         new(_host,
             _updates,
@@ -72,7 +78,8 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
             new RecordingAppLogger(),
             _dataDirectory,
             wifiUpdateModeSettleDelay: TimeSpan.Zero,
-            canFlashWifiModule: false);
+            canFlashWifiModule: false,
+            readPostRestartVersion: (_, _) => Task.FromResult<string?>(null));
 
     #region The write starts only after the user confirms
     /// <summary>
