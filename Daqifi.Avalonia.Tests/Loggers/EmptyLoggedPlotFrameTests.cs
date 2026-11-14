@@ -50,7 +50,7 @@ public class EmptyLoggedPlotFrameTests
     [Theory]
     [InlineData(PlotModelFactory.ANALOG_AXIS_KEY, "Analog (V)", AxisPosition.Left)]
     [InlineData(PlotModelFactory.DIGITAL_AXIS_KEY, "Digital", AxisPosition.Right)]
-    [InlineData(PlotModelFactory.TIME_AXIS_KEY, "Time (ms)", AxisPosition.Bottom)]
+    [InlineData(PlotModelFactory.TIME_AXIS_KEY, "Elapsed time", AxisPosition.Bottom)]
     public void A_freshly_built_main_model_carries_the_three_titled_axes(
         string key, string expectedTitle, AxisPosition expectedPosition)
     {

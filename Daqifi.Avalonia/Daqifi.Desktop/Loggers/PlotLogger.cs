@@ -258,17 +258,10 @@ public partial class PlotLogger : ObservableObject, ILogger
             Title = "Digital"
         };
 
-        var timeAxis = new LinearAxis
+        // The same axis as the Logged Data plot, so the two read time the same way: issue #585.
+        var timeAxis = new ElapsedTimeAxis
         {
-            Position = AxisPosition.Bottom,
-            TickStyle = TickStyle.None,
-            MajorGridlineStyle = LineStyle.Solid,
-            MinorGridlineStyle = LineStyle.Solid,
-            TitleFontSize = 12,
-            TitleFontWeight = FontWeights.Bold,
-            Key = "Time",
-            Title = "Time (ms)",
-
+            Key = "Time"
         };
 
         OxyPlotDarkTheme.ApplyTo(PlotModel);
@@ -417,7 +410,7 @@ public partial class PlotLogger : ObservableObject, ILogger
             // transformed and grouped, so that part scales with the buffer. The tracker reads the
             // undecimated points, so hover values are unchanged.
             Decimator = OxyPlot.Decimator.Decimate,
-            TrackerFormatString = $"{channelName} ({serialSuffix})\n{{1}}: {{2:0.###}}\n{{3}}: {{4:0.######}}"
+            TrackerFormatString = $"{channelName} ({serialSuffix})\n{{1}}: {{2}}\n{{3}}: {{4:0.######}}"
         };
 
         // Synchronize IsVisible with the IChannel
