@@ -23,13 +23,18 @@ namespace Daqifi.Desktop.Logger;
 /// shared with another app, and is never moved, copied as a file, migrated or deleted.
 /// </para>
 /// <para>
-/// <b>Repeatable.</b> A session is identified by its <c>SessionStart</c> text, which this import
-/// copies unchanged, and which a rename does not touch. Sessions already present (and complete)
-/// are skipped. Each new session is written as <see cref="SessionStatus.Importing"/> and marked
+/// <b>Repeatable.</b> Each copy records the ID of its old session's first sample
+/// (<c>PreviousFirstSampleId</c>), which a rename does not touch. A session that only looks like a
+/// copy (an SD card log from the same second, say) is never taken for one (see <c>IsCopy</c>).
+/// Sessions already present (and complete) are skipped. When the old database can give a sample ID
+/// twice (no AUTOINCREMENT), no copy is proved, so nothing is skipped or deleted, and an import that
+/// leaves nothing for later ends the offer itself (see <c>ProvedCopy</c>). Each new session is written as <see cref="SessionStatus.Importing"/> and marked
 /// <see cref="SessionStatus.Complete"/> only once all its samples are in. If the process dies
 /// part-way, startup turns the leftover into <see cref="SessionStatus.ImportFailed"/> (see
 /// <c>LoggingManager.MarkAbandonedImportsFailed</c>), and the next import deletes that partial copy
-/// and starts the session again. A failure this import sees itself is flagged the same way at once.
+/// and starts the session again; when the old database cannot prove the copy's source (see
+/// <c>RemoveFailedImports</c>), the partial copy is kept and a complete copy is made beside it.
+/// A failure this import sees itself is flagged the same way at once.
 /// Only <see cref="SessionStatus.ImportFailed"/> copies are replaced: an <c>Importing</c> one may be
 /// another instance's import still running. <see cref="ImportLease"/> keeps startup from failing a
 /// live import, and lets only one copy of the app import earlier sessions at a time.
@@ -138,7 +143,7 @@ public sealed class PreviousSessionImport
 
             return Scalar<long>(connection,
                 $"SELECT COUNT(*) FROM old.Sessions o WHERE {PreviousIsComplete(connection)} AND {HasSamples} " +
-                "AND NOT EXISTS (SELECT 1 FROM main.Sessions m WHERE m.SessionStart = o.SessionStart AND m.Status = 0)") > 0;
+                $"AND NOT EXISTS (SELECT 1 FROM main.Sessions m WHERE m.Status = 0 AND {ProvedCopy(connection)})") > 0;
         }
         catch
         {
@@ -179,6 +184,7 @@ public sealed class PreviousSessionImport
         }
 
         var complete = PreviousIsComplete(connection);
+        var copyOf = ProvedCopy(connection);
         var hasSampleCount = HasColumn(connection, "old", "Sessions", "SampleCount");
         var hasMetadata = HasTable(connection, "old", "SessionDeviceMetadata");
 
@@ -192,7 +198,7 @@ public sealed class PreviousSessionImport
             transaction.Commit();
         }
 
-        outcome.Removed.AddRange(RemoveFailedImports(connection, complete));
+        outcome.Removed.AddRange(RemoveFailedImports(connection, complete, copyOf));
 
         // The sessions to bring over and the sample ID range each spans in the old database.
         var pending = new List<(long Id, string Start, string Name, long? Count, long First, long Last)>();
@@ -204,7 +210,10 @@ public sealed class PreviousSessionImport
                    "(SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID), " +
                    "(SELECT MAX(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) " +
                    $"FROM old.Sessions o WHERE {complete} AND {HasSamples} " +
-                   "AND NOT EXISTS (SELECT 1 FROM main.Sessions m WHERE m.SessionStart = o.SessionStart) ORDER BY o.ID"))
+                   // A failed copy must never stop a complete copy. With ProvedCopy none can: a
+                   // proved one was deleted just above, and an unproved one never matches. The
+                   // status check stays as a guard, so no test can fail without it.
+                   $"AND NOT EXISTS (SELECT 1 FROM main.Sessions m WHERE m.Status <> {(int)SessionStatus.ImportFailed} AND {copyOf}) ORDER BY o.ID"))
         using (var reader = read.ExecuteReader())
         {
             while (reader.Read())
@@ -247,9 +256,11 @@ public sealed class PreviousSessionImport
                 newId = Math.Max(idFloor, SessionIdAllocator.NextSessionId(connection, transaction)) + 1;
                 idFloor = newId + 1;
                 using var insert = Command(connection,
-                    "INSERT INTO main.Sessions (ID, SessionStart, Name, SampleCount, Status) VALUES ($id, $start, $name, $count, $status)",
+                    "INSERT INTO main.Sessions (ID, SessionStart, Name, SampleCount, Status, PreviousFirstSampleId) " +
+                    "VALUES ($id, $start, $name, $count, $status, $first)",
                     transaction);
                 insert.Parameters.AddWithValue("$id", newId);
+                insert.Parameters.AddWithValue("$first", first);
                 insert.Parameters.AddWithValue("$start", start);
                 insert.Parameters.AddWithValue("$name", name);
                 insert.Parameters.AddWithValue("$count", (object?)count ?? DBNull.Value);
@@ -350,6 +361,15 @@ public sealed class PreviousSessionImport
             }
 
             outcome.Imported.Add((int)newId);
+        }
+
+        // Nothing here can be proved a copy, so a later check would offer every session again and
+        // a later import would copy each one again. An import that left nothing for later ends the
+        // offer itself; one that left a session for later keeps it open, and the next import then
+        // copies the other sessions again (a duplicate, never a loss).
+        if (!SampleIdsAreNeverReused(connection) && outcome.LeftForLater == 0)
+        {
+            MarkDone();
         }
 
         progress?.Report(1);
@@ -463,15 +483,21 @@ public sealed class PreviousSessionImport
     /// <see cref="SessionStatus.ImportFailed"/>), so they are redone. Rows still marked
     /// <see cref="SessionStatus.Importing"/> may belong to an import running in another copy of the
     /// app and are left alone. Startup turns them into failed ones only when no import holds
-    /// <see cref="ImportLease"/>, so a failed row here is never a live import's.
+    /// <see cref="ImportLease"/>, so a failed row here is never a live import's. A copy is deleted
+    /// only when its source is proved to be in the old database still (<see cref="ProvedCopy"/>), so
+    /// a failed SD card import keeps its samples, a copy whose deletion stopped part-way is still
+    /// found and finished, and a copy whose old session was deleted or recreated is kept: it may be
+    /// the only copy of that data left. When the old database cannot prove a source at all (no
+    /// AUTOINCREMENT on its samples), every failed copy is kept.
     /// </summary>
+    /// <param name="copyOf">The <see cref="ProvedCopy"/> condition for this old database.</param>
     /// <returns>The IDs deleted.</returns>
-    private static List<int> RemoveFailedImports(SqliteConnection connection, string complete)
+    private static List<int> RemoveFailedImports(SqliteConnection connection, string complete, string copyOf)
     {
         var ids = new List<int>();
         using (var find = Command(connection,
                    $"SELECT m.ID FROM main.Sessions m WHERE m.Status = {(int)SessionStatus.ImportFailed} AND EXISTS " +
-                   $"(SELECT 1 FROM old.Sessions o WHERE o.SessionStart = m.SessionStart AND {complete})"))
+                   $"(SELECT 1 FROM old.Sessions o WHERE {complete} AND {copyOf})"))
         using (var reader = find.ExecuteReader())
         {
             while (reader.Read())
@@ -542,6 +568,46 @@ public sealed class PreviousSessionImport
     /// offering one would only bring it back to be deleted.
     /// </summary>
     private const string HasSamples = "EXISTS (SELECT 1 FROM old.Samples s WHERE s.LoggingSessionID = o.ID)";
+
+    /// <summary>
+    /// The condition that session <c>m</c> of this user's database is this import's copy of old
+    /// session <c>o</c>.
+    /// </summary>
+    /// <remarks>
+    /// Each copy records the ID of its old session's first sample (<c>PreviousFirstSampleId</c>),
+    /// and nothing else writes that column. The data alone cannot tell a copy apart (#511): an SD
+    /// card session starts on a whole second (the time in the log's file name), so two different
+    /// card logs can share a start and even a first sample, and a partial copy loses its first
+    /// samples while its clean-up runs. The old session's ID and start are not enough either: the
+    /// earlier version gives a new session the maximum ID plus one, so a different log from the same
+    /// second can get both again. Its samples cannot get the same IDs when the samples table has
+    /// AUTOINCREMENT (see <see cref="SampleIdsAreNeverReused"/>). The old first sample is one index
+    /// lookup.
+    /// </remarks>
+    private const string IsCopy =
+        "m.PreviousFirstSampleId = (SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID)";
+
+    /// <summary>
+    /// The one rule that decides if session <c>m</c> is proved to be this import's copy of old
+    /// session <c>o</c>, for all three uses: the offer, the list of sessions to copy, and the
+    /// clean-up of partial copies. It is <c>IsCopy</c> when the old samples table never gives an ID
+    /// twice, and false otherwise: there a recreated old session can have its predecessor's first
+    /// sample ID, so a copy proves nothing. The import then skips nothing and deletes nothing; a
+    /// duplicate copy is better than a lost session.
+    /// </summary>
+    private static string ProvedCopy(SqliteConnection connection) =>
+        SampleIdsAreNeverReused(connection) ? IsCopy : "0 = 1";
+
+    /// <summary>
+    /// Whether the old samples table has AUTOINCREMENT, so SQLite never gives a sample ID twice,
+    /// even after the highest samples are deleted. Every database the earlier version's migrations
+    /// made has it. Without it, a recreated old session can have its predecessor's first sample ID,
+    /// so <c>IsCopy</c> cannot prove a copy's source.
+    /// </summary>
+    private static bool SampleIdsAreNeverReused(SqliteConnection connection) =>
+        Scalar<long>(connection,
+            "SELECT COUNT(*) FROM old.sqlite_master WHERE type = 'table' AND name = 'Samples' " +
+            "AND sql LIKE '%AUTOINCREMENT%'") > 0;
 
     private static bool PreviousSchemaIsUsable(SqliteConnection connection) =>
         HasColumn(connection, "old", "Sessions", "ID")
