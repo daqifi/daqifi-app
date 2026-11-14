@@ -57,7 +57,7 @@ using DesktopApp = Daqifi.Desktop.App;
 // is a ScriptedDevice).
 // Add a Step per matrix row; keep the shape.
 
-internal static class HeadlessBench
+internal static partial class HeadlessBench
 {
     private static string _out = "";
     private static string _port = "";
@@ -343,6 +343,7 @@ internal static class HeadlessBench
             var aiTile = channelsPane.AnalogInputs.FirstOrDefault(t => ReferenceEquals(t.Channel, ai));
             channelsPane.ToggleChannelCommand.Execute(aiTile);
             Pump();
+            if (_allAi) { EnableEveryOtherAnalogInput(channelsPane, ai); }
             var subscribed = LoggingManager.Instance.SubscribedChannels.Any(c => ReferenceEquals(c, ai));
             Step(2, "CH-AI", "works", ai.IsActive && subscribed && aiTile is { IsActive: true },
                  $"'{ai.Name}' IsActive={ai.IsActive} subscribed={subscribed}; tile IsActive={aiTile?.IsActive.ToString() ?? "no tile"}; " +
@@ -361,6 +362,7 @@ internal static class HeadlessBench
             DateTime? first = null;
             var arrivals = new List<long>(_rate * (_seconds + 2));
             long firstTicks = 0, lastTicks = 0;
+            var deviceGaps = new DeviceGapTally();
             var arrivalSw = Stopwatch.StartNew();
             OnChannelUpdatedHandler counter = (_, sample) =>
             {
@@ -370,6 +372,7 @@ internal static class HeadlessBench
                 {
                     arrivals.Add(arrivalSw.ElapsedMilliseconds);
                     if (firstTicks == 0) { firstTicks = sample.TimestampTicks; }
+                    else { deviceGaps.Note(sample.TimestampTicks - lastTicks); }
                     lastTicks = sample.TimestampTicks;
                 }
             };
@@ -397,7 +400,10 @@ internal static class HeadlessBench
             // failure, and the row could not be told apart from one where nothing streamed at
             // all (#281).
             var commandedRate = device.StreamingFrequency;
+            var streamPumpsFrom = FrameLatenciesMs.Count;
             if (started) { PumpFor(TimeSpan.FromSeconds(_seconds)); }
+            var streamPumpsTo = FrameLatenciesMs.Count;
+            var redraw = started ? MeasureLiveRedraw(main) : default;
             var window = first is null ? 0 : (DateTime.UtcNow - first.Value).TotalSeconds;
             var counted = samples;
             // Read the plot BEFORE stopping: LoggingManager clears the PlotLogger when Active goes false.
@@ -480,6 +486,17 @@ internal static class HeadlessBench
                  $"arrival gaps: max {maxGap} ms, {gapsOver100} over 100 ms across {arrivals.Count} samples; " +
                  $"device-stamped span {deviceSpan:F2} s vs wall-clock {window:F2} s (ratio {clockSkew:F3}; device counter {tsFreq} Hz) " +
                  $"-> {deviceRate:F1} Hz by device timestamps, {(window > 0 ? counted / window : 0):F1} Hz by wall clock");
+            ReportStreamLoad(device, ai, started, counted, window, commandedRate, deviceSpan, deviceGaps,
+                             streamPumpsFrom, streamPumpsTo, redraw, session, shot);
+            if (_allAi)
+            {
+                // A load run ends here: the rows below rename the board and drive its pins, which a
+                // repeated stress run has no business doing. Leave the shared board with no channel on.
+                DisableEveryAnalogInput(channelsPane);
+                shell.DisconnectDeviceCommand.Execute(device);
+                PumpUntil(() => !shell.ConnectedDevices.Contains(device), TimeSpan.FromSeconds(10));
+                return;
+            }
         }
 
         // CH-DIO — the drawer's DIRECTION and OUTPUT STATE radios bind SelectedChannel.IsOutput and
@@ -1165,7 +1182,7 @@ internal static class HeadlessBench
     private const string StateModeChangeMidSession = "mode-change-mid-session";
     private static readonly string[] ScriptedStates =
         [StateSessions500, StateSession10H, StateExportReadonly, StateSdEmpty, StateDropMidStream,
-         StateDisconnectMidStream, StateModeChangeMidSession];
+         StateDisconnectMidStream, StateModeChangeMidSession, StatePlotIngest];
 
     /// <summary>Serial number the two device states give their <see cref="ScriptedDevice"/>. It
     /// reaches the UI — the drop notification names the device by it — so the rows assert against
@@ -1224,7 +1241,7 @@ internal static class HeadlessBench
         // database they do touch (drop-mid-stream opens a real logging session) is the one the app
         // creates and migrates for itself at boot, under <out>/appdata.
         if (_scripted is StateSdEmpty or StateDropMidStream or StateDisconnectMidStream
-            or StateModeChangeMidSession) { return; }
+            or StateModeChangeMidSession or StatePlotIngest) { return; }
 
         var sw = Stopwatch.StartNew();
         var factory = new SeedContextFactory(DesktopApp.DatabasePath);
@@ -1337,6 +1354,7 @@ internal static class HeadlessBench
             case StateDropMidStream: UiProbe = (1, "CONN-LOST"); RunDropMidStreamRow(main, shell); break;
             case StateDisconnectMidStream: UiProbe = (1, "CONN-DISC"); RunDisconnectMidStreamRow(main, shell); break;
             case StateModeChangeMidSession: UiProbe = (1, "LOG-MODE"); RunModeChangeMidSessionRow(main, shell); break;
+            case StatePlotIngest: UiProbe = (1, "GRAPH-INGEST"); RunPlotIngestRow(main, shell); break;
             default: throw new ArgumentException($"unknown --scripted state '{_scripted}'");
         }
     }
@@ -2295,6 +2313,7 @@ internal static class HeadlessBench
             Dispatcher.UIThread.RunJobs();
             PumpLatenciesMs.Add(sw.Elapsed.TotalMilliseconds);
             AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+            FrameLatenciesMs.Add(sw.Elapsed.TotalMilliseconds);
         }
     }
 
@@ -2367,6 +2386,7 @@ internal static class HeadlessBench
                     case "--rate": _rate = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--seconds": _seconds = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--scripted": _scripted = Next(); break;
+                    case "--all-ai": _allAi = true; break;
                     default: Console.WriteLine($"unknown argument '{args[i]}'"); return false;
                 }
             }
