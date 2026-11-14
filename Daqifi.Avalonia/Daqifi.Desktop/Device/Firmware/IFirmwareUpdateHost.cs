@@ -101,8 +101,12 @@ public interface IFirmwareUpdateHost
     /// Presents the firmware-update success dialog and closes the firmware flyout. Kept on the host
     /// so the coordinator stays free of WPF dependencies.
     /// </summary>
+    /// <param name="message">
+    /// The dialog text. The coordinator writes it, so it can carry what the user must do next, such as
+    /// set the WiFi settings again (issue #564).
+    /// </param>
     // @port: Daqifi.Desktop.Device.Firmware.IFirmwareUpdateHost.ShowFirmwareUpdateSucceeded
-    void ShowFirmwareUpdateSucceeded();
+    void ShowFirmwareUpdateSucceeded(string message);
 
     /// <summary>
     /// Asks the user to confirm a firmware update before anything touches the device (issue #564).

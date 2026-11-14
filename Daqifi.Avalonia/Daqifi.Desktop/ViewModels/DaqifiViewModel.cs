@@ -2554,12 +2554,11 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// Presents the firmware-update success dialog on the UI thread and closes the firmware flyout.
     /// </summary>
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.IFirmwareUpdateHost.ShowFirmwareUpdateSucceeded
-    void IFirmwareUpdateHost.ShowFirmwareUpdateSucceeded()
+    void IFirmwareUpdateHost.ShowFirmwareUpdateSucceeded(string message)
     {
         void ShowDialog()
         {
-            var successDialogViewModel =
-                new SuccessDialogViewModel("Firmware update completed successfully.");
+            var successDialogViewModel = new SuccessDialogViewModel(message);
             _ = _dialogService.ShowDialogAsync<SuccessDialog>(this, successDialogViewModel);
         }
 

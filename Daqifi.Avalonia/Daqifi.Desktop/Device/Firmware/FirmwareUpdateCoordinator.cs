@@ -223,9 +223,37 @@ public class FirmwareUpdateCoordinator
 
         // Issue #564: one click on UPDATE used to start the write. Ask first, and touch nothing —
         // not the flag, not the status line, not the WiFi probe — until the user says yes.
+        //
+        // Pin the exact firmware BEFORE the prompt, and write only that after it. The prompt names a
+        // version or a file; reading the bound path again, or downloading "whatever is latest now",
+        // after the user answers would let a newly published release or an edited path put firmware
+        // on the device that the user never agreed to.
+        var manualFirmwarePath = _host.FirmwareFilePath;
+        var isManualUpload = !string.IsNullOrWhiteSpace(manualFirmwarePath);
+        FirmwareReleaseInfo? release = null;
+        if (isManualUpload)
+        {
+            if (!File.Exists(manualFirmwarePath))
+            {
+                _host.ShowFirmwareError(
+                    $"The firmware file {Path.GetFileName(manualFirmwarePath)} does not exist. Select the file again.");
+                return;
+            }
+        }
+        else
+        {
+            release = await ResolveReleaseToInstallAsync();
+            if (release == null)
+            {
+                // A prompt that cannot name the version must not start a write.
+                _host.ShowFirmwareError(ReleaseNotFoundMessage);
+                return;
+            }
+        }
+
         var confirmed = await _host.ConfirmFirmwareUpdateAsync(
             FirmwareUpdateConfirmTitle,
-            DescribeFirmwareUpdate(serialStreamingDevice, _latestFirmwareVersion, _host.FirmwareFilePath));
+            DescribeFirmwareUpdate(serialStreamingDevice, release?.Version.ToString(), manualFirmwarePath));
         if (!confirmed)
         {
             return;
@@ -259,8 +287,6 @@ public class FirmwareUpdateCoordinator
             _host.FirmwareUpdateStatusText = "Preparing firmware update...";
             _host.DeviceBeingUpdated = _host.SelectedDevice;
 
-            var isManualUpload = !string.IsNullOrWhiteSpace(_host.FirmwareFilePath);
-
             _appLogger.AddBreadcrumb("firmware", $"Firmware update started for {serialStreamingDevice.Name}");
 
             // Quiesce inside the try so a fault here still runs the finally (which clears
@@ -290,18 +316,21 @@ public class FirmwareUpdateCoordinator
             // would make the NEXT in-session update look like a manual upload (isManualUpload
             // is derived from FirmwareFilePath being non-empty), silently skipping the
             // WiFi-module step until the app is restarted. See issue #599.
-            string effectiveFirmwarePath;
+            //
+            // Both branches write what the prompt named (issue #564): the release resolved before
+            // the prompt, downloaded by its tag, or the path read before the prompt.
+            string? effectiveFirmwarePath;
             if (!isManualUpload)
             {
                 _host.FirmwareUpdateStatusText = "Downloading latest firmware package...";
-                effectiveFirmwarePath = await _firmwareDownloadService.DownloadLatestFirmwareAsync(
+                effectiveFirmwarePath = await _firmwareDownloadService.DownloadFirmwareByTagAsync(
+                    release!.TagName,
                     GetFirmwareDownloadDirectory(),
-                    includePreRelease: true,
                     cancellationToken: cancellationToken);
             }
             else
             {
-                effectiveFirmwarePath = _host.FirmwareFilePath;
+                effectiveFirmwarePath = manualFirmwarePath;
             }
 
             if (string.IsNullOrWhiteSpace(effectiveFirmwarePath) || !File.Exists(effectiveFirmwarePath))
@@ -345,7 +374,8 @@ public class FirmwareUpdateCoordinator
             _host.IsUploadComplete = true;
             NotifyWifiSettingsMayBeErased(serialStreamingDevice);
             _appLogger.AddBreadcrumb("firmware", "Firmware update completed");
-            _host.ShowFirmwareUpdateSucceeded();
+            _host.ShowFirmwareUpdateSucceeded(
+                "Firmware update completed successfully.\n\n" + WifiSettingsMayBeErasedInstruction);
         }
         catch (OperationCanceledException)
         {
@@ -396,19 +426,20 @@ public class FirmwareUpdateCoordinator
     /// </para>
     /// </summary>
     /// <param name="device">The device the update would write.</param>
-    /// <param name="latestFirmwareVersion">
-    /// The latest release the last version check found, or empty when no check has succeeded.
+    /// <param name="releaseVersion">
+    /// The version of the release the run will download, resolved before the prompt. Ignored for a
+    /// manual upload.
     /// </param>
     /// <param name="manualFirmwarePath">The user-selected <c>.hex</c> file, or empty for an auto-update.</param>
     internal static string DescribeFirmwareUpdate(
         IStreamingDevice device,
-        string latestFirmwareVersion,
+        string? releaseVersion,
         string manualFirmwarePath)
     {
         var installed = string.IsNullOrWhiteSpace(device.DeviceVersion) ? "unknown" : device.DeviceVersion;
         var target = !string.IsNullOrWhiteSpace(manualFirmwarePath)
             ? $"the file {Path.GetFileName(manualFirmwarePath)}"
-            : string.IsNullOrWhiteSpace(latestFirmwareVersion) ? "the latest release" : latestFirmwareVersion;
+            : releaseVersion;
 
         return $"Device: {device.DeviceDisplayName}\n" +
                $"Installed version: {installed}\n" +
@@ -419,9 +450,51 @@ public class FirmwareUpdateCoordinator
     }
 
     /// <summary>
+    /// What the user is told after a successful write (issue #564), in the success dialog and in the
+    /// device's notification. One text for both, so the two can never disagree.
+    /// </summary>
+    internal const string WifiSettingsMayBeErasedInstruction =
+        "The firmware update can erase the WiFi settings and the calibration of the device. " +
+        "Set the WiFi settings of the device again.";
+
+    /// <summary>
+    /// What the user is told when no release can be resolved for the prompt. The run stops there: a
+    /// prompt that cannot name the version it would write must not start a write.
+    /// </summary>
+    internal const string ReleaseNotFoundMessage =
+        "The app could not find the firmware release to install. " +
+        "Make sure that the computer is connected to the internet, then try again.";
+
+    /// <summary>
+    /// Resolves the release an auto-update will write, before the prompt names it (issue #564).
+    /// Returns null, and logs why, when the lookup fails or finds nothing. Asynchronous, so the UI
+    /// stays live while it runs, and it runs before the uploading flag goes up, so a failure leaves
+    /// nothing to lower.
+    /// </summary>
+    private async Task<FirmwareReleaseInfo?> ResolveReleaseToInstallAsync()
+    {
+        try
+        {
+            var release = await _firmwareDownloadService.GetLatestReleaseAsync(includePreRelease: true);
+            if (release == null || string.IsNullOrWhiteSpace(release.TagName))
+            {
+                _appLogger.Warning("Firmware update not started: no firmware release was found.");
+                return null;
+            }
+
+            return release;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            _appLogger.Warning($"Firmware update not started: the firmware release lookup failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Tells the user, after a successful write, that the device may have lost its WiFi settings
-    /// (issue #564). The success dialog closes and the status line is hidden once the run ends, so a
-    /// notification is the one place this outlives the run. A device that was set to join a site
+    /// (issue #564). The success dialog says it too, but that dialog closes and the status line is
+    /// hidden once the run ends, so a notification is the one place this outlives the run. A device that was set to join a site
     /// network comes back as its own access point and WiFi discovery no longer finds it.
     /// <para>
     /// Owned by the device's serial, like <see cref="NotifyWifiModuleWasNotUpdated"/>, and
@@ -430,9 +503,7 @@ public class FirmwareUpdateCoordinator
     /// </summary>
     private void NotifyWifiSettingsMayBeErased(SerialStreamingDevice serialStreamingDevice)
     {
-        var message =
-            $"{serialStreamingDevice.DeviceDisplayName}: the firmware update can erase the WiFi settings " +
-            "and the calibration of the device. Set the WiFi settings of the device again.";
+        var message = $"{serialStreamingDevice.DeviceDisplayName}: {WifiSettingsMayBeErasedInstruction}";
         var serial = serialStreamingDevice.DeviceSerialNo;
 
         if (_host.Notifications.Any(notification =>

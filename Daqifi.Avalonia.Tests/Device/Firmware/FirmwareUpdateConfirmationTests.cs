@@ -29,15 +29,16 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
 
     private readonly PromptHost _host = new();
     private readonly CountingUpdateService _updates = new();
-    private readonly CountingDownloadService _downloads = new();
     private readonly string _dataDirectory =
         Path.Combine(Path.GetTempPath(), "daqifi-firmware-confirm-tests", Guid.NewGuid().ToString("N"));
+    private readonly CountingDownloadService _downloads;
     private readonly CapturingTransport _transport = new();
     private readonly DaqifiStreamingDevice _core;
     private readonly SerialStreamingDevice _device;
 
     public FirmwareUpdateConfirmationTests()
     {
+        _downloads = new CountingDownloadService(Path.Combine(_dataDirectory, "downloads"));
         _core = new DaqifiStreamingDevice("core", _transport, NullLogger.Instance);
         _core.Connect();
         _device = new SerialStreamingDevice("COM-TEST-564", _core)
@@ -87,7 +88,7 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
 
         Assert.Equal(1, _host.PromptCount);
         Assert.Equal(0, _updates.Pic32FlashCount);
-        Assert.Equal(0, _downloads.LatestFirmwareDownloadCount);
+        Assert.Equal(0, _downloads.DownloadCount);
         Assert.Equal(0, _host.QuiesceCount);
         Assert.False(_host.IsFirmwareUploading);
         Assert.False(_host.FlagWasEverRaised);
@@ -220,9 +221,9 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
         Assert.Contains("can erase the WiFi settings and the calibration", message);
     }
 
-    /// <summary>An auto-update names the release the last version check found.</summary>
+    /// <summary>An auto-update names the release resolved for it.</summary>
     [Fact]
-    public void An_auto_update_names_the_latest_release()
+    public void An_auto_update_names_the_resolved_release()
     {
         var message = FirmwareUpdateCoordinator.DescribeFirmwareUpdate(_device, "3.9.0", manualFirmwarePath: string.Empty);
 
@@ -231,18 +232,16 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
     }
 
     /// <summary>
-    /// Before any version check succeeds, and for a device that has not reported its version, the
-    /// prompt says so in words rather than printing an empty field.
+    /// A device that has not reported its version gets "unknown" in words rather than an empty field.
     /// </summary>
     [Fact]
-    public void Unknown_versions_are_named_rather_than_left_blank()
+    public void An_unknown_installed_version_is_named_rather_than_left_blank()
     {
         var device = new SerialStreamingDevice("COM-TEST-564-BLANK");
 
-        var message = FirmwareUpdateCoordinator.DescribeFirmwareUpdate(device, string.Empty, string.Empty);
+        var message = FirmwareUpdateCoordinator.DescribeFirmwareUpdate(device, "3.9.0", string.Empty);
 
         Assert.Contains("Installed version: unknown", message);
-        Assert.Contains("New version: the latest release", message);
     }
     #endregion
 
@@ -291,7 +290,129 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
     }
     #endregion
 
+    #region The write is the firmware the prompt named
+    /// <summary>
+    /// Review finding 1 on PR #575, automatic path: release A is the latest when the prompt opens and
+    /// release B is published before the user answers. The write must be A — the version the user
+    /// agreed to — downloaded by its tag, never "whatever is latest now".
+    /// </summary>
+    [Fact]
+    public async Task An_auto_update_writes_the_release_the_prompt_named_even_if_a_newer_one_appears()
+    {
+        _host.FirmwareFilePath = string.Empty;
+        _downloads.Releases.Add(Release("3.9.0"));
+        _downloads.Releases.Add(Release("3.9.1"));
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        Assert.Contains("New version: 3.9.0", _host.LastMessage);
+        Assert.Equal(["v3.9.0"], _downloads.DownloadedTags);
+        Assert.Equal(0, _downloads.LatestFirmwareDownloadCount);
+        Assert.Equal([_downloads.PathFor("v3.9.0")], _updates.FlashedPaths);
+    }
+
+    /// <summary>
+    /// Review finding 1, manual path: the path is read once, before the prompt. A path that changes
+    /// while the prompt is open does not redirect the write to a file the prompt never named.
+    /// </summary>
+    [Fact]
+    public async Task A_manual_update_writes_the_file_the_prompt_named_even_if_the_path_changes()
+    {
+        var namedFile = _host.FirmwareFilePath;
+        var otherFile = Path.Combine(_dataDirectory, "other.hex");
+        File.WriteAllText(otherFile, ":00000001FF\n");
+        var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _host.PendingAnswer = answer.Task;
+
+        var run = CreateCoordinator().UploadFirmwareAsync();
+        _host.FirmwareFilePath = otherFile;
+        answer.SetResult(true);
+        await run.WaitAsync(Timeout);
+
+        Assert.Contains("New version: the file firmware.hex", _host.LastMessage);
+        Assert.Equal([namedFile], _updates.FlashedPaths);
+    }
+
+    /// <summary>
+    /// Review finding 1, no release: a prompt that cannot name the version must not start a write. No
+    /// prompt opens, nothing is written, the pane is not left "uploading", and the user is told why.
+    /// </summary>
+    [Fact]
+    public async Task No_release_means_no_prompt_and_no_write()
+    {
+        _host.FirmwareFilePath = string.Empty;
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        AssertStoppedBeforeThePrompt();
+        Assert.Equal([FirmwareUpdateCoordinator.ReleaseNotFoundMessage], _host.Errors);
+    }
+
+    /// <summary>The same when the lookup itself fails, which is what no internet connection looks like.</summary>
+    [Fact]
+    public async Task A_failed_release_lookup_means_no_prompt_and_no_write()
+    {
+        _host.FirmwareFilePath = string.Empty;
+        _downloads.LookupFailure = new HttpRequestException("no route to host");
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        AssertStoppedBeforeThePrompt();
+        Assert.Equal([FirmwareUpdateCoordinator.ReleaseNotFoundMessage], _host.Errors);
+    }
+
+    /// <summary>
+    /// A selected file that is gone is found before the prompt, so the user is not asked to confirm a
+    /// write that would then fail.
+    /// </summary>
+    [Fact]
+    public async Task A_missing_manual_file_means_no_prompt_and_no_write()
+    {
+        _host.FirmwareFilePath = Path.Combine(_dataDirectory, "deleted.hex");
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        AssertStoppedBeforeThePrompt();
+        var error = Assert.Single(_host.Errors);
+        Assert.Contains("deleted.hex", error);
+    }
+
+    private void AssertStoppedBeforeThePrompt()
+    {
+        Assert.Equal(0, _host.PromptCount);
+        Assert.Equal(0, _updates.Pic32FlashCount);
+        Assert.Equal(0, _downloads.DownloadCount);
+        Assert.False(_host.FlagWasEverRaised);
+        Assert.False(_host.IsFirmwareUploading);
+        Assert.Empty(_host.StatusWrites);
+    }
+    #endregion
+
+    #region The success dialog
+    /// <summary>
+    /// Review finding 2 on PR #575: the success dialog itself tells the user to set the WiFi settings
+    /// again, in the same words as the notification, after the completion text.
+    /// </summary>
+    [Fact]
+    public async Task The_success_dialog_tells_the_user_to_set_the_wifi_settings_again()
+    {
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        var message = Assert.Single(_host.SuccessMessages);
+        Assert.Equal(
+            "Firmware update completed successfully.\n\n" + FirmwareUpdateCoordinator.WifiSettingsMayBeErasedInstruction,
+            message);
+        Assert.EndsWith(FirmwareUpdateCoordinator.WifiSettingsMayBeErasedInstruction, Assert.Single(_host.Notifications).Message);
+    }
+    #endregion
+
     #region Helpers
+    private static FirmwareReleaseInfo Release(string version)
+    {
+        Assert.True(FirmwareVersion.TryParse(version, out var parsed));
+        return new FirmwareReleaseInfo { Version = parsed, TagName = $"v{version}", IsPreRelease = false };
+    }
+
     /// <summary>A stand-in PIC32 image: the coordinator checks only that the file exists.</summary>
     private string FirmwareFile()
     {
@@ -321,8 +442,6 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
         public bool FlagWasEverRaised { get; private set; }
 
         public int QuiesceCount { get; private set; }
-
-        public int SucceededCount { get; private set; }
 
         public int RefreshCount { get; private set; }
 
@@ -365,9 +484,15 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
 
         public void RefreshNotificationCount() => RefreshCount++;
 
-        public void ShowFirmwareError(string message) { }
+        public void ShowFirmwareError(string message) => Errors.Add(message);
 
-        public void ShowFirmwareUpdateSucceeded() => SucceededCount++;
+        public List<string> SuccessMessages { get; } = [];
+
+        public List<string> Errors { get; } = [];
+
+        public int SucceededCount => SuccessMessages.Count;
+
+        public void ShowFirmwareUpdateSucceeded(string message) => SuccessMessages.Add(message);
 
         public Task<bool> ConfirmFirmwareUpdateAsync(string title, string message)
         {
@@ -387,7 +512,9 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
     /// <summary>PIC32 update service that counts writes and can fail one.</summary>
     private sealed class CountingUpdateService : IFirmwareUpdateService
     {
-        public int Pic32FlashCount { get; private set; }
+        public int Pic32FlashCount => FlashedPaths.Count;
+
+        public List<string> FlashedPaths { get; } = [];
 
         public bool Fail { get; set; }
 
@@ -401,7 +528,7 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
             Daqifi.Core.Device.IStreamingDevice device,
             string hexFilePath,
             IProgress<FirmwareUpdateProgress>? progress = null,
-            CancellationToken cancellationToken = default) => Flash();
+            CancellationToken cancellationToken = default) => Flash(hexFilePath);
 
         public Task UpdateFirmwareAsync(
             Daqifi.Core.Device.IStreamingDevice device,
@@ -409,32 +536,48 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
             IProgress<FirmwareUpdateProgress>? progress,
             string? targetDevicePath,
             string? targetLocationKey,
-            CancellationToken cancellationToken = default) => Flash();
+            CancellationToken cancellationToken = default) => Flash(hexFilePath);
 
         public Task UpdateWifiModuleAsync(
             Daqifi.Core.Device.IStreamingDevice device,
             string firmwarePath,
             IProgress<FirmwareUpdateProgress>? progress = null,
             CancellationToken cancellationToken = default,
-            bool skipVersionCheck = false) => throw new NotSupportedException("A manual upload has no WiFi step.");
+            bool skipVersionCheck = false) => throw new NotSupportedException("These runs never flash the WiFi module.");
 
         public Task<WifiFirmwareStatus> CheckWifiFirmwareStatusAsync(
             Daqifi.Core.Device.IStreamingDevice device,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
-        private Task Flash()
+        private Task Flash(string hexFilePath)
         {
-            Pic32FlashCount++;
+            FlashedPaths.Add(hexFilePath);
             return Fail
                 ? Task.FromException(new InvalidOperationException("simulated flash failure"))
                 : Task.CompletedTask;
         }
     }
 
-    /// <summary>Download service that counts the auto-update download and is otherwise unused.</summary>
-    private sealed class CountingDownloadService : IFirmwareDownloadService
+    /// <summary>
+    /// Download service with a scripted release feed. <see cref="Releases"/> is what successive
+    /// <c>GetLatestReleaseAsync</c> calls return, the last entry repeating, and what
+    /// <c>DownloadLatestFirmwareAsync</c> treats as "latest now" — so "A, then B" models a release
+    /// published while the prompt is open. Both download methods write a stand-in file named after the
+    /// release they fetched, so the path the flash receives says which release it was.
+    /// </summary>
+    private sealed class CountingDownloadService(string directory) : IFirmwareDownloadService
     {
+        private int _lookups;
+
+        public List<FirmwareReleaseInfo?> Releases { get; } = [];
+
+        public Exception? LookupFailure { get; set; }
+
         public int LatestFirmwareDownloadCount { get; private set; }
+
+        public List<string> DownloadedTags { get; } = [];
+
+        public int DownloadCount => LatestFirmwareDownloadCount + DownloadedTags.Count;
 
         public Task<(string ExtractedPath, string Version)?> DownloadWifiFirmwareAsync(
             string destinationDirectory,
@@ -448,18 +591,38 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
             CancellationToken cancellationToken = default)
         {
             LatestFirmwareDownloadCount++;
-            return Task.FromResult<string?>(null);
+            var latest = Releases.Count == 0 ? null : Releases[^1];
+            return Task.FromResult(latest == null ? null : WriteFile(latest.TagName));
         }
 
         public Task<string?> DownloadFirmwareByTagAsync(
             string tagName,
             string destinationDirectory,
             IProgress<int>? progress = null,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            DownloadedTags.Add(tagName);
+            return Task.FromResult<string?>(WriteFile(tagName));
+        }
 
         public Task<FirmwareReleaseInfo?> GetLatestReleaseAsync(
             bool includePreRelease = false,
-            CancellationToken cancellationToken = default) => Task.FromResult<FirmwareReleaseInfo?>(null);
+            CancellationToken cancellationToken = default)
+        {
+            if (LookupFailure != null)
+            {
+                return Task.FromException<FirmwareReleaseInfo?>(LookupFailure);
+            }
+
+            if (Releases.Count == 0)
+            {
+                return Task.FromResult<FirmwareReleaseInfo?>(null);
+            }
+
+            var release = Releases[Math.Min(_lookups, Releases.Count - 1)];
+            _lookups++;
+            return Task.FromResult(release);
+        }
 
         public Task<FirmwareReleaseInfo?> GetLatestWifiReleaseAsync(CancellationToken cancellationToken = default)
             => Task.FromResult<FirmwareReleaseInfo?>(null);
@@ -470,6 +633,17 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
         public void InvalidateCache() { }
+
+        /// <summary>The path a download of <paramref name="tagName"/> lands at.</summary>
+        public string PathFor(string tagName) => Path.Combine(directory, $"release-{tagName}.hex");
+
+        private string WriteFile(string tagName)
+        {
+            Directory.CreateDirectory(directory);
+            var path = PathFor(tagName);
+            File.WriteAllText(path, ":00000001FF\n");
+            return path;
+        }
     }
     #endregion
 }
