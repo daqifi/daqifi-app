@@ -342,6 +342,10 @@
                            Value="{Binding Shell.UploadFirmwareProgress}" />
             </StackPanel>
 
+            <!-- Issue #564: this command now awaits Shell.FirmwareUpdateConfirm before it writes, and
+                 only DevicesPanePrototype renders that prompt. Nothing constructs this view today; a
+                 change that does must render the prompt here too, or this button waits on a dialog
+                 nobody can see. -->
             <Button Theme="{StaticResource AccentPillButton}" HorizontalAlignment="Stretch" MinHeight="44"
                     Content="UPDATE FIRMWARE"
                     Command="{Binding Shell.UploadFirmwareCommand}" />
