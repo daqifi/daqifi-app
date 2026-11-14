@@ -2,9 +2,11 @@ using System;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Controls.Platform;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
 using Daqifi.Avalonia.Views.Mobile;
 using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Common.Loggers;
@@ -35,6 +37,7 @@ public partial class MobileMainView : UserControl
     private Button[] _navButtons = Array.Empty<Button>();
     private Button[] _railButtons = Array.Empty<Button>();
     private IActivatableLifetime? _activatable;
+    private IInputPane? _inputPane;
 
     // Standalone, WPF-free notifications VM (like the mobile SettingsViewModel). Shared between the
     // top-bar bell badge and the Notifications overlay list (#11).
@@ -79,6 +82,9 @@ public partial class MobileMainView : UserControl
         AbstractChannel.ScaleResultsRejected += OnScaleResultsRejected;
         _activatable = Application.Current?.TryGetFeature<IActivatableLifetime>();
         if (_activatable is not null) { _activatable.Deactivated += OnAppDeactivated; }
+        // The on-screen keyboard (#589). Only a phone top level has an input pane.
+        _inputPane = TopLevel.GetTopLevel(this)?.InputPane;
+        if (_inputPane is not null) { _inputPane.StateChanged += OnInputPaneStateChanged; }
     }
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
@@ -86,10 +92,45 @@ public partial class MobileMainView : UserControl
         AbstractChannel.ScaleResultsRejected -= OnScaleResultsRejected;
         if (_activatable is not null) { _activatable.Deactivated -= OnAppDeactivated; }
         _activatable = null;
+        if (_inputPane is not null) { _inputPane.StateChanged -= OnInputPaneStateChanged; }
+        _inputPane = null;
         // A destroyed activity takes the shell with it; save the open edit as desktop does when its
         // pane detaches (#560).
         SaveProfileEdit();
         base.OnDetachedFromVisualTree(e);
+    }
+
+    /// <summary>
+    /// The on-screen keyboard opened, closed or changed its height (#589).
+    /// </summary>
+    /// <remarks>
+    /// On Android 15 and later the app is edge-to-edge, and the window does not resize for the
+    /// keyboard. Without this the keyboard covers the manual IP row and its Connect button, and the
+    /// user types the address blind. The content area is lifted by the part of it that the keyboard
+    /// covers, so each pane's scroll viewer shrinks to the visible part of the screen. Then the
+    /// focused text box is scrolled into view: it got the focus before the keyboard opened, when it
+    /// was still on screen, so the scroll viewer had nothing to do at that time. The bottom nav stays
+    /// under the keyboard, as in a native app.
+    /// </remarks>
+    private void OnInputPaneStateChanged(object? sender, InputPaneStateEventArgs e)
+    {
+        var top = TopLevel.GetTopLevel(this);
+        if (top is null) { return; }
+
+        // The slot's bottom edge, not the area's: the margin below moves the area's own bottom edge.
+        var slotBottom = ContentArea.TranslatePoint(
+            new Point(0, ContentArea.Bounds.Height + ContentArea.Margin.Bottom), top);
+        if (slotBottom is null) { return; }
+
+        var keyboard = e.NewState == InputPaneState.Open ? e.EndRect : default;
+        var overlap = KeyboardInset.Overlap(slotBottom.Value.Y, keyboard);
+        ContentArea.Margin = new Thickness(0, 0, 0, overlap);
+        if (overlap <= 0) { return; }
+
+        // After the layout pass that the new margin starts, so the scroll viewer has its new height.
+        Dispatcher.UIThread.Post(
+            () => (top.FocusManager?.GetFocusedElement() as Control)?.BringIntoView(),
+            DispatcherPriority.Background);
     }
 
     /// <summary>The app went to the background: HOME, the app switcher, a call (#560).</summary>
