@@ -65,6 +65,10 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     /// </summary>
     internal TimeProvider WatchdogClock = TimeProvider.System;
 
+    // The watchdog's backstop, for a render timer that stops polling — see OnWatchdogBackstop.
+    private static readonly TimeSpan WatchdogBackstopInterval = TimeSpan.FromSeconds(1);
+    private ITimer? _watchdogBackstop;
+
     public ObservableCollection<MobileDeviceItem> Devices { get; } = [];
 
     /// <summary>
@@ -735,7 +739,34 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
                 if (Volatile.Read(ref _countingGeneration) != generation) { return; }
                 Interlocked.Increment(ref _totalSamples);
             };
+
+            // The watchdog's backstop lives exactly as long as the count it judges: every path
+            // that ends a stream already stops the count.
+            _watchdogBackstop?.Dispose();
+            _watchdogBackstop = WatchdogClock.CreateTimer(
+                _ => PostToUiThread(OnWatchdogBackstop), null,
+                WatchdogBackstopInterval, WatchdogBackstopInterval);
         }
+    }
+
+    /// <summary>
+    /// Runs the watchdog's poll when the render timer has not run it for
+    /// <see cref="WatchdogBackstopInterval"/> (#601).
+    /// </summary>
+    /// <remarks>
+    /// The render timer is the view's, and the watchdog used to run only when it ticked. If it
+    /// stops — starved, throttled, or the view no longer driving it — the stream was never judged,
+    /// and the screen claimed a live stream that delivered nothing. This timer is the view-model's
+    /// own. It does nothing while the render timer polls normally, and it posts to the UI thread
+    /// like the rest of the shell's state changes, so the poll it runs is the same poll on the same
+    /// thread.
+    /// </remarks>
+    private void OnWatchdogBackstop()
+    {
+        if (!IsStreaming) { return; }
+        var sinceLastPoll = WatchdogClock.GetElapsedTime(_lastPollAt);
+        if (sinceLastPoll < WatchdogBackstopInterval) { return; }
+        PollActiveSamples();
     }
 
     /// <summary>
@@ -764,8 +795,9 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// Disarms counting and detaches every sample subscription. Called on every path that ends a
-    /// stream, so a stopped or lost stream cannot keep advancing the count.
+    /// Disarms counting, detaches every sample subscription and stops the watchdog's backstop.
+    /// Called on every path that ends a stream, so a stopped or lost stream cannot keep advancing
+    /// the count.
     /// </summary>
     private void StopCountingSamples()
     {
@@ -774,6 +806,8 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             // Advance first: this is what makes any callback still in flight a no-op, including
             // the ones the detach below cannot reach.
             Interlocked.Increment(ref _countingGeneration);
+            _watchdogBackstop?.Dispose();
+            _watchdogBackstop = null;
             var handler = _sampleHandler;
             _sampleHandler = null;
             if (handler != null)
@@ -809,10 +843,16 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     /// wall-clock deadline would fire after a window in which the UI was not driven, whether or not
     /// data was flowing. That reasoning ended with #120: <see cref="TotalSamples"/> is counted on the
     /// receive thread, so it advances whether or not a poll runs, and a poll that runs late still
-    /// sees every sample that arrived meanwhile. The poll count was a hole: the tick rate is not
-    /// fixed — it falls to 1 tick/s in the background (#113), and a busy UI thread slows it too —
-    /// and at 1 tick/s, 160 polls is 160 s. A stream that delivered nothing for 45 s was seen to
-    /// keep reading "Streaming 16 channel(s)".
+    /// sees every sample that arrived meanwhile. The poll count was a hole: a dispatcher timer does
+    /// not make up the ticks it misses, so whenever the UI thread is busy or the timer is throttled,
+    /// 160 polls take longer than eight seconds, by the same factor.
+    /// </para>
+    /// <para>
+    /// The render timer is also not the only thing that runs the poll any more. If it stops calling
+    /// <see cref="PollActiveSamples"/>, nothing judged the stream at all — and a stream that delivered
+    /// nothing for 45 s was seen to keep reading "Streaming 16 channel(s)" (#601). A backstop timer
+    /// owned by this view-model runs the poll itself whenever the render timer has not run it for
+    /// <see cref="WatchdogBackstopInterval"/>. See <see cref="OnWatchdogBackstop"/>.
     /// </para>
     /// <para>
     /// A channel that comes back after a stretch with none active opens a fresh window (see
@@ -821,9 +861,9 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     /// twice the window since the last sample, which no channel change moves.
     /// </para>
     /// <para>
-    /// The render timer keeps firing while the app is backgrounded — measured, ticks 1.000 s apart
-    /// with no gap across a 45 s background window (#113). So this watchdog is armed during
-    /// background too, and that is the behaviour we want:
+    /// The render timer <b>does</b> keep firing while the app is backgrounded — measured, ticks
+    /// 1.000 s apart with no gap across a 45 s background window (#113). So this watchdog is armed
+    /// during background too, and that is the behaviour we want:
     /// </para>
     /// <list type="bullet">
     /// <item>the foreground service keeps the socket alive, samples keep arriving, and the

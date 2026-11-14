@@ -51,6 +51,8 @@ public sealed class MobileShellSilentStreamWatchdogTests : IDisposable
     public MobileShellSilentStreamWatchdogTests()
     {
         _shell.WatchdogClock = _clock;
+        // No dispatcher runs in the test project. Run the backstop timer's posted job inline.
+        _shell.PostToUiThread = action => action();
         _core = new CoreStreamingDevice("core", _transport, NullLogger.Instance);
         _core.Connect();
         _core.PopulateChannelsFromStatus(Status(enabledMask: null));
@@ -241,10 +243,10 @@ public sealed class MobileShellSilentStreamWatchdogTests : IDisposable
 
     /// <summary>
     /// Issue #601, the first hole. The watchdog counted render polls, and 160 polls is 8 s only at
-    /// the 50 ms foreground tick. The tick is not fixed: it is 1 s in the background (#113), and a
-    /// busy UI thread slows it too. At one poll per second the window was 160 s, so a stream that
-    /// delivered nothing for 45 s still read "Streaming 16 channel(s)". The window is time, so it
-    /// must close at 8 s however few polls ran in it.
+    /// the full 50 ms tick. A dispatcher timer does not make up the ticks that it misses while the UI
+    /// thread is busy. At one poll per second the window was 160 s, so a stream that delivered
+    /// nothing for 45 s still read "Streaming". The window is time, so it must close at 8 s however
+    /// few polls ran in it.
     /// </summary>
     [Fact]
     public void A_silent_stream_is_declared_dead_after_eight_seconds_even_when_polls_are_one_second_apart()
@@ -260,6 +262,69 @@ public sealed class MobileShellSilentStreamWatchdogTests : IDisposable
         Assert.False(_shell.IsStreaming, "No sample for 8 s, and the stream still reads as live.");
         Assert.False(_shell.IsConnected);
         Assert.StartsWith("Lost connection to", _shell.Status, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Issue #601, the third hole. The watchdog ran only when the view's render timer called the
+    /// poll. If that timer stops, nothing judged the stream. The view-model's own backstop timer
+    /// must run the poll and trip the watchdog with no render poll at all.
+    /// </summary>
+    [Fact]
+    public void A_silent_stream_is_declared_dead_when_the_render_timer_stops_polling()
+    {
+        StartStreaming();
+
+        for (var second = 1; second < 8; second++)
+        {
+            _clock.Advance(TimeSpan.FromSeconds(1));
+            _clock.FireTimers();
+        }
+        Assert.True(_shell.IsStreaming, "The backstop tripped the watchdog before 8 s had elapsed.");
+
+        _clock.Advance(TimeSpan.FromSeconds(1));
+        _clock.FireTimers();
+
+        Assert.False(_shell.IsStreaming, "With no render poll, a silent stream was never judged.");
+        Assert.False(_shell.IsConnected);
+        Assert.StartsWith("Lost connection to", _shell.Status, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The backstop lives exactly as long as the stream: one timer while streaming, none after a
+    /// stop, and a restart does not leave the previous one running.
+    /// </summary>
+    [Fact]
+    public void The_backstop_timer_lives_only_as_long_as_the_stream()
+    {
+        StartStreaming();
+        Assert.Equal(1, _clock.LiveTimers);
+
+        _shell.StreamToggleCommand.Execute(null);   // stop
+        Assert.False(_shell.IsStreaming);
+        Assert.Equal(0, _clock.LiveTimers);
+
+        StartStreaming();
+        Assert.Equal(1, _clock.LiveTimers);
+    }
+
+    /// <summary>
+    /// While the render timer polls normally, the backstop must not judge the stream on its own.
+    /// </summary>
+    [Fact]
+    public void The_backstop_does_not_trip_a_stream_that_the_render_timer_polls_and_that_delivers()
+    {
+        StartStreaming();
+        var channel = ActiveAnalogChannels().First();
+
+        for (var i = 0; i < WatchdogPolls * 3; i++)
+        {
+            channel.ActiveSample = new DataSample { Value = i, TimestampTicks = i + 1 };
+            Poll(1);
+            if (i % 20 == 0) { _clock.FireTimers(); }
+        }
+
+        Assert.True(_shell.IsStreaming);
+        Assert.True(_shell.IsConnected);
     }
 
     /// <summary>
@@ -373,9 +438,13 @@ public sealed class MobileShellSilentStreamWatchdogTests : IDisposable
         return message;
     }
 
-    /// <summary>A clock that moves only when the test moves it.</summary>
+    /// <summary>
+    /// A clock that moves only when the test moves it. Its timers fire only when the test calls
+    /// <see cref="FireTimers"/>.
+    /// </summary>
     private sealed class ManualClock : TimeProvider
     {
+        private readonly List<ManualTimer> _timers = [];
         private long _ticks;
 
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
@@ -383,5 +452,36 @@ public sealed class MobileShellSilentStreamWatchdogTests : IDisposable
         public override long GetTimestamp() => _ticks;
 
         public void Advance(TimeSpan by) => _ticks += by.Ticks;
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new ManualTimer(callback, state);
+            _timers.Add(timer);
+            return timer;
+        }
+
+        public int LiveTimers => _timers.Count(t => !t.IsDisposed);
+
+        public void FireTimers()
+        {
+            foreach (var timer in _timers.Where(t => !t.IsDisposed).ToList()) { timer.Fire(); }
+        }
+
+        private sealed class ManualTimer(TimerCallback callback, object? state) : ITimer
+        {
+            public bool IsDisposed { get; private set; }
+
+            public void Fire() => callback(state);
+
+            public bool Change(TimeSpan dueTime, TimeSpan period) => !IsDisposed;
+
+            public void Dispose() => IsDisposed = true;
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
     }
 }
