@@ -608,7 +608,7 @@
                                                            Foreground="{DynamicResource TextPrimary}"
                                                            Classes="legendName"
                                                            Classes.channelHidden="{Binding !IsVisible}"/>
-                                                <TextBlock Text="{Binding DeviceSerialNo}"
+                                                <TextBlock Text="{Binding DeviceSerialNo, Converter={StaticResource SerialDisplay}}"
                                                            FontSize="9"
                                                            Foreground="{DynamicResource TextTertiary}"
                                                            Margin="0,2,0,0"/>

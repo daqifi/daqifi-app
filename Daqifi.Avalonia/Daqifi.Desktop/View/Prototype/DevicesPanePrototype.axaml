@@ -272,7 +272,7 @@
                                        FontFamily="Consolas"
                                        FontSize="11"
                                        Foreground="{DynamicResource TextSecondary}"/>
-                            <TextBlock Text="{Binding SerialNumber}"
+                            <TextBlock Text="{Binding SerialNumber, Converter={StaticResource SerialDisplay}}"
                                        FontFamily="Consolas"
                                        FontSize="11"
                                        Margin="0,2,0,0"
@@ -547,7 +547,7 @@
                                     </StackPanel>
                                     <StackPanel Grid.Column="0" Grid.Row="1">
                                         <TextBlock Text="SERIAL" Classes="infoLabel"/>
-                                        <TextBlock Text="{Binding SelectedTile.SerialNumber}"
+                                        <TextBlock Text="{Binding SelectedTile.SerialNumber, Converter={StaticResource SerialDisplay}}"
                                                    Classes="infoValue"/>
                                     </StackPanel>
                                     <StackPanel Grid.Column="1" Grid.Row="1">

@@ -491,10 +491,16 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// Returns the friendly name when set, then the serial number when populated,
     /// otherwise falls back to DisplayIdentifier.
     /// </summary>
+    /// <remarks>
+    /// The serial is shown in its display form (<see cref="DeviceSerials.ToDisplay"/>, the hex that
+    /// <c>*IDN?</c> reports, issue #493). The friendly name is shown exactly as the owner set it,
+    /// even when it is only digits, so the display rule is applied to the serial branch alone and
+    /// never to this property's result.
+    /// </remarks>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.DeviceDisplayName
     public string DeviceDisplayName =>
         !string.IsNullOrWhiteSpace(FriendlyName) ? FriendlyName :
-        !string.IsNullOrWhiteSpace(DeviceSerialNo) ? DeviceSerialNo : DisplayIdentifier;
+        !string.IsNullOrWhiteSpace(DeviceSerialNo) ? DeviceSerials.ToDisplay(DeviceSerialNo) : DisplayIdentifier;
 
     /// <summary>
     /// Gets the COM port identifier for USB devices. Override in derived classes.
@@ -506,8 +512,21 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         return "USB";
     }
 
+    /// <summary>
+    /// The WiFi settings the NETWORK section of the device drawer edits and
+    /// <see cref="UpdateNetworkConfiguration"/> sends. Raises <c>PropertyChanged</c> when it is
+    /// replaced.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="NetworkConfiguration"/> is a plain Daqifi.Core class with no change notification,
+    /// so the drawer can only see new values when this property gets a NEW instance. A notification
+    /// with the same instance is not enough: Avalonia does not read a nested binding path again when
+    /// its parent reports the same reference. <c>HydrateDeviceMetadata</c> therefore replaces the
+    /// instance (issue #565).
+    /// </remarks>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.NetworkConfiguration
-    public NetworkConfiguration NetworkConfiguration { get; set; } = new();
+    [ObservableProperty]
+    private NetworkConfiguration _networkConfiguration = new();
 
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.DataChannels
     public List<IChannel> DataChannels { get; set; } = [];
@@ -2589,18 +2608,27 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         // just have moved.
         ClampRateToAdvertisedCeiling();
 
+        // Put the device's network settings into a NEW instance and assign it, so the drawer reads
+        // them again (#565). Writing into the bound instance changed the values but told no
+        // binding, and a firmware update — which erases the WiFi settings — then left the drawer
+        // showing settings the device no longer had. Clone() keeps every field the device does not
+        // report: a password the user typed but has not applied, and the static IP fields.
+        var networkConfiguration = NetworkConfiguration.Clone();
+
         if (!string.IsNullOrWhiteSpace(Metadata.Ssid))
         {
-            NetworkConfiguration.Ssid = Metadata.Ssid;
+            networkConfiguration.Ssid = Metadata.Ssid;
         }
 
         // Security type 0 is the open-network case and should not be filtered out.
-        NetworkConfiguration.SecurityType = (WifiSecurityType)Metadata.WifiSecurityMode;
+        networkConfiguration.SecurityType = (WifiSecurityType)Metadata.WifiSecurityMode;
 
         if (Metadata.WifiInfrastructureMode > 0)
         {
-            NetworkConfiguration.Mode = (WifiMode)Metadata.WifiInfrastructureMode;
+            networkConfiguration.Mode = (WifiMode)Metadata.WifiInfrastructureMode;
         }
+
+        NetworkConfiguration = networkConfiguration;
 
         AppLogger.Information($"Detected device type: {DeviceType} from part number: {Metadata.PartNumber}");
     }
