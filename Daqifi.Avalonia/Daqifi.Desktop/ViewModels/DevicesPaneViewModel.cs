@@ -296,17 +296,14 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         RebootSelectedCommand = new RelayCommand(RebootSelected, () => SelectedDevice != null);
         SetLoggingModeCommand = new RelayCommand<string>(SetLoggingMode);
 
-        ConnectionManager.Instance.PropertyChanged += OnConnectionManagerPropertyChanged;
-        Rebuild();
-
         if (_shell != null)
         {
             _shell.PropertyChanged += OnShellPropertyChanged;
             _shell.FirmwareSectionRequested += OnShellFirmwareSectionRequested;
-            // A notification's Update button can switch to the Devices tab, which builds this pane
-            // after the request was made.
-            OpenRequestedFirmwareSection();
         }
+
+        ConnectionManager.Instance.PropertyChanged += OnConnectionManagerPropertyChanged;
+        Rebuild();
     }
 
     // @port: Daqifi.Desktop.ViewModels.DevicesPaneViewModel.OnSelectedTileChanged
@@ -412,6 +409,11 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
                 CloseSettings();
             }
         }
+
+        // A notification's Update button can switch to the Devices tab, which builds this pane
+        // (and so runs this) after the request was made. A request is taken at most once, so the
+        // other rebuilds find none.
+        OpenRequestedFirmwareSection();
     }
 
     // @port: Daqifi.Desktop.ViewModels.DevicesPaneViewModel.OpenSettings
@@ -491,12 +493,12 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         _disposed = true;
 
         ConnectionManager.Instance.PropertyChanged -= OnConnectionManagerPropertyChanged;
+        Unfollow(SelectedDevice);
         if (_shell != null)
         {
             _shell.PropertyChanged -= OnShellPropertyChanged;
             _shell.FirmwareSectionRequested -= OnShellFirmwareSectionRequested;
         }
-        Unfollow(SelectedDevice);
 
         foreach (var tile in Devices) tile.Dispose();
         Devices.Clear();
