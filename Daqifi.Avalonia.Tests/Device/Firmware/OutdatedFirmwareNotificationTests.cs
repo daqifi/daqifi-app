@@ -236,35 +236,82 @@ public class OutdatedFirmwareNotificationTests : IDisposable
     }
 
     /// <summary>
-    /// The release lookup works but the comparison fails: nothing is recorded, so the drawer keeps
-    /// showing only the installed version and never says "up to date".
+    /// The release lookup fails: nothing is compared or recorded, so the drawer keeps showing only
+    /// the installed version and never says "up to date". (Since the comparison is made locally from
+    /// the release the lookup returned, the lookup is the part of a check that can fail.)
     /// </summary>
     [Fact]
-    public async Task A_failed_comparison_records_nothing()
+    public async Task A_failed_lookup_records_nothing()
     {
         _host.SetConnectedDevices(Nq1("9090539562006014104", "3.9.0"));
-        _downloads.ThrowOnCheck = true;
+        _downloads.ThrowOnLookup = true;
         var coordinator = CreateCoordinator();
 
         await coordinator.RefreshFirmwareUpdatesAsync();
 
-        Assert.Equal("3.9.0", coordinator.LatestFirmwareVersion);
+        Assert.Equal(string.Empty, coordinator.LatestFirmwareVersion);
         Assert.Empty(_host.Comparisons);
     }
     /// <summary>
-    /// Review of PR #576 (third finding): the device reports a new installed version while its
-    /// comparison is pending. The notice must state the version that was compared.
+    /// Review of PR #576 (third finding): the device reports a new installed version while the check
+    /// is pending. The comparison, the record and the notice all use the version read once for the
+    /// comparison — here the one reported during the lookup.
     /// </summary>
     [Fact]
     public async Task The_notice_states_the_version_that_was_compared_not_one_reported_during_the_check()
     {
         var device = Nq1("9090539562006014104", "3.8.0");
         _host.SetConnectedDevices(device);
-        _downloads.WhileComparing = () => { device.DeviceVersion = "3.9.0"; return Task.CompletedTask; };
+        _downloads.WhileLookingUp = () => { device.DeviceVersion = "3.7.0"; return Task.CompletedTask; };
 
         await CreateCoordinator().RefreshFirmwareUpdatesAsync();
 
-        Assert.Equal("Nq1 has firmware 3.8.0. Version 3.9.0 is available.", Assert.Single(_host.Notifications).Message);
+        Assert.Equal("Nq1 has firmware 3.7.0. Version 3.9.0 is available.", Assert.Single(_host.Notifications).Message);
+        Assert.Equal((device, "3.7.0", "3.9.0", true), Assert.Single(_host.Comparisons));
+    }
+
+    /// <summary>
+    /// Review of PR #576 (third finding): the release that Core's own <c>CheckForUpdateAsync</c>
+    /// sees (3.10.0, from its own lookup) differs from the release this check found (3.9.0). The
+    /// decision, the record and the notice must all name the release that was compared: a device on
+    /// 3.9.0 is current against 3.9.0, and gets no notice saying "Version 3.9.0 is available".
+    /// </summary>
+    [Fact]
+    public async Task The_record_and_the_notice_name_the_release_that_was_compared()
+    {
+        var current = Nq1("9090539562006014104", "3.9.0");
+        var outdated = Nq1("9090539562006014105", "3.8.0");
+        outdated.FriendlyName = "Second";
+        _host.SetConnectedDevices(current, outdated);
+        _downloads.ReleaseSeenByCheck = Release(3, 10, 0);
+
+        await CreateCoordinator().RefreshFirmwareUpdatesAsync();
+
+        Assert.Equal(
+            [(current, "3.9.0", "3.9.0", false), (outdated, "3.8.0", "3.9.0", true)],
+            _host.Comparisons);
+        Assert.Equal("Second has firmware 3.8.0. Version 3.9.0 is available.", Assert.Single(_host.Notifications).Message);
+    }
+
+    /// <summary>
+    /// The local decision gives the same answer as Core 1.9.1's <c>CheckForUpdateAsync</c>
+    /// (<c>!hasCurrent || latest.Version &gt; deviceVersion</c>), including for a version that does
+    /// not parse and for pre-releases, which <c>FirmwareVersion</c> ranks below their release.
+    /// </summary>
+    [Theory]
+    [InlineData("3.8.0", true)]
+    [InlineData("3.9.0", false)]
+    [InlineData("v3.9.0", false)]
+    [InlineData("3.10.0", false)]
+    [InlineData("3.9.0rc1", true)]
+    [InlineData("3.9.0b2", true)]
+    [InlineData("3.10.0b1", false)]
+    [InlineData("", true)]
+    [InlineData("garbage", true)]
+    [InlineData("99999999999.0.0", true)]
+    public void The_local_decision_matches_Core(string installed, bool olderThan390)
+    {
+        Assert.Equal(olderThan390, FirmwareUpdateCoordinator.IsOlderThan(installed, Release(3, 9, 0)));
     }
 
     /// <summary>
@@ -278,7 +325,7 @@ public class OutdatedFirmwareNotificationTests : IDisposable
         _host.SetConnectedDevices(device);
         var coordinator = CreateCoordinator();
         var once = true;
-        _downloads.WhileComparing = async () =>
+        _downloads.WhileLookingUp = async () =>
         {
             if (!once) return;
             once = false;
@@ -293,15 +340,18 @@ public class OutdatedFirmwareNotificationTests : IDisposable
         Assert.Equal("3.9.0", _host.Comparisons[1].Latest);
     }
 
-    /// <summary>The recorded installed version is the one compared, even when the device reports another during the check.</summary>
+    /// <summary>
+    /// A device that reports a new version after the check recorded its result: the record keeps the
+    /// version that was compared, and the drawer rule (version now = recorded version) stops using it.
+    /// </summary>
     [Fact]
     public async Task The_result_records_the_installed_version_that_was_compared()
     {
         var device = Nq1("9090539562006014104", "3.8.0");
         _host.SetConnectedDevices(device);
-        _downloads.WhileComparing = () => { device.DeviceVersion = "3.9.0"; return Task.CompletedTask; };
 
         await CreateCoordinator().RefreshFirmwareUpdatesAsync();
+        device.DeviceVersion = "3.9.0";
 
         Assert.Equal((device, "3.8.0", "3.9.0", true), Assert.Single(_host.Comparisons));
     }
@@ -359,42 +409,53 @@ public class OutdatedFirmwareNotificationTests : IDisposable
     }
 
     /// <summary>
-    /// Reports <see cref="Latest"/> (3.9.0 unless a test changes it) as the newest release, and an
-    /// update for every device that does not have exactly that version — the comparison Core makes,
-    /// reduced to the versions these tests use. <see cref="ThrowOnCheck"/> makes the per-device
-    /// comparison fail.
+    /// Reports <see cref="Latest"/> (3.9.0 unless a test changes it) as the newest release.
+    /// <see cref="CheckForUpdateAsync"/> applies Core 1.9.1's rule against
+    /// <see cref="ReleaseSeenByCheck"/> (or <see cref="Latest"/>). <see cref="ThrowOnLookup"/> makes
+    /// the release lookup fail.
     /// </summary>
     internal sealed class LatestIs390DownloadService : IFirmwareDownloadService
     {
         public FirmwareReleaseInfo Latest { get; set; } = Release(3, 9, 0);
 
-        public bool ThrowOnCheck { get; set; }
+        public bool ThrowOnLookup { get; set; }
 
         /// <summary>The release lookup finds nothing (no published release).</summary>
         public bool NoRelease { get; set; }
 
-        public Task<FirmwareReleaseInfo?> GetLatestReleaseAsync(
-            bool includePreRelease = false, CancellationToken cancellationToken = default) =>
-            Task.FromResult<FirmwareReleaseInfo?>(NoRelease ? null : Latest);
+        /// <summary>
+        /// Runs while the release lookup is pending — after its answer is decided, before it is
+        /// returned. The lookup is the only wait left in a check, so this is where a test changes the
+        /// world under a check that is still running.
+        /// </summary>
+        public Func<Task>? WhileLookingUp { get; set; }
 
         /// <summary>
-        /// Runs while a comparison is pending — after its answer is decided, before it is returned —
-        /// so a test can change the world under a check that is still running.
+        /// The release that Core's own <c>CheckForUpdateAsync</c> would compare with. Core 1.9.1
+        /// looks the release up again inside that method, so it can differ from what the lookup
+        /// returned. Null means the same release as <see cref="Latest"/>.
         /// </summary>
-        public Func<Task>? WhileComparing { get; set; }
+        public FirmwareReleaseInfo? ReleaseSeenByCheck { get; set; }
 
-        public async Task<FirmwareUpdateCheckResult> CheckForUpdateAsync(
+        public async Task<FirmwareReleaseInfo?> GetLatestReleaseAsync(
+            bool includePreRelease = false, CancellationToken cancellationToken = default)
+        {
+            if (ThrowOnLookup) throw new HttpRequestException("firmware release lookup failed");
+            var found = NoRelease ? null : Latest;
+            if (WhileLookingUp != null) await WhileLookingUp();
+            return found;
+        }
+
+        public Task<FirmwareUpdateCheckResult> CheckForUpdateAsync(
             string deviceVersionString, bool includePreRelease = false, CancellationToken cancellationToken = default)
         {
-            if (ThrowOnCheck) throw new HttpRequestException("firmware release lookup failed");
-            var latest = Latest;
-            var result = new FirmwareUpdateCheckResult
+            var latest = ReleaseSeenByCheck ?? Latest;
+            return Task.FromResult(new FirmwareUpdateCheckResult
             {
-                UpdateAvailable = deviceVersionString != latest.Version.ToString(),
+                UpdateAvailable = !FirmwareVersion.TryParse(deviceVersionString, out var installed)
+                                  || latest.Version > installed,
                 LatestRelease = latest
-            };
-            if (WhileComparing != null) await WhileComparing();
-            return result;
+            });
         }
 
         public Task<(string ExtractedPath, string Version)?> DownloadWifiFirmwareAsync(

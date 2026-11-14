@@ -312,9 +312,9 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
     }
 
     /// <summary>
-    /// Review of PR #576 (third finding): the device reports a new installed version while its
-    /// comparison is pending. The old result (made for 3.8.0) must not be attached to 3.9.0; the
-    /// drawer shows the installed version only, not "Version 3.9.0 is available" for a device on 3.9.0.
+    /// Review of PR #576 (third finding): the device reports 3.9.0 while the check is pending. The
+    /// check compares the version it reads once (3.9.0) and records that, so the drawer states a
+    /// true result — not "Version 3.9.0 is available" for a device on 3.9.0.
     /// </summary>
     [Fact]
     public async Task A_version_reported_during_the_check_does_not_take_the_old_result()
@@ -325,7 +325,7 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
         pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(device));
         var downloads = new OutdatedFirmwareNotificationTests.LatestIs390DownloadService
         {
-            WhileComparing = () => { device.DeviceVersion = "3.9.0"; return Task.CompletedTask; }
+            WhileLookingUp = () => { device.DeviceVersion = "3.9.0"; return Task.CompletedTask; }
         };
         var coordinator = new FirmwareUpdateCoordinator(
             new ShellWithDevices(shell, device),
@@ -338,10 +338,41 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
             canFlashWifiModule: false);
 
         await coordinator.RefreshFirmwareUpdatesAsync();
-        shell.SetLatestFirmwareRelease("3.9.0", "v3.9.0");
 
         Assert.False(pane.SelectedDeviceHasFirmwareUpdate);
-        Assert.Equal("Installed 3.9.0.", pane.FirmwareStatusText);
+        Assert.Equal("Installed 3.9.0. Firmware is up to date.", pane.FirmwareStatusText);
+    }
+
+    /// <summary>
+    /// Review of PR #576 (third finding): Core's own check would compare with another release
+    /// (3.10.0) than the one this check found and announces (3.9.0). The drawer must state the
+    /// result against the release it names: a device on 3.9.0 is up to date with 3.9.0.
+    /// </summary>
+    [Fact]
+    public async Task The_drawer_states_the_result_against_the_release_it_names()
+    {
+        var shell = new DaqifiViewModel(new NullDialogService());
+        var pane = Track(new DevicesPaneViewModel(shell));
+        var device = Nq1("9090539562006014104", "3.9.0");
+        pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(device));
+        var downloads = new OutdatedFirmwareNotificationTests.LatestIs390DownloadService
+        {
+            ReleaseSeenByCheck = OutdatedFirmwareNotificationTests.Release(3, 10, 0)
+        };
+        var coordinator = new FirmwareUpdateCoordinator(
+            new ShellWithDevices(shell, device),
+            new OutdatedFirmwareNotificationTests.NoFlashUpdateService(),
+            downloads,
+            NullLogger<FirmwareUpdateService>.Instance,
+            new RecordingAppLogger(),
+            Path.Combine(Path.GetTempPath(), "daqifi-569-direct-check", Guid.NewGuid().ToString("N")),
+            wifiUpdateModeSettleDelay: TimeSpan.Zero,
+            canFlashWifiModule: false);
+
+        await coordinator.RefreshFirmwareUpdatesAsync();
+
+        Assert.Equal("3.9.0", pane.LatestFirmwareVersion);
+        Assert.Equal("Installed 3.9.0. Firmware is up to date.", pane.FirmwareStatusText);
     }
 
     /// <summary>The shell itself is a host whose announcement reaches the drawer, not the interface's default no-op.</summary>

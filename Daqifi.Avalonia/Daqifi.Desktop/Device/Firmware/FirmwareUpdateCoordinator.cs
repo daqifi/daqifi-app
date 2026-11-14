@@ -1023,14 +1023,11 @@ public class FirmwareUpdateCoordinator
 
             foreach (var device in connectedDevices)
             {
-                // The installed version this comparison is about, read once: the device can report
-                // a new version while the comparison is pending, and the result must not be
-                // attached to a version it did not compare.
+                // The installed version this comparison is about, read once, and compared with the
+                // release this check found — nothing is awaited between this read and the record
+                // below, so the result cannot be attached to a version it did not compare.
                 var installedVersion = device.DeviceVersion ?? string.Empty;
-                var updateCheck = await _firmwareDownloadService.CheckForUpdateAsync(
-                    installedVersion,
-                    includePreRelease: true);
-                var isOutdated = updateCheck.UpdateAvailable;
+                var isOutdated = IsOlderThan(installedVersion, latestRelease);
                 device.IsFirmwareOutdated = isOutdated;
                 _host.RecordFirmwareComparison(device, installedVersion, latestVersion, isOutdated);
 
@@ -1062,6 +1059,22 @@ public class FirmwareUpdateCoordinator
             _host.SetLatestFirmwareRelease(latestVersion, latestTag);
         }
     }
+
+    /// <summary>
+    /// Whether <paramref name="installedVersion"/> is older than <paramref name="latestRelease"/>:
+    /// the rule of Core 1.9.1's <c>GitHubFirmwareDownloadService.CheckForUpdateAsync</c>, applied to
+    /// the release this check already holds.
+    /// </summary>
+    /// <remarks>
+    /// Core's method takes only the installed version and looks the newest release up again (from a
+    /// cache with a 60-minute lifetime that <c>InvalidateCache</c> clears), so it can compare with a
+    /// different release than the one this check records and shows (review of PR #576). The rule is
+    /// the same as Core's: a version that does not parse counts as older (Core:
+    /// <c>!hasCurrent || latest.Version &gt; deviceVersion</c>), and pre-releases are ordered by
+    /// <see cref="FirmwareVersion"/>'s own comparison, which is what Core's <c>&gt;</c> uses.
+    /// </remarks>
+    internal static bool IsOlderThan(string installedVersion, FirmwareReleaseInfo latestRelease) =>
+        !FirmwareVersion.TryParse(installedVersion, out var installed) || latestRelease.Version > installed;
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.AddNotification
     private void AddNotification(
