@@ -320,7 +320,7 @@ jobs:
               "sd-empty":        [("SD-LIST", "limits")],
               "drop-mid-stream": [("CONN-LOST", "works"), ("CONN-LOST", "limits")],
               "disconnect-mid-stream": [("CONN-DISC", "works"), ("CONN-DISC", "reboot")],
-              "mode-change-mid-session": [("LOG-MODE", "works"), ("LOG-MODE", "sd")],
+              "mode-change-mid-session": [("LOG-MODE", "click"), ("LOG-MODE", "works"), ("LOG-MODE", "sd")],
           }
           root = pathlib.Path(sys.argv[1])
           failed = False
