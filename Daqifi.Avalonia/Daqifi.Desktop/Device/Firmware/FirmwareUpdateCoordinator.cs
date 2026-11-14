@@ -5,6 +5,7 @@
 
 using System.IO;
 using System.IO.Ports;
+using Daqifi.Core.Device;
 using Daqifi.Core.Firmware;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.Device.SerialDevice;
@@ -138,6 +139,13 @@ public class FirmwareUpdateCoordinator
     /// the same way <see cref="_wifiUpdateModeSettleDelay"/> is overridable.
     /// </summary>
     private readonly bool _canFlashWifiModule;
+
+    /// <summary>
+    /// Reads the firmware version from a status reply that the device sends after the write
+    /// (issue #570). Production: <see cref="PostRestartFirmwareVersion.ReadAsync"/>. Overridable so
+    /// unit tests can give the reply without a device. Shared with #566 by design.
+    /// </summary>
+    private readonly Func<DaqifiDevice, CancellationToken, Task<string?>> _readPostRestartVersion;
     #endregion
 
     #region Constructor
@@ -165,6 +173,11 @@ public class FirmwareUpdateCoordinator
     /// <see cref="CanFlashWifiModule"/>; tests pass both values so the platform decision is covered
     /// on either side without needing two operating systems.
     /// </param>
+    /// <param name="readPostRestartVersion">
+    /// Overrides how the version is read from the restarted device. Null uses
+    /// <see cref="PostRestartFirmwareVersion.ReadAsync"/>. The result is null when the version is
+    /// not known.
+    /// </param>
     public FirmwareUpdateCoordinator(
         IFirmwareUpdateHost host,
         IFirmwareUpdateService firmwareUpdateService,
@@ -174,7 +187,8 @@ public class FirmwareUpdateCoordinator
         string firmwareDataDirectory,
         TimeSpan? wifiUpdateModeSettleDelay = null,
         IBootloaderWatcher? watcher = null,
-        bool? canFlashWifiModule = null)
+        bool? canFlashWifiModule = null,
+        Func<DaqifiDevice, CancellationToken, Task<string?>>? readPostRestartVersion = null)
     {
         _host = host ?? throw new ArgumentNullException(nameof(host));
         _firmwareUpdateService = firmwareUpdateService ?? throw new ArgumentNullException(nameof(firmwareUpdateService));
@@ -185,6 +199,8 @@ public class FirmwareUpdateCoordinator
         _wifiUpdateModeSettleDelay = wifiUpdateModeSettleDelay ?? DefaultWifiUpdateModeSettleDelay;
         _watcher = watcher;
         _canFlashWifiModule = canFlashWifiModule ?? CanFlashWifiModule;
+        _readPostRestartVersion = readPostRestartVersion
+            ?? ((device, token) => PostRestartFirmwareVersion.ReadAsync(device, cancellationToken: token));
     }
     #endregion
 
@@ -304,50 +320,30 @@ public class FirmwareUpdateCoordinator
                 _host.FirmwareUpdateStatusText = FirmwareUpdateMessages.DescribeState(report.State);
             });
 
-            // The success dialog names the version the device reports AFTER its restart (issue #570),
-            // not a release the app looked up: a second lookup can name a different release from the
-            // one that was written. After the jump to the application, Core reconnects this same
-            // device and reads its status, which fills Metadata.FirmwareVersion — but only when the
-            // status carries a version. Clearing it here means that a value read after the flash
-            // came from the restarted device; an empty value means "the device did not say", and
-            // never the version from before the restart. The wrapper's DeviceVersion (the tile)
-            // is a separate copy and is not touched until Core reads the device again.
-            var versionBeforeFlash = coreDevice.Metadata.FirmwareVersion;
-            coreDevice.Metadata.FirmwareVersion = string.Empty;
-            try
+            // Suspend the watcher's HID discovery for just the PIC32 flash: the connected device reboots
+            // into the bootloader here, and the watcher must not grab it out from under this flasher.
+            // Existing holds on OTHER sitting bootloaders stay alive.
+            var watcherLease = _watcher != null ? await _watcher.SuspendDiscoveryAsync() : null;
+            await using (watcherLease)
             {
-                // Suspend the watcher's HID discovery for just the PIC32 flash: the connected device
-                // reboots into the bootloader here, and the watcher must not grab it out from under
-                // this flasher. Existing holds on OTHER sitting bootloaders stay alive.
-                var watcherLease = _watcher != null ? await _watcher.SuspendDiscoveryAsync() : null;
-                await using (watcherLease)
-                {
-                    // Resolve the connected device's location BEFORE it reboots into the bootloader —
-                    // its future HID device path doesn't exist yet, but its physical USB location is
-                    // stable across the mode transition (issue #655). Passing it lets Core's
-                    // post-reboot bootloader search target the exact physical device even if another
-                    // bootloader is sitting held.
-                    await _firmwareUpdateService.UpdateFirmwareAsync(
-                        coreDevice,
-                        effectiveFirmwarePath,
-                        pic32Progress,
-                        targetDevicePath: null,
-                        targetLocationKey: serialStreamingDevice.LocationKey,
-                        cancellationToken);
-                }
-            }
-            catch
-            {
-                // A run that stopped before the restart leaves the device's old value in place.
-                if (string.IsNullOrEmpty(coreDevice.Metadata.FirmwareVersion))
-                {
-                    coreDevice.Metadata.FirmwareVersion = versionBeforeFlash;
-                }
-
-                throw;
+                // Resolve the connected device's location BEFORE it reboots into the bootloader — its
+                // future HID device path doesn't exist yet, but its physical USB location is stable
+                // across the mode transition (issue #655). Passing it lets Core's post-reboot bootloader
+                // search target the exact physical device even if another bootloader is sitting held.
+                await _firmwareUpdateService.UpdateFirmwareAsync(
+                    coreDevice,
+                    effectiveFirmwarePath,
+                    pic32Progress,
+                    targetDevicePath: null,
+                    targetLocationKey: serialStreamingDevice.LocationKey,
+                    cancellationToken);
             }
 
-            var reportedVersion = coreDevice.Metadata.FirmwareVersion;
+            // The success dialog names the version the device reports AFTER its restart (issue #570):
+            // from one status reply that the restarted device sends, not from Core's shared metadata,
+            // which keeps an earlier value when a reply has no version. Null means "not known". The
+            // run's token, so Cancel stops the wait. Shared with #566 by design (same line, same name).
+            var reportedVersion = await _readPostRestartVersion(coreDevice, cancellationToken);
 
             if (!isManualUpload)
             {

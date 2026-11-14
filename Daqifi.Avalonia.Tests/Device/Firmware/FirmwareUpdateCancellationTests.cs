@@ -181,7 +181,20 @@ public class FirmwareUpdateCancellationTests : IDisposable
     [Fact]
     public async Task Canceling_after_the_pic32_flash_keeps_the_wifi_probe_off_the_wire()
     {
-        var coordinator = CreateCoordinator();
+        // The post-restart version read (issue #570) runs between the PIC32 write and the WiFi step
+        // on the same token, so a cancelled run now stops there, before the probe. This test pins
+        // the probe's own use of the token, so its reader ignores the token and lets the run reach
+        // the probe holding a cancelled token, as it did before that read existed.
+        var coordinator = new FirmwareUpdateCoordinator(
+            _host,
+            _updates,
+            _downloads,
+            NullLogger<FirmwareUpdateService>.Instance,
+            _logger,
+            _dataDirectory,
+            wifiUpdateModeSettleDelay: TimeSpan.Zero,
+            canFlashWifiModule: true,
+            readPostRestartVersion: (_, _) => Task.FromResult<string?>(null));
         using var harness = ConnectedWincDevice();
         _host.SelectedDevice = harness.Device;
         _host.ParkOnQuiesce = false;

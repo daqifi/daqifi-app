@@ -36,6 +36,21 @@ public class FirmwareUpdateOutcomeTests : IDisposable
         Path.Combine(Path.GetTempPath(), "daqifi-firmware-outcome-tests", Guid.NewGuid().ToString("N"));
 
     /// <summary>
+    /// The version the post-restart reader gives: what the restarted device put in its status reply,
+    /// or null when the version is not known. The reader itself is <c>PostRestartFirmwareVersion</c>,
+    /// which #574 tests; here it is a seam.
+    /// </summary>
+    private string? _postRestartVersion;
+
+    /// <summary>
+    /// Runs in place of the reader, after <see cref="_postRestartVersion"/> is chosen. Lets a test
+    /// see when the reader was asked and with which token.
+    /// </summary>
+    private Func<CancellationToken, Task>? _onReadPostRestartVersion;
+
+    private int _postRestartReads;
+
+    /// <summary>
     /// <c>canFlashWifiModule: false</c> and a device with no WINC module keep the run to the PIC32
     /// half, which is the half this ticket is about.
     /// </summary>
@@ -47,7 +62,17 @@ public class FirmwareUpdateOutcomeTests : IDisposable
             _logger,
             _dataDirectory,
             wifiUpdateModeSettleDelay: TimeSpan.Zero,
-            canFlashWifiModule: false);
+            canFlashWifiModule: false,
+            readPostRestartVersion: async (_, token) =>
+            {
+                Interlocked.Increment(ref _postRestartReads);
+                if (_onReadPostRestartVersion != null)
+                {
+                    await _onReadPostRestartVersion(token);
+                }
+
+                return _postRestartVersion;
+            });
 
     public void Dispose()
     {
@@ -166,21 +191,18 @@ public class FirmwareUpdateOutcomeTests : IDisposable
     }
 
     /// <summary>
-    /// The review finding on #577: the dialog named the latest release from a second lookup, which
-    /// can differ from the release that was written. It must name the version the DEVICE reports
-    /// after its restart. Here the release feed says 3.9.0 and the restarted device says 3.8.1.
+    /// Review findings on #577: the dialog must name the version from the restarted device's own
+    /// status reply — not a release the app looked up, and not Core's shared metadata. Here the
+    /// release feed says 3.9.0, Core's metadata still says 3.8.0, and the reply says 3.8.1.
     /// </summary>
     [Fact]
-    public async Task The_success_dialog_names_the_version_the_device_reports_after_the_restart()
+    public async Task The_success_dialog_names_the_version_from_the_post_restart_reply()
     {
         using var harness = ConnectedDevice(versionBeforeFlash: "3.8.0");
         _host.SelectedDevice = harness.Device;
         _downloads.LatestFirmwarePath = FirmwareFile();
         _downloads.LatestVersion = "3.9.0";
-
-        // What Core does after the jump to the application: it reconnects the device and reads its
-        // status, which fills Metadata.FirmwareVersion.
-        _updates.OnPic32Flash = () => harness.Core.Metadata.FirmwareVersion = "3.8.1";
+        _postRestartVersion = "3.8.1";
 
         await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
 
@@ -188,17 +210,18 @@ public class FirmwareUpdateOutcomeTests : IDisposable
     }
 
     /// <summary>
-    /// The restarted device reported no version. The dialog must say unknown — not the release the
-    /// feed names, and not the version the device reported BEFORE the restart, which is still in
-    /// Core's metadata when the flash starts.
+    /// The reply had no version (the reader gives null) while Core's metadata still holds the
+    /// version from before the restart. The dialog must say unknown, and must not give the old
+    /// version or the release as the installed result.
     /// </summary>
     [Fact]
-    public async Task The_success_dialog_says_unknown_when_the_device_reports_no_version()
+    public async Task The_success_dialog_says_unknown_when_the_reply_has_no_version()
     {
         using var harness = ConnectedDevice(versionBeforeFlash: "3.8.0");
         _host.SelectedDevice = harness.Device;
         _downloads.LatestFirmwarePath = FirmwareFile();
         _downloads.LatestVersion = "3.9.0";
+        _postRestartVersion = null;
 
         await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
 
@@ -210,12 +233,12 @@ public class FirmwareUpdateOutcomeTests : IDisposable
 
     /// <summary>A manual <c>.hex</c> upload reports the device's version the same way.</summary>
     [Fact]
-    public async Task A_manual_update_names_the_version_the_device_reports()
+    public async Task A_manual_update_names_the_version_from_the_post_restart_reply()
     {
         using var harness = ConnectedDevice(versionBeforeFlash: "3.8.0");
         _host.SelectedDevice = harness.Device;
         _host.FirmwareFilePath = FirmwareFile();
-        _updates.OnPic32Flash = () => harness.Core.Metadata.FirmwareVersion = "3.9.0";
+        _postRestartVersion = "3.9.0";
 
         await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
 
@@ -224,21 +247,95 @@ public class FirmwareUpdateOutcomeTests : IDisposable
     }
 
     /// <summary>
-    /// The coordinator clears Core's version before the write so that only the restarted device can
-    /// fill it. A write that fails before the restart must give the old value back.
+    /// The reader is asked only after the write has returned — a reply before that can come from the
+    /// device before its restart.
     /// </summary>
     [Fact]
-    public async Task A_failed_update_leaves_the_device_version_it_had()
+    public async Task The_version_is_read_after_the_write_returns()
     {
         using var harness = ConnectedDevice(versionBeforeFlash: "3.8.0");
         _host.SelectedDevice = harness.Device;
         _host.FirmwareFilePath = FirmwareFile();
-        _updates.OnPic32Flash = () => throw new InvalidOperationException("flash failed");
+        var writeReturned = false;
+        bool? writeHadReturnedWhenRead = null;
+        _updates.OnPic32Flash = () => writeReturned = true;
+        _onReadPostRestartVersion = _ =>
+        {
+            writeHadReturnedWhenRead = writeReturned;
+            return Task.CompletedTask;
+        };
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        Assert.True(writeHadReturnedWhenRead);
+    }
+
+    /// <summary>The run's token reaches the reader, so CANCEL UPDATE stops the wait for the reply.</summary>
+    [Fact]
+    public async Task Cancel_stops_the_wait_for_the_post_restart_reply()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.8.0");
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        var reading = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _onReadPostRestartVersion = async token =>
+        {
+            reading.TrySetResult();
+            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, token);
+        };
+        var coordinator = CreateCoordinator();
+
+        var run = coordinator.UploadFirmwareAsync();
+        await reading.Task.WaitAsync(Timeout);
+        coordinator.CancelUpload();
+        await run.WaitAsync(Timeout);
+
+        Assert.Empty(_host.SuccessMessages);
+        Assert.Contains("Firmware update canceled.", _host.StatusWrites);
+    }
+
+    /// <summary>
+    /// The coordinator never writes Core's shared metadata: after a successful run the version the
+    /// device reported at connect is still there, untouched.
+    /// </summary>
+    [Fact]
+    public async Task A_successful_update_does_not_write_core_metadata()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.8.0");
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        string? seenDuringWrite = null;
+        _updates.OnPic32Flash = () => seenDuringWrite = harness.Core.Metadata.FirmwareVersion;
+        _postRestartVersion = "3.9.0";
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        Assert.Single(_host.SuccessMessages);
+        Assert.Equal("3.8.0", seenDuringWrite);
+        Assert.Equal("3.8.0", harness.Core.Metadata.FirmwareVersion);
+        Assert.Equal(1, _postRestartReads);
+    }
+
+    /// <summary>The same after a failed run; a failed write also asks no reply.</summary>
+    [Fact]
+    public async Task A_failed_update_does_not_write_core_metadata()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.8.0");
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        string? seenDuringWrite = null;
+        _updates.OnPic32Flash = () =>
+        {
+            seenDuringWrite = harness.Core.Metadata.FirmwareVersion;
+            throw new InvalidOperationException("flash failed");
+        };
 
         await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
 
         Assert.Empty(_host.SuccessMessages);
+        Assert.Equal("3.8.0", seenDuringWrite);
         Assert.Equal("3.8.0", harness.Core.Metadata.FirmwareVersion);
+        Assert.Equal(0, _postRestartReads);
     }
 
     /// <summary>The friendly name, when the user set one, is the name the dialog uses.</summary>
