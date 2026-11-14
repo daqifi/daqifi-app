@@ -72,6 +72,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     {
         _downloads = new ReleaseDownloadService(_host, Latest);
         _host.CountLookups = () => _downloads.LatestReleaseQueries;
+        _downloads.WriteHasStarted = () => _updates.FlashesStarted > 0;
 
         _core = new StatusReplyingCoreDevice(_transport);
         _core.Connect();
@@ -125,7 +126,8 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
 
     /// <summary>
     /// The regression in the issue: an update to the newest release removes the notification, and
-    /// the count the bell shows agrees with the list.
+    /// the count the bell shows agrees with the list. The write goes through the confirmation that
+    /// issue #564 added and downloads the confirmed release by its tag.
     /// </summary>
     [Fact]
     public async Task An_update_to_the_latest_firmware_removes_the_outdated_notification()
@@ -136,11 +138,13 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
 
         await RunUpdate();
 
+        Assert.Equal(1, _host.Confirmations);
+        Assert.Equal(["v" + Latest], _downloads.TagsDownloaded);
         Assert.True(_host.UpdateSucceeded, "The update did not reach the success dialog.");
         Assert.Equal(Latest, _device.DeviceVersion);
         Assert.False(_device.IsFirmwareOutdated);
         Assert.DoesNotContain(_host.Notifications, n => n.IsFirmwareUpdate);
-        Assert.Equal(0, _host.NotificationCount);
+        Assert.Equal(_host.Notifications.Count, _host.NotificationCount);
     }
 
     /// <summary>
@@ -163,7 +167,8 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     /// <summary>
     /// The review finding on PR #574: the release lookup takes no token, so when GitHub never answers
     /// it must not hold the run open. The notification is settled anyway, the run completes, and the
-    /// upload flag (which keeps Cancel enabled) is down.
+    /// upload flag (which keeps Cancel enabled) is down. (The lookup that names the release in the
+    /// confirmation, before the run, still answers; GitHub stops answering once the write starts.)
     /// </summary>
     [Fact]
     public async Task A_release_lookup_that_never_answers_does_not_hold_the_run_open()
@@ -179,7 +184,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         Assert.False(_host.IsFirmwareUploading);
         Assert.False(_device.IsFirmwareOutdated);
         Assert.DoesNotContain(_host.Notifications, n => n.IsFirmwareUpdate);
-        Assert.Equal(0, _host.NotificationCount);
+        Assert.Equal(_host.Notifications.Count, _host.NotificationCount);
     }
 
     /// <summary>
@@ -201,12 +206,14 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         Assert.False(_host.IsFirmwareUploading);
         Assert.False(_device.IsFirmwareOutdated);
         Assert.DoesNotContain(_host.Notifications, n => n.IsFirmwareUpdate);
-        Assert.Equal(0, _host.NotificationCount);
+        Assert.Equal(_host.Notifications.Count, _host.NotificationCount);
     }
 
     /// <summary>
     /// The release list is refreshed separately: only after the run has closed, so it never holds
-    /// <c>IsFirmwareUploading</c> up, and never before the success dialog.
+    /// <c>IsFirmwareUploading</c> up, and never before the success dialog. The one lookup before the
+    /// dialog is the one that names the release in the confirmation (issue #564), and it runs before
+    /// the run opens — so no lookup at all happens while the host is uploading.
     /// </summary>
     [Fact]
     public async Task The_release_list_is_refreshed_only_after_the_run_has_closed()
@@ -218,9 +225,9 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
 
         await RunUpdate();
 
-        Assert.True(_downloads.LatestReleaseQueries > lookupsBefore, "No release refresh followed the run.");
-        Assert.All(_downloads.UploadingWhenLookedUp.Skip(lookupsBefore), Assert.False);
-        Assert.Equal(lookupsBefore, _host.LookupsWhenSucceeded);
+        Assert.Equal(lookupsBefore + 1, _host.LookupsWhenSucceeded);
+        Assert.True(_downloads.LatestReleaseQueries > _host.LookupsWhenSucceeded, "No release refresh followed the run.");
+        Assert.All(_downloads.UploadingWhenLookedUp, Assert.False);
     }
 
     /// <summary>
@@ -233,7 +240,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         await ConnectOn(Previous);
         _downloads.LatestFirmwarePath = FirmwareFile();
         _reader.Reported = Latest;
-        _downloads.Publish("3.10.0");
+        _updates.OnFlash = () => _downloads.Publish("3.10.0");
 
         await RunUpdate();
 
@@ -260,7 +267,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         Assert.True(_host.UpdateSucceeded);
         Assert.False(_device.IsFirmwareOutdated);
         Assert.DoesNotContain(_host.Notifications, n => n.IsFirmwareUpdate);
-        Assert.Equal(0, _host.NotificationCount);
+        Assert.Equal(_host.Notifications.Count, _host.NotificationCount);
     }
 
     /// <summary>
@@ -285,7 +292,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         Assert.True(_device.IsFirmwareOutdated);
         var notification = Assert.Single(_host.Notifications, n => n.IsFirmwareUpdate);
         Assert.Equal(Serial, notification.DeviceSerialNo);
-        Assert.Equal(1, _host.NotificationCount);
+        Assert.Equal(_host.Notifications.Count, _host.NotificationCount);
     }
 
     /// <summary>
@@ -304,7 +311,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         Assert.True(_host.UpdateSucceeded);
         Assert.True(_device.IsFirmwareOutdated);
         Assert.Single(_host.Notifications, n => n.IsFirmwareUpdate);
-        Assert.Equal(1, _host.NotificationCount);
+        Assert.Equal(_host.Notifications.Count, _host.NotificationCount);
     }
 
     /// <summary>
@@ -327,7 +334,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         Assert.Equal(Latest, _device.DeviceVersion);
         Assert.False(_device.IsFirmwareOutdated);
         Assert.Equal(0, _host.FirmwareNotificationsWhenSucceeded);
-        Assert.Equal(0, _host.NotificationCount);
+        Assert.Equal(_host.Notifications.Count, _host.NotificationCount);
     }
 
     /// <summary>
@@ -354,7 +361,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         Assert.Equal(Previous, _device.DeviceVersion);
         Assert.True(_device.IsFirmwareOutdated);
         Assert.Single(_host.Notifications, n => n.IsFirmwareUpdate);
-        Assert.Equal(1, _host.NotificationCount);
+        Assert.Equal(_host.Notifications.Count, _host.NotificationCount);
     }
 
     /// <summary>
@@ -513,12 +520,12 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         _downloads.LatestFirmwarePath = FirmwareFile();
         _reader.Reported = Latest;
         _updates.FailFlash = true;
-        var lookupsBefore = _downloads.LatestReleaseQueries;
 
         await RunUpdate();
 
         Assert.False(_host.UpdateSucceeded);
-        Assert.Equal(lookupsBefore, _downloads.LatestReleaseQueries);
+        Assert.Equal(1, _updates.FlashesStarted);
+        Assert.Equal(0, _downloads.LookupsAfterWriteStarted);
         Assert.True(_device.IsFirmwareOutdated);
         Assert.Single(_host.Notifications, n => n.IsFirmwareUpdate);
     }
@@ -566,19 +573,34 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     /// rule: an update is available when the release is newer than the device. The release lookup
     /// can be made to answer, hang until teardown, or throw, and it records whether the host was
     /// uploading each time it was asked.
+    /// <para>
+    /// <see cref="Lookup"/> applies only once the write has started (<see cref="WriteHasStarted"/>).
+    /// Before that, the lookup always answers: the one that names the release in the confirmation
+    /// (issue #564) must succeed, or the coordinator correctly starts no write at all. The case these
+    /// tests model is GitHub becoming unavailable during or after the write.
+    /// </para>
     /// </summary>
     private sealed class ReleaseDownloadService(FakeHost host, string latestVersion) : IFirmwareDownloadService
     {
         private readonly CancellationTokenSource _releaseHung = new();
         private FirmwareReleaseInfo _latest = Release(latestVersion);
 
-        /// <summary>What the PIC32 package download returns; null means "no package".</summary>
+        /// <summary>What the PIC32 package downloads return; null means "no package".</summary>
         public string? LatestFirmwarePath { get; set; }
 
         public LookupMode Lookup { get; set; } = LookupMode.Answer;
 
+        /// <summary>Whether the firmware write has started; set by the test.</summary>
+        public Func<bool> WriteHasStarted { get; set; } = () => false;
+
         /// <summary>How many times the release lookup was asked.</summary>
         public int LatestReleaseQueries { get; private set; }
+
+        /// <summary>How many release lookups were asked once the write had started.</summary>
+        public int LookupsAfterWriteStarted { get; private set; }
+
+        /// <summary>The tags the run downloaded, in order (issue #564: the auto path downloads by tag).</summary>
+        public List<string> TagsDownloaded { get; } = [];
 
         /// <summary>The host's upload flag at each lookup, in order.</summary>
         public List<bool> UploadingWhenLookedUp { get; } = [];
@@ -607,11 +629,19 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
             IProgress<int>? progress = null,
             CancellationToken cancellationToken = default) => Task.FromResult(LatestFirmwarePath);
 
+        /// <summary>
+        /// The auto-update downloads the release it named in the confirmation, by tag (issue #564),
+        /// so this returns the same package as the "latest" download.
+        /// </summary>
         public Task<string?> DownloadFirmwareByTagAsync(
             string tagName,
             string destinationDirectory,
             IProgress<int>? progress = null,
-            CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
+            CancellationToken cancellationToken = default)
+        {
+            TagsDownloaded.Add(tagName);
+            return Task.FromResult(LatestFirmwarePath);
+        }
 
         public async Task<FirmwareReleaseInfo?> GetLatestReleaseAsync(
             bool includePreRelease = false,
@@ -620,6 +650,12 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
             LatestReleaseQueries++;
             UploadingWhenLookedUp.Add(host.IsFirmwareUploading);
 
+            if (!WriteHasStarted())
+            {
+                return _latest;
+            }
+
+            LookupsAfterWriteStarted++;
             switch (Lookup)
             {
                 case LookupMode.Hang:
@@ -723,6 +759,12 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
 
         public bool FailFlash { get; set; }
 
+        /// <summary>How many PIC32 writes were started.</summary>
+        public int FlashesStarted { get; private set; }
+
+        /// <summary>Runs during the write, for a test that changes the world while it runs.</summary>
+        public Action? OnFlash { get; set; }
+
 #pragma warning disable CS0067 // Part of the interface; nothing in these tests raises it.
         public event EventHandler<FirmwareUpdateStateChangedEventArgs>? StateChanged;
 #pragma warning restore CS0067
@@ -742,6 +784,9 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
             string? targetLocationKey,
             CancellationToken cancellationToken = default)
         {
+            FlashesStarted++;
+            OnFlash?.Invoke();
+
             if (FailFlash)
             {
                 throw new InvalidOperationException("Simulated flash failure.");
@@ -824,12 +869,22 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
 
         public void ShowFirmwareError(string message) { }
 
-        public void ShowFirmwareUpdateSucceeded()
+        public void ShowFirmwareUpdateSucceeded(string message)
         {
             UpdateSucceeded = true;
             FirmwareNotificationsWhenSucceeded = Notifications.Count(n => n.IsFirmwareUpdate);
             WasOutdatedWhenSucceeded = SelectedDevice?.IsFirmwareOutdated ?? false;
             LookupsWhenSucceeded = CountLookups?.Invoke() ?? -1;
+        }
+
+        /// <summary>How many times the confirmation before a write was asked (issue #564).</summary>
+        public int Confirmations { get; private set; }
+
+        /// <summary>Confirms at once: these facts are about the run, not the prompt in front of it (issue #564).</summary>
+        public Task<bool> ConfirmFirmwareUpdateAsync(string title, string message, CancellationToken cancellationToken)
+        {
+            Confirmations++;
+            return Task.FromResult(true);
         }
 
         public Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default)
