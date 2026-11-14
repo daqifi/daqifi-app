@@ -130,7 +130,7 @@ are the only rows that can run on a machine with no hardware attached:
 | `sd-empty` | `SD-LIST` | a device whose SD card answers with nothing on it | an empty card reads `Ok` with zero files and the pane shows its NO FILES panel — not "no SD card installed" and not an error — then flips to the file grid when one file appears |
 | `drop-mid-stream` | `CONN-LOST` | a device that loses its transport while a logging session is streaming | the device leaves both lists, no channel is left subscribed to it, the session that drop ended is closed with it, and the app raises exactly one notification however many times the drop is reported |
 | `disconnect-mid-stream` | `CONN-DISC` | a device the user removes with **DISCONNECT**, then (on a second connect) with **REBOOT**, while a logging session is streaming | for each command: the device leaves both lists, the session closes, and the toggle is not left reading ON while it is disabled (#537). The second half also shows that a new session can start after the first one closed. `ScriptedDevice.Reboot` does nothing, so no board is rebooted |
-| `mode-change-mid-session` | `LOG-MODE` | a device that streams into a session, then (after a stop) logs to its SD card in a session | the two LOGGING MODE buttons are enabled with no session and disabled during each session (#536). A click driven onto a disabled button anyway does not change the mode, does not touch the device and does not close the session, and the buttons move back. The SD card is `ScriptedDevice`'s flag only; never run this half on a board |
+| `mode-change-mid-session` | `LOG-MODE` | a device that streams into a session, then (after a stop) logs to its SD card in a session | the two LOGGING MODE buttons are enabled before each session, disabled during it with the mode in force still checked, and enabled again after the stop (#536). It checks the rendered buttons only: the setter's refusal is covered by `LoggingModeMidSessionTests`, and the row does not click, because a click on an enabled button does not change the mode on this build (#578). The SD card is `ScriptedDevice`'s flag only; never run this half on a board |
 
 The first three seed `<out>/appdata/DAQiFiDatabase.db` **before** the app boots, because the one
 caller of `LoggingManager.ReloadPersistedLoggingSessions` is `DaqifiViewModel`'s one-time init:
@@ -219,7 +219,7 @@ connect/disconnect, and UI pump latency).
 `CONN-LOST`, `CONN-DISC` and `LOG-MODE` — one per state, plus `EXPORT-FAIL`'s atomicity probe and
 its `cleanup` check, `CONN-LOST`'s `limits` check that a repeated drop report raises no second
 notification, `CONN-DISC`'s `reboot` check that REBOOT closes a session the same way DISCONNECT
-does, and `LOG-MODE`'s `sd` check that holds an SD-card session the same way.
+does, and `LOG-MODE`'s `sd` check that locks the buttons during an SD-card session the same way.
 
 Add a row by adding a `Step`; keep the shape — drive, assert the device (or the service layer),
 pump, assert the UI, capture, emit.

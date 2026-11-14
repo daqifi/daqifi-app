@@ -7,7 +7,6 @@ using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Headless;
-using Avalonia.Input;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
@@ -2106,21 +2105,23 @@ internal static class HeadlessBench
     /// LOG-MODE with a session running (issue #536): the two LOGGING MODE buttons in the Devices
     /// drawer. A mode change stops each device's stream or SD log, so during a session it ended the
     /// recording while the toggle still read LOGGING ON. The app now disables both buttons while a
-    /// session is ON, and the setter refuses the change if it is reached anyway.
+    /// session is ON.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// This is the UI half of <c>LoggingModeMidSessionTests</c>. It reads the real buttons in the
-    /// real drawer, by the AutomationIds a FlaUI script uses, and checks them in both states — so a
-    /// dead <c>IsEnabled</c> binding, which leaves a button at its default of enabled, fails the
-    /// "locked" half rather than passing the "unlocked" one.
+    /// This row checks only what the user sees: the real buttons in the real drawer, found by the
+    /// AutomationIds a FlaUI script uses. For each kind of session they must be enabled before it,
+    /// disabled during it with the mode in force still checked, and enabled again after the stop. A
+    /// dead <c>IsEnabled</c> binding leaves a button at its default of enabled, so it fails the
+    /// "locked" check rather than passing the "unlocked" one.
     /// </para>
     /// <para>
-    /// Each session is tried two ways. A real mouse click on the disabled button must change
-    /// nothing. Then <c>DevicesPaneViewModel.SetLoggingModeCommand</c> — the command the button's
-    /// behaviour invokes — is executed directly, which is the setter's backstop: the mode must not
-    /// change, the device must keep logging, the session must stay open, the buttons must show the
-    /// mode that is really in force, and the user must be told why.
+    /// Two things are deliberately NOT checked here. The setter's own refusal — the backstop if a
+    /// change reaches it anyway — is <c>LoggingModeMidSessionTests</c>' job; calling the command
+    /// from this rig would not go through the control, so it would only repeat those tests. And the
+    /// row does not click the buttons: on this build a click on an ENABLED button does not change
+    /// the mode either (#578), so "a click on the disabled button changed nothing" would pass with
+    /// or without the lock. When #578 is fixed, a real click belongs here.
     /// </para>
     /// <para>
     /// The SD half runs only against <see cref="ScriptedDevice"/>, whose SD logging is a flag. It
@@ -2132,7 +2133,6 @@ internal static class HeadlessBench
     {
         const string streamToApp = "Stream to App";
         const string logToDevice = "Log to Device";
-        const string refusal = "Stop logging before you change the logging mode.";
 
         var device = new ScriptedDevice(ScriptedSerial);
         var ai = device.AddAnalogInput(0);
@@ -2161,107 +2161,64 @@ internal static class HeadlessBench
             var sd = ByAutomationId(main, "LoggingModeLogToDevice") as RadioButton
                 ?? throw new InvalidOperationException("the LOG TO DEVICE button is not in the drawer");
 
-            // A real left click at the button's centre, through the headless platform's mouse.
-            void Click(RadioButton button)
-            {
-                var centre = button.TranslatePoint(
-                                 new Point(button.Bounds.Width / 2, button.Bounds.Height / 2), main)
-                             ?? throw new InvalidOperationException("the button is not in the window");
-                main.MouseMove(centre, RawInputModifiers.None);
-                main.MouseDown(centre, MouseButton.Left, RawInputModifiers.None);
-                main.MouseUp(centre, MouseButton.Left, RawInputModifiers.None);
-                Pump();
-            }
-
             string Buttons() =>
                 $"STREAM TO APP enabled={stream.IsEffectivelyEnabled} checked={stream.IsChecked}, " +
                 $"LOG TO DEVICE enabled={sd.IsEffectivelyEnabled} checked={sd.IsChecked}";
-            bool Refused() => shell.NotificationList.Any(n => n.Message == refusal);
+            bool Unlocked() => stream.IsEffectivelyEnabled && sd.IsEffectivelyEnabled;
+            bool Locked() => !stream.IsEffectivelyEnabled && !sd.IsEffectivelyEnabled;
 
-            // Control: no session, both buttons usable.
-            var idleUnlocked = stream.IsEffectivelyEnabled && sd.IsEffectivelyEnabled;
-            var idleButtons = Buttons();
+            // Procedure A: a streaming session. Control first: no session, both buttons usable.
+            var sw = Stopwatch.StartNew();
+            var aBefore = Unlocked();
+            var aBeforeButtons = Buttons();
             Capture(main, "t1-logmode-idle");
 
-            // Procedure A: stream into a session, then try LOG TO DEVICE twice — a real click on the
-            // disabled button, then the command that button invokes, which is the setter's backstop.
-            var sw = Stopwatch.StartNew();
             shell.IsLogging = true;
             var streaming = PumpUntil(() => LoggingManager.Instance.Active, TimeSpan.FromSeconds(15));
-            var aLocked = !stream.IsEffectivelyEnabled && !sd.IsEffectivelyEnabled;
+            var aLocked = Locked() && stream.IsChecked == true && sd.IsChecked == false;
             var aLockedButtons = Buttons();
-            Click(sd);
-            PumpFor(TimeSpan.FromMilliseconds(300));
             var aShot = Capture(main, "t1-logmode-streaming-locked");
-            var aClickInert = stream.IsChecked == true && sd.IsChecked == false
-                              && shell.SelectedLoggingMode == streamToApp && !Refused();
-            pane.SetLoggingModeCommand.Execute(logToDevice);
-            PumpFor(TimeSpan.FromMilliseconds(300));
-            var aHeld = shell.SelectedLoggingMode == streamToApp && !shell.IsLogToDeviceMode
-                        && device.Mode == DeviceMode.StreamToApp
-                        && shell.IsLogging && LoggingManager.Instance.Active
-                        && stream.IsChecked == true && sd.IsChecked == false;
-            var aRefused = Refused();
-            var aAfter = $"mode '{shell.SelectedLoggingMode}', device {device.Mode}, " +
-                         $"IsLogging={shell.IsLogging}, LoggingManager.Active={LoggingManager.Instance.Active}, {Buttons()}";
 
             shell.IsLogging = false;
             var aStopped = PumpUntil(() => !LoggingManager.Instance.Active, TimeSpan.FromSeconds(10));
-            var aUnlocked = stream.IsEffectivelyEnabled && sd.IsEffectivelyEnabled;
+            var aAfter = Unlocked();
+            var aAfterButtons = Buttons();
             sw.Stop();
 
             Step(1, "LOG-MODE", "works",
-                 idleUnlocked && streaming && aLocked && aClickInert && aHeld && aRefused && aStopped && aUnlocked,
-                 $"no session: {idleButtons}. Streaming session open={streaming}: {aLockedButtons}. " +
-                 $"A click on the disabled LOG TO DEVICE changed nothing={aClickInert}. " +
-                 $"SetLoggingModeCommand('{logToDevice}') during the session: {aAfter}; refusal message " +
-                 $"shown={aRefused}; mode and session held={aHeld}. After the stop (closed={aStopped}): {Buttons()}",
+                 aBefore && streaming && aLocked && aStopped && aAfter,
+                 $"no session: {aBeforeButtons}. Streaming session open={streaming}: {aLockedButtons}. " +
+                 $"After the stop (closed={aStopped}): {aAfterButtons}",
                  aShot, sw.Elapsed.TotalSeconds);
 
-            // Procedure B: LOG TO DEVICE with no session, an SD session, then try STREAM TO APP the
-            // same two ways.
+            // Procedure B: an SD card session. Set-up, not a check: put the app in LOG TO DEVICE
+            // through the command the button's behaviour is meant to invoke, because a click
+            // cannot do it on this build (#578).
             sw.Restart();
-
-            // Evidence only, not a pass condition: whether a real click on the enabled button changes
-            // the mode. The button's behaviour listens for a Checked event, and Avalonia 12's
-            // RadioButton raises IsCheckedChanged instead, so on this build the click moves the
-            // button and not the mode. That is a separate defect; the mode is changed below through
-            // the command the behaviour would have invoked.
-            Click(sd);
-            PumpFor(TimeSpan.FromMilliseconds(300));
-            var clickSwitched = shell.SelectedLoggingMode == logToDevice;
             pane.SetLoggingModeCommand.Execute(logToDevice);
             PumpFor(TimeSpan.FromMilliseconds(300));
             var bSwitched = shell.SelectedLoggingMode == logToDevice && device.Mode == DeviceMode.LogToDevice;
+            var bBefore = Unlocked() && sd.IsChecked == true;
+            var bBeforeButtons = Buttons();
 
             shell.IsLogging = true;
             var sdLogging = PumpUntil(() => device.IsLoggingToSdCard, TimeSpan.FromSeconds(10));
-            var bLocked = !stream.IsEffectivelyEnabled && !sd.IsEffectivelyEnabled;
+            var bLocked = Locked() && sd.IsChecked == true && stream.IsChecked == false;
             var bLockedButtons = Buttons();
-            Click(stream);
-            PumpFor(TimeSpan.FromMilliseconds(300));
             var bShot = Capture(main, "t1-logmode-sd-locked");
-            var bClickInert = sd.IsChecked == true && stream.IsChecked == false
-                              && shell.SelectedLoggingMode == logToDevice;
-            var refusalsBefore = shell.NotificationList.Count(n => n.Message == refusal);
-            pane.SetLoggingModeCommand.Execute(streamToApp);
-            PumpFor(TimeSpan.FromMilliseconds(300));
-            var bHeld = shell.SelectedLoggingMode == logToDevice && shell.IsLogToDeviceMode
-                        && device.Mode == DeviceMode.LogToDevice && device.IsLoggingToSdCard
-                        && shell.IsLogging && sd.IsChecked == true && stream.IsChecked == false;
-            var bRefused = shell.NotificationList.Count(n => n.Message == refusal) > refusalsBefore;
-            var bAfter = $"mode '{shell.SelectedLoggingMode}', device {device.Mode}, SD logging=" +
-                         $"{device.IsLoggingToSdCard}, IsLogging={shell.IsLogging}, {Buttons()}";
+
+            shell.IsLogging = false;
+            var bStopped = PumpUntil(() => !device.IsLoggingToSdCard && !shell.IsLogging,
+                                     TimeSpan.FromSeconds(10));
+            var bAfter = Unlocked();
+            var bAfterButtons = Buttons();
             sw.Stop();
 
             Step(1, "LOG-MODE", "sd",
-                 bSwitched && sdLogging && bLocked && bClickInert && bHeld && bRefused,
-                 $"with no session, a real click on LOG TO DEVICE changed the mode={clickSwitched} " +
-                 $"(evidence only, see the comment in the rig); SetLoggingModeCommand('{logToDevice}') " +
-                 $"did={bSwitched}. SD session on the scripted device={sdLogging}: {bLockedButtons}. " +
-                 $"A click on the disabled STREAM TO APP changed nothing={bClickInert}. " +
-                 $"SetLoggingModeCommand('{streamToApp}') during the session: {bAfter}; refusal message " +
-                 $"shown={bRefused}; mode and session held={bHeld}",
+                 bSwitched && bBefore && sdLogging && bLocked && bStopped && bAfter,
+                 $"set-up SetLoggingModeCommand('{logToDevice}') with no session switched={bSwitched}: " +
+                 $"{bBeforeButtons}. SD session on the scripted device={sdLogging}: {bLockedButtons}. " +
+                 $"After the stop (SD logging off={bStopped}): {bAfterButtons}",
                  bShot, sw.Elapsed.TotalSeconds);
         }
         finally
