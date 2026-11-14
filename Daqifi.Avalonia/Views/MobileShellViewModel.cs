@@ -57,8 +57,9 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     public ObservableCollection<MobileDeviceItem> Devices { get; } = [];
 
     /// <summary>
-    /// How the discovery sweep makes its finder, how long one pass listens for replies, and how
-    /// long the sweep waits before it broadcasts again. See <see cref="RunDiscoveryPassesAsync"/>.
+    /// How the discovery sweep makes its finder, how long one pass listens for replies, how long
+    /// the sweep waits before it broadcasts again, and how long the whole sweep runs before it ends
+    /// by itself. See <see cref="RunDiscoveryPassesAsync"/> and <see cref="Scan"/>.
     /// </summary>
     /// <remarks>
     /// Fields, not constants, only so the tests can script the finder and run the loop at a test
@@ -69,6 +70,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     internal Func<WiFiDeviceFinder> CreateWifiFinder = static () => new WiFiDeviceFinder();
     internal TimeSpan WifiPassWindow = TimeSpan.FromSeconds(3);
     internal TimeSpan WifiPassPause = TimeSpan.FromMilliseconds(1500);
+    internal TimeSpan WifiSweepLimit = TimeSpan.FromSeconds(30);
 
     /// <summary>
     /// Marshals a discovery result onto the UI thread. A seam only because the test project runs no
@@ -236,6 +238,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         var createFinder = CreateWifiFinder;
         var window = WifiPassWindow;
         var pause = WifiPassPause;
+        var limit = WifiSweepLimit;
         _scanTask = Task.Run(async () =>
         {
             // Hold the platform discovery scope for the whole sweep — on
@@ -247,7 +250,29 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             {
                 using var finder = createFinder();
                 finder.DeviceDiscovered += (_, e) => OnDeviceFound(e.DeviceInfo);
-                await RunDiscoveryPassesAsync(finder, window, pause, token);
+                // A sweep has a time limit (#591). It used to run until the user tapped Stop, so
+                // a scan on a network with no device never gave a result, and it kept the
+                // multicast lock (and kept broadcasting) for as long as nobody came back to stop
+                // it. The limit allows several passes, because one pass is not reliable (#516).
+                using var sweep = CancellationTokenSource.CreateLinkedTokenSource(token);
+                sweep.CancelAfter(limit);
+                await RunDiscoveryPassesAsync(finder, window, pause, sweep.Token);
+            }
+            catch (OperationCanceledException) when (!token.IsCancellationRequested)
+            {
+                // The time limit ended the sweep, not a stop. Only if THIS sweep is still the
+                // current one — the same rule as the fault path below.
+                PostToUiThread(() =>
+                {
+                    if (!ReferenceEquals(_cts, cts)) { return; }
+                    EndScanSweep();
+                    Status = Devices.Count == 0
+                        ? "No DAQiFi device found on this WiFi network. Make sure that the phone " +
+                          "and the device are on the same network, or connect by IP."
+                        : $"Scan finished — {Devices.Count} device(s) found — tap one to connect.";
+                    AppLogger.Instance.AddBreadcrumb(
+                        "discovery", $"Discovery reached its time limit — {Devices.Count} device(s) found");
+                });
             }
             catch (OperationCanceledException) { /* stop requested */ }
             catch (Exception ex)
@@ -282,6 +307,22 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         _cts?.Cancel();
         _cts?.Dispose();
         _cts = null;
+    }
+
+    /// <summary>
+    /// The app went to the background (#591): end a running sweep, which releases the multicast
+    /// lock on Android. Nobody can see its result there, and Android gives no later signal before
+    /// it stops a background app. The status says why when the user comes back.
+    /// </summary>
+    internal void StopScanForBackground()
+    {
+        if (!IsScanning) { return; }
+        EndScanSweep();
+        Status = Devices.Count == 0
+            ? "Scan stopped — the app went to the background. Tap Scan to search again."
+            : $"Scan stopped — the app went to the background. {Devices.Count} device(s) found — tap one to connect.";
+        AppLogger.Instance.AddBreadcrumb(
+            "discovery", $"Discovery stopped — app in background, {Devices.Count} device(s) found");
     }
 
     private void StopScan()

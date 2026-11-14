@@ -69,4 +69,10 @@ public partial class MobileShellView : UserControl
             _viewModel.Dispose();
         };
     }
+
+    /// <summary>
+    /// The app went to the background. Called by <see cref="MobileMainView"/>, which already
+    /// listens for it; ends a running discovery sweep (#591).
+    /// </summary>
+    internal void OnAppDeactivated() => _viewModel.StopScanForBackground();
 }
