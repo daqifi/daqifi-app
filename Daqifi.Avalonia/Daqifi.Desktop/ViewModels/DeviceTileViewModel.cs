@@ -92,6 +92,24 @@ public sealed class DeviceTileViewModel : ObservableObject, IDisposable
     public bool IsConnected => Device.IsConnected;
 
     /// <summary>
+    /// Whether a firmware update is running on this device. The tile shows an UPDATING pill while
+    /// it is true (issue #570): during the write the device is in its bootloader, and the green
+    /// "connected" dot and the old version told the user nothing about that.
+    /// </summary>
+    /// <remarks>
+    /// Set by <see cref="DevicesPaneViewModel"/> from <c>ConnectionManager.DeviceBeingUpdated</c>,
+    /// which is one value for the whole app; the device itself carries no such flag.
+    /// </remarks>
+    // Downstream-only: no upstream counterpart.
+    public bool IsUpdatingFirmware
+    {
+        get => _isUpdatingFirmware;
+        set => SetProperty(ref _isUpdatingFirmware, value);
+    }
+
+    private bool _isUpdatingFirmware;
+
+    /// <summary>
     /// Type-coded stripe color — cyan for USB, purple for WiFi. Connection
     /// type is a meaningful dimension operators sort by, so it earns a
     /// dedicated hue.

@@ -102,8 +102,9 @@ public interface IFirmwareUpdateHost
     /// so the coordinator stays free of WPF dependencies.
     /// </summary>
     /// <param name="message">
-    /// The dialog text. The coordinator writes it, so it can carry what the user must do next, such as
-    /// set the WiFi settings again (issue #564).
+    /// The dialog text. The coordinator writes it because only the coordinator knows the device,
+    /// the version it had and the version it has now (issue #570), and so it can carry what the
+    /// user must do next, such as set the WiFi settings again (issue #564).
     /// </param>
     // @port: Daqifi.Desktop.Device.Firmware.IFirmwareUpdateHost.ShowFirmwareUpdateSucceeded
     void ShowFirmwareUpdateSucceeded(string message);
@@ -130,5 +131,39 @@ public interface IFirmwareUpdateHost
     /// </summary>
     // @port: Daqifi.Desktop.Device.Firmware.IFirmwareUpdateHost.QuiesceWifiFirmwareProbeAsync
     Task QuiesceWifiFirmwareProbeAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Takes the user to the firmware update control of <paramref name="device"/>: the Devices pane,
+    /// with the device's drawer open at its FIRMWARE section. Run by the <b>Update</b> button of the
+    /// outdated-firmware notification (issue #569).
+    /// </summary>
+    /// <remarks>
+    /// A default no-op so that a host with no screen to navigate (the test doubles) needs no change.
+    /// <c>DaqifiViewModel</c> is the only host that ships, and it implements this.
+    /// </remarks>
+    // Downstream-only: no upstream counterpart.
+    void ShowFirmwareSection(IStreamingDevice device) { }
+
+    /// <summary>
+    /// Records the result of the version check for one device: <paramref name="isOutdated"/> when
+    /// its <paramref name="installedVersion"/> was compared with <paramref name="latestVersion"/>.
+    /// Both are the values the comparison used, not values read again afterwards. The Devices drawer says "up to date" or
+    /// "available" only for a device with a recorded result (review of PR #576); a device whose
+    /// comparison did not run, or failed, shows only its installed version.
+    /// </summary>
+    /// <remarks>A default no-op for the same reason as <see cref="ShowFirmwareSection"/>.</remarks>
+    // Downstream-only: no upstream counterpart.
+    void RecordFirmwareComparison(
+        IStreamingDevice device, string installedVersion, string latestVersion, bool isOutdated) { }
+
+    /// <summary>
+    /// Publishes the newest release that a version check found (<paramref name="version"/> and its
+    /// release <paramref name="tag"/>; both empty when none was found), after the check recorded
+    /// each device's comparison. Called at the end of every check, so a check started by any caller
+    /// reaches the Devices drawer (issue #569).
+    /// </summary>
+    /// <remarks>A default no-op for the same reason as <see cref="ShowFirmwareSection"/>.</remarks>
+    // Downstream-only: no upstream counterpart.
+    void SetLatestFirmwareRelease(string version, string tag) { }
     #endregion
 }

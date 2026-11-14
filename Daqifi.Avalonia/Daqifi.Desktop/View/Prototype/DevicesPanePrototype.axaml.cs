@@ -24,7 +24,51 @@ public partial class DevicesPanePrototype : UserControl
     public DevicesPanePrototype()
     {
         InitializeComponent();
+        FirmwareRunPanel.PropertyChanged += OnFirmwareRunPanelPropertyChanged;
     }
+
+    /// <summary>
+    /// Scrolls the firmware status line and CANCEL UPDATE into view when an update starts
+    /// (issue #570). They are the items below the UPDATE button and are visible only during an
+    /// update, so they appear below the visible area of a drawer that is scrolled to show that
+    /// button at its bottom edge — and the cancel button is the only safe control to stop an update.
+    /// </summary>
+    /// <remarks>
+    /// Posted, so it runs after the binding update that made the panel visible, and it runs a
+    /// layout pass first: until one runs, the panel and the scroll extent can still have their old
+    /// sizes, and a scroll computed from them is wrong. Nothing guarantees that the render timer's
+    /// layout pass comes before a posted job.
+    /// <para>
+    /// The rectangle includes <see cref="FirmwareRunBottomClearance"/> below the panel, so the
+    /// button does not sit on the bottom edge of the drawer. A panel that is already fully visible
+    /// with that clearance does not move the drawer. Only the hidden-to-visible change acts, so the
+    /// scroll position is the user's again for the rest of the update.
+    /// </para>
+    /// </remarks>
+    private void OnFirmwareRunPanelPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+    {
+        if (e.Property != IsVisibleProperty || e.NewValue is not true)
+        {
+            return;
+        }
+
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                if (!FirmwareRunPanel.IsEffectivelyVisible)
+                {
+                    return;
+                }
+
+                FirmwareRunPanel.UpdateLayout();
+                FirmwareRunPanel.BringIntoView(
+                    new Rect(FirmwareRunPanel.Bounds.Size).Inflate(new Thickness(0, 0, 0, FirmwareRunBottomClearance)));
+            },
+            DispatcherPriority.Loaded);
+    }
+
+    /// <summary>Space kept below CANCEL UPDATE when it is scrolled into view, in pixels.</summary>
+    private const double FirmwareRunBottomClearance = 16;
 
     // Upstream swaps the VM in on Loaded. Avalonia raises Loaded at DispatcherPriority.Loaded,
     // BELOW Render, so the pane was laid out and presented for a frame with the host's
@@ -40,6 +84,7 @@ public partial class DevicesPanePrototype : UserControl
             var shell = (TopLevel.GetTopLevel(this) as Window)?.DataContext as DaqifiViewModel;
             DataContext = new DevicesPaneViewModel(shell);
         }
+        FollowFirmwareSectionRequests();
         base.OnAttachedToVisualTree(e);
     }
 
@@ -62,10 +107,48 @@ public partial class DevicesPanePrototype : UserControl
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnDetachedFromVisualTree(e);
+        if (DataContext is DevicesPaneViewModel pane)
+        {
+            pane.FirmwareSectionShown -= OnFirmwareSectionShown;
+        }
         if (DataContext is IDisposable disposable)
         {
             disposable.Dispose();
             DataContext = null;
         }
+    }
+
+    /// <summary>
+    /// Subscribes to the view model's FIRMWARE-section requests (issue #569), and serves the one it
+    /// took while it was being built, before this subscription existed.
+    /// </summary>
+    private void FollowFirmwareSectionRequests()
+    {
+        if (DataContext is not DevicesPaneViewModel pane) return;
+        pane.FirmwareSectionShown += OnFirmwareSectionShown;
+        if (pane.TakeFirmwareScrollRequest()) ScrollToFirmwareSection();
+    }
+
+    private void OnFirmwareSectionShown(object? sender, EventArgs e)
+    {
+        if ((sender as DevicesPaneViewModel)?.TakeFirmwareScrollRequest() == true) ScrollToFirmwareSection();
+    }
+
+    /// <summary>
+    /// Scrolls the drawer so the FIRMWARE section starts at the top of its view (issue #569). The
+    /// drawer has only now become visible, so this waits for the layout pass that measures it.
+    /// </summary>
+    private void ScrollToFirmwareSection()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            var section = this.FindControl<TextBlock>("FirmwareSection");
+            if (section == null) return;
+            // A rectangle one viewport tall from the label down, so the label lands at the top of
+            // the view and not at its bottom edge with the controls under it out of sight.
+            var viewer = global::Avalonia.VisualTree.VisualExtensions.FindAncestorOfType<ScrollViewer>(section);
+            var viewportHeight = viewer?.Viewport.Height ?? 0;
+            section.BringIntoView(new Rect(0, 0, section.Bounds.Width, Math.Max(section.Bounds.Height, viewportHeight)));
+        }, DispatcherPriority.Loaded);
     }
 }

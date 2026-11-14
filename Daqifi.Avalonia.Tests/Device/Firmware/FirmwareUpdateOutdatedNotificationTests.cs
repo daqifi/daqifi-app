@@ -165,6 +165,29 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     }
 
     /// <summary>
+    /// The Devices drawer (issue #569) shows "up to date" or "available" only from a recorded
+    /// comparison, and re-reads it when a check announces. The write records its own comparison —
+    /// the reported 3.9.0 against the recorded 3.9.0, not outdated — and announces it before the
+    /// dialog, with no lookup: GitHub never answers here, so the refresh after the run records nothing.
+    /// </summary>
+    [Fact]
+    public async Task The_write_records_and_announces_its_comparison_before_the_dialog()
+    {
+        await ConnectOn(Previous);
+        _downloads.LatestFirmwarePath = FirmwareFile();
+        _reader.Reported = Latest;
+        _downloads.Lookup = LookupMode.Hang;
+        var comparisonsBefore = _host.Comparisons.Count;
+        var announcementsBefore = _host.Announcements;
+
+        await RunUpdate();
+
+        Assert.Equal(comparisonsBefore + 1, _host.ComparisonsWhenSucceeded);
+        Assert.Equal((Latest, Latest, false), _host.Comparisons[comparisonsBefore]);
+        Assert.True(_host.AnnouncementsWhenSucceeded > announcementsBefore, "The write did not announce its result.");
+    }
+
+    /// <summary>
     /// The review finding on PR #574: the release lookup takes no token, so when GitHub never answers
     /// it must not hold the run open. The notification is settled anyway, the run completes, and the
     /// upload flag (which keeps Cancel enabled) is down. (The lookup that names the release in the
@@ -349,6 +372,7 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         _downloads.LatestFirmwarePath = FirmwareFile();
         _reader.Reported = null;
         _updates.MetadataAfterRestart = Latest;
+        var comparisonsBefore = _host.Comparisons.Count;
 
         await RunUpdate();
 
@@ -356,6 +380,9 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
         Assert.Equal(Latest, _core.Metadata.FirmwareVersion);
         Assert.Equal(1, _host.FirmwareNotificationsWhenSucceeded);
         Assert.True(_host.WasOutdatedWhenSucceeded);
+
+        // Unknown records no comparison for the drawer either: nothing new before the dialog.
+        Assert.Equal(comparisonsBefore, _host.ComparisonsWhenSucceeded);
 
         // After the refresh that followed the run, too.
         Assert.Equal(Previous, _device.DeviceVersion);
@@ -875,7 +902,25 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
             FirmwareNotificationsWhenSucceeded = Notifications.Count(n => n.IsFirmwareUpdate);
             WasOutdatedWhenSucceeded = SelectedDevice?.IsFirmwareOutdated ?? false;
             LookupsWhenSucceeded = CountLookups?.Invoke() ?? -1;
+            ComparisonsWhenSucceeded = Comparisons.Count;
+            AnnouncementsWhenSucceeded = Announcements;
         }
+
+        /// <summary>Each comparison result recorded for the drawer (issue #569), in order.</summary>
+        public List<(string Installed, string Latest, bool IsOutdated)> Comparisons { get; } = [];
+
+        /// <summary>How many times a check announced its release to the drawer (issue #569).</summary>
+        public int Announcements { get; private set; }
+
+        public int ComparisonsWhenSucceeded { get; private set; } = -1;
+
+        public int AnnouncementsWhenSucceeded { get; private set; } = -1;
+
+        public void RecordFirmwareComparison(
+            DesktopStreamingDevice device, string installedVersion, string latestVersion, bool isOutdated) =>
+            Comparisons.Add((installedVersion, latestVersion, isOutdated));
+
+        public void SetLatestFirmwareRelease(string version, string tag) => Announcements++;
 
         /// <summary>How many times the confirmation before a write was asked (issue #564).</summary>
         public int Confirmations { get; private set; }
