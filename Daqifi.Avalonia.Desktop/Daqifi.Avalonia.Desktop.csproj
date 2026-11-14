@@ -19,6 +19,15 @@
 		     this head publishes desktop targets, which the #260 publish gate
 		     drives with an explicit `-r`. -->
 		<RuntimeIdentifiers>win-x64;linux-x64;osx-x64;osx-arm64</RuntimeIdentifiers>
+		<!-- Precompile every assembly a desktop publish ships (ReadyToRun, #614). Without it the
+		     JIT compiles about 20,500 methods of the app, Avalonia, EF Core, OxyPlot and NLog
+		     before the first frame, which was about 77 % of start-up. It acts only at publish, so
+		     `dotnet build` and the tests do not change. It is set here, not on the release
+		     command line, because the restore must see it too: that is the step that downloads
+		     the crossgen2 pack, and the release publishes with no-restore. The crossgen2 pack is a
+		     PackageDownload, so it does not go into packages.lock.json. Tiered compilation and
+		     dynamic PGO keep their defaults; the R2R code is re-JIT-ed when it is hot. -->
+		<PublishReadyToRun>true</PublishReadyToRun>
 	</PropertyGroup>
 
 	<ItemGroup>
