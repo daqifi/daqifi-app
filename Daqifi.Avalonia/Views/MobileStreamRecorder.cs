@@ -8,6 +8,21 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Daqifi.Avalonia.Views;
 
 /// <summary>
+/// What a stopped recording left in the database, known only after its samples are committed.
+/// </summary>
+/// <param name="SessionName">The session's name, or <c>null</c> when no session row was opened.</param>
+/// <param name="CommittedSamples">Samples of the session found in SQLite after the writer finished.</param>
+/// <param name="Problem">
+/// Why the save could not be confirmed (the writer did not finish in time, or the database could not
+/// be read), or <c>null</c>.
+/// </param>
+internal sealed record RecordingResult(string? SessionName, long CommittedSamples, string? Problem)
+{
+    /// <summary>True when APP LOGS can list the session: it has samples in SQLite.</summary>
+    public bool IsSaved => Problem is null && SessionName is not null && CommittedSamples > 0;
+}
+
+/// <summary>
 /// Records the mobile shell's stream into an app logging session, so it shows in APP LOGS (#597).
 /// </summary>
 /// <remarks>
@@ -18,18 +33,16 @@ internal interface IMobileStreamRecorder
 {
     /// <summary>
     /// Opens a session that records every sample of <paramref name="channels"/> until
-    /// <see cref="Stop"/>. Call it before the device starts to stream, so no sample is lost.
+    /// <see cref="StopAsync"/>. Call it before the device starts to stream, so no sample is lost.
     /// </summary>
     /// <returns><c>null</c> when the session is open, or a sentence for the user that says why not.</returns>
     string? Start(IReadOnlyList<IChannel> channels);
 
     /// <summary>
-    /// Closes the open session. Does nothing when no session is open.
+    /// Closes the open session at once (before the first await), then completes when the
+    /// session's samples are committed to SQLite, or when the wait for them gives up.
     /// </summary>
-    /// <returns>
-    /// The name of the saved session, or <c>null</c> when no sample arrived and so nothing was kept.
-    /// </returns>
-    string? Stop();
+    Task<RecordingResult> StopAsync();
 }
 
 /// <summary>
@@ -50,16 +63,52 @@ internal interface IMobileStreamRecorder
 /// The database logger is created on the first recording, not at app start. It owns a background
 /// writer thread and two UI timers, and a phone that never records must not pay for them.
 /// </para>
+/// <para>
+/// A stop is confirmed only from SQLite (PR #609 review). The writer commits samples in the
+/// background, and APP LOGS lists only a session with a committed sample. So a session that is in
+/// <see cref="LoggingManager.LoggingSessions"/> but not yet committed is not "saved": the user could
+/// open APP LOGS and find nothing, and a write that keeps failing would never show.
+/// </para>
 /// </remarks>
 internal sealed class LoggingManagerStreamRecorder : IMobileStreamRecorder
 {
     private static readonly object DatabaseLoggerSync = new();
 
+    private readonly Func<LoggingManager> _manager;
+    private readonly Func<IDbContextFactory<LoggingContext>> _contexts;
+    private readonly Func<IDbContextFactory<LoggingContext>, DatabaseLogger> _createLogger;
+    private readonly TimeSpan _commitWait;
+
+    /// <summary>The app's recorder, over the process-wide manager and database.</summary>
+    public LoggingManagerStreamRecorder()
+        : this(
+            static () => LoggingManager.Instance,
+            static () => Daqifi.Desktop.App.ServiceProvider.GetRequiredService<IDbContextFactory<LoggingContext>>(),
+            static contexts => new DatabaseLogger(contexts),
+            TimeSpan.FromSeconds(15))
+    {
+    }
+
+    /// <summary>
+    /// Test constructor: a manager and database of the test's own, and a short commit wait.
+    /// </summary>
+    internal LoggingManagerStreamRecorder(
+        Func<LoggingManager> manager,
+        Func<IDbContextFactory<LoggingContext>> contexts,
+        Func<IDbContextFactory<LoggingContext>, DatabaseLogger> createLogger,
+        TimeSpan commitWait)
+    {
+        _manager = manager;
+        _contexts = contexts;
+        _createLogger = createLogger;
+        _commitWait = commitWait;
+    }
+
     public string? Start(IReadOnlyList<IChannel> channels)
     {
         try
         {
-            var manager = LoggingManager.Instance;
+            var manager = _manager();
             EnsureDatabaseLogger(manager);
 
             // The phone records what it streams. SD-card mode records on the device instead and
@@ -94,37 +143,66 @@ internal sealed class LoggingManagerStreamRecorder : IMobileStreamRecorder
         }
     }
 
-    public string? Stop()
+    public Task<RecordingResult> StopAsync()
     {
+        LoggingManager manager;
+        LoggingSession? session;
         try
         {
-            var manager = LoggingManager.Instance;
-            if (!manager.Active) { return null; }
+            manager = _manager();
+            if (!manager.Active) { return Task.FromResult(new RecordingResult(null, 0, null)); }
 
-            var session = manager.Session;
+            session = manager.Session;
+            // On the calling (UI) thread, exactly as the desktop toggle does: this ends the session
+            // and makes LoggingManager stop handing samples to the writer.
             manager.Active = false;
-
-            // LoggingManager keeps a stopped session only when a sample arrived, and lists it in
-            // LoggingSessions when it does; a session with no samples is deleted.
-            return session is not null && manager.LoggingSessions.Any(s => ReferenceEquals(s, session))
-                ? session.Name
-                : null;
         }
         catch (Exception ex)
         {
             AppLogger.Instance.Error(ex, "Mobile: could not stop recording the stream");
-            return null;
+            return Task.FromResult(new RecordingResult(null, 0, "the recording could not be stopped cleanly"));
+        }
+
+        if (session is null) { return Task.FromResult(new RecordingResult(null, 0, null)); }
+        var writer = manager.Loggers.OfType<DatabaseLogger>().FirstOrDefault();
+        return Task.Run(() => ConfirmCommitted(session, writer));
+    }
+
+    /// <summary>
+    /// Waits for the writer to commit everything it holds, then counts the session's samples in
+    /// SQLite — the same rows APP LOGS reads.
+    /// </summary>
+    private RecordingResult ConfirmCommitted(LoggingSession session, DatabaseLogger? writer)
+    {
+        try
+        {
+            if (writer is not null)
+            {
+                writer.WaitForIdle(_commitWait);
+                if (writer.HasUnsavedSamples)
+                {
+                    return new RecordingResult(session.Name, 0,
+                        "the samples are not written to the database yet. The app keeps trying while it is open");
+                }
+            }
+
+            using var context = _contexts().CreateDbContext();
+            var committed = context.Samples.LongCount(s => s.LoggingSessionID == session.ID);
+            return new RecordingResult(session.Name, committed, null);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Instance.Error(ex, $"Mobile: could not confirm that recording {session.Name} was saved");
+            return new RecordingResult(session.Name, 0, "the database could not be read to confirm it");
         }
     }
 
-    private static void EnsureDatabaseLogger(LoggingManager manager)
+    private void EnsureDatabaseLogger(LoggingManager manager)
     {
         lock (DatabaseLoggerSync)
         {
             if (manager.Loggers.OfType<DatabaseLogger>().Any()) { return; }
-            var factory = Daqifi.Desktop.App.ServiceProvider
-                .GetRequiredService<IDbContextFactory<LoggingContext>>();
-            manager.AddLogger(new DatabaseLogger(factory));
+            manager.AddLogger(_createLogger(_contexts()));
         }
     }
 }

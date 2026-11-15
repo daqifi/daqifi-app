@@ -138,11 +138,25 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     [NotifyPropertyChangedFor(nameof(HasRecordingOutcome))]
     private string _recordingOutcome = "";
 
-    /// <summary>True when the last recording saved a session; false when it saved nothing.</summary>
+    /// <summary>
+    /// True when the last recording's samples are confirmed in SQLite, so APP LOGS lists it.
+    /// </summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowRecordingWarning))]
     private bool _recordingSaved;
 
+    /// <summary>
+    /// True from the stop of a recording until its samples are confirmed in SQLite (or the wait
+    /// for them gives up).
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowRecordingWarning))]
+    private bool _isSavingRecording;
+
     public bool HasRecordingOutcome => RecordingOutcome.Length > 0;
+
+    /// <summary>The banner's amber state: the recording ended and nothing is confirmed saved.</summary>
+    public bool ShowRecordingWarning => !RecordingSaved && !IsSavingRecording;
 
     /// <summary>
     /// The stream button's label, which says whether the tap records: the user must never think
@@ -700,6 +714,10 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             // Open the recording session AFTER the rate is set (the session stores it as device
             // metadata) and BEFORE the device streams, so the first sample is recorded too. This is
             // the order the desktop LOGGING toggle uses: LoggingManager.Active, then the start.
+            // A save still being confirmed from the last recording must not overwrite this one's banner.
+            _recordingGeneration++;
+            IsSavingRecording = false;
+            RecordingSaved = false;
             RecordingOutcome = "";
             if (RecordStream)
             {
@@ -772,17 +790,68 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     /// <summary>
     /// Closes the recording session, if one is open, and says what it produced. Idempotent.
     /// </summary>
+    /// <remarks>
+    /// The banner says "saving" until the recorder confirms the samples are in SQLite (PR #609
+    /// review): APP LOGS lists only a session with a committed sample, so "saved" before the commit
+    /// could send the user to an empty list, and a write that keeps failing would never show.
+    /// </remarks>
     private void EndRecording()
     {
         if (!IsRecording) { return; }
         IsRecording = false;
-        var saved = Recorder.Stop();
-        RecordingSaved = saved != null;
-        RecordingOutcome = saved != null
-            ? $"{saved} saved. Open Logged Data > APP LOGS to see it."
-            : "No samples arrived, so no session was saved.";
+        RecordingSaved = false;
+        IsSavingRecording = true;
+        RecordingOutcome = "Saving the recording…";
+        var stop = Recorder.StopAsync();
+        var generation = ++_recordingGeneration;
+        RecordingSaveTask = FinishRecordingAsync(stop, generation);
+    }
+
+    private int _recordingGeneration;
+
+    /// <summary>
+    /// Completes when the last stopped recording's outcome is on screen. Internal for tests.
+    /// </summary>
+    internal Task RecordingSaveTask { get; private set; } = Task.CompletedTask;
+
+    private async Task FinishRecordingAsync(Task<RecordingResult> stop, int generation)
+    {
+        RecordingResult result;
+        try { result = await stop.ConfigureAwait(false); }
+        catch (Exception ex) { result = new RecordingResult(null, 0, ex.Message); }
+
+        var done = new TaskCompletionSource();
+        PostToUiThread(() =>
+        {
+            try
+            {
+                // A newer stream has started (or ended) since: its banner wins.
+                if (generation != _recordingGeneration) { return; }
+                ShowRecordingResult(result);
+            }
+            finally { done.TrySetResult(); }
+        });
+        await done.Task.ConfigureAwait(false);
+    }
+
+    private void ShowRecordingResult(RecordingResult result)
+    {
+        IsSavingRecording = false;
+        RecordingSaved = result.IsSaved;
+        RecordingOutcome = result switch
+        {
+            { IsSaved: true } =>
+                $"{result.SessionName} saved: {result.CommittedSamples:N0} samples. Open Logged Data > APP LOGS to see it.",
+            { Problem: { } problem } =>
+                $"The recording could not be confirmed as saved: {problem}.",
+            _ => "No samples arrived, so no session was saved.",
+        };
         AppLogger.Instance.AddBreadcrumb(
-            "logging", saved != null ? $"Mobile recording saved as {saved}" : "Mobile recording kept no samples");
+            "logging",
+            result.IsSaved
+                ? $"Mobile recording saved as {result.SessionName}, {result.CommittedSamples} samples"
+                : $"Mobile recording not confirmed: {result.Problem ?? "no samples"}",
+            result.Problem is null ? BreadcrumbLevel.Info : BreadcrumbLevel.Warning);
     }
 
     /// <summary>

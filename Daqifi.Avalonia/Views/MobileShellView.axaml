@@ -64,9 +64,13 @@
 			<Setter Property="Background" Value="{DynamicResource StatusRed}"/>
 		</Style>
 
-		<!-- Recording outcome banner: green when a session was saved, amber when nothing was. -->
+		<!-- Recording outcome banner: neutral while the samples are being committed, green once
+		     they are confirmed in SQLite, amber when nothing is confirmed saved. -->
 		<Style Selector="Border.recordOutcome">
 			<Setter Property="BorderBrush" Value="{DynamicResource StatusAmber}"/>
+		</Style>
+		<Style Selector="Border.recordOutcome.saving">
+			<Setter Property="BorderBrush" Value="{DynamicResource BorderBright}"/>
 		</Style>
 		<Style Selector="Border.recordOutcome.saved">
 			<Setter Property="BorderBrush" Value="{DynamicResource StatusGreen}"/>
@@ -150,13 +154,16 @@
 			     disconnect, because that is exactly when a user wonders where the data went. -->
 			<Border DockPanel.Dock="Top" IsVisible="{Binding HasRecordingOutcome}"
 			        Classes="recordOutcome" Classes.saved="{Binding RecordingSaved}"
+			        Classes.saving="{Binding IsSavingRecording}"
 			        Background="{DynamicResource SurfaceRaised}" BorderThickness="1"
 			        CornerRadius="12" Padding="14,10" Margin="0,0,0,10">
 				<Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+					<i:Icon Grid.Column="0" Value="mdi-progress-upload" FontSize="20" VerticalAlignment="Center"
+					        Foreground="{DynamicResource TextSecondary}" IsVisible="{Binding IsSavingRecording}" />
 					<i:Icon Grid.Column="0" Value="mdi-check-circle" FontSize="20" VerticalAlignment="Center"
 					        Foreground="{DynamicResource StatusGreen}" IsVisible="{Binding RecordingSaved}" />
 					<i:Icon Grid.Column="0" Value="mdi-alert-circle-outline" FontSize="20" VerticalAlignment="Center"
-					        Foreground="{DynamicResource StatusAmber}" IsVisible="{Binding !RecordingSaved}" />
+					        Foreground="{DynamicResource StatusAmber}" IsVisible="{Binding ShowRecordingWarning}" />
 					<TextBlock Grid.Column="1" Text="{Binding RecordingOutcome}" TextWrapping="Wrap"
 					           VerticalAlignment="Center"
 					           FontSize="{DynamicResource FontSizeLabel}"

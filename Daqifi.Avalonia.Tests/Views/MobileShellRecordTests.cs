@@ -1,3 +1,4 @@
+using System.Reflection;
 using Daqifi.Avalonia.Tests.Device;
 using Daqifi.Avalonia.Views;
 using Daqifi.Core.Communication.Messages;
@@ -24,7 +25,6 @@ namespace Daqifi.Avalonia.Tests.Views;
 public sealed class MobileShellRecordTests : IDisposable
 {
     private const int AnalogPorts = 16;
-    private const int WatchdogPolls = 160;
     private static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(10);
 
     private readonly CapturingTransport _transport = new();
@@ -50,6 +50,8 @@ public sealed class MobileShellRecordTests : IDisposable
 
         _recorder = new FakeRecorder(_transport);
         _shell.Recorder = _recorder;
+        // No dispatcher runs in this project; the outcome banner is posted through this seam.
+        _shell.PostToUiThread = action => action();
         _device.AdoptInto(_shell);
         Assert.True(_shell.IsConnected);
     }
@@ -107,8 +109,12 @@ public sealed class MobileShellRecordTests : IDisposable
         Assert.StartsWith("Recording 16 channel(s)", _shell.Status, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// PR #609 review: "saved" must wait for the samples to be committed to SQLite, because APP LOGS
+    /// lists only committed sessions. Until the recorder confirms, the banner says "saving".
+    /// </summary>
     [Fact]
-    public void Stop_closes_the_recording_once_and_names_the_saved_session()
+    public async Task Stop_says_saving_until_the_samples_are_committed_then_names_the_session()
     {
         _shell.RecordStream = true;
         StartStream();
@@ -118,22 +124,65 @@ public sealed class MobileShellRecordTests : IDisposable
         Assert.False(_shell.IsStreaming);
         Assert.False(_shell.IsRecording);
         Assert.Equal(1, _recorder.Stops);
+        Assert.True(_shell.IsSavingRecording);
+        Assert.False(_shell.RecordingSaved);
+        Assert.False(_shell.ShowRecordingWarning);
+        Assert.Equal("Saving the recording…", _shell.RecordingOutcome);
+
+        _recorder.Complete(new RecordingResult("Session_7", 1_600, null));
+        await _shell.RecordingSaveTask.WaitAsync(SendTimeout);
+
+        Assert.False(_shell.IsSavingRecording);
         Assert.True(_shell.RecordingSaved);
-        Assert.Equal("Session_7 saved. Open Logged Data > APP LOGS to see it.", _shell.RecordingOutcome);
-        Assert.True(_shell.HasRecordingOutcome);
+        Assert.Equal(
+            $"Session_7 saved: {1_600:N0} samples. Open Logged Data > APP LOGS to see it.",
+            _shell.RecordingOutcome);
     }
 
     [Fact]
-    public void A_recording_that_kept_no_samples_says_so()
+    public async Task A_recording_that_kept_no_samples_says_so()
     {
         _shell.RecordStream = true;
-        _recorder.SavedSession = null;
         StartStream();
 
         _shell.StreamToggleCommand.Execute(null);
+        _recorder.Complete(new RecordingResult("Session_7", 0, null));
+        await _shell.RecordingSaveTask.WaitAsync(SendTimeout);
 
         Assert.False(_shell.RecordingSaved);
+        Assert.True(_shell.ShowRecordingWarning);
         Assert.Equal("No samples arrived, so no session was saved.", _shell.RecordingOutcome);
+    }
+
+    [Fact]
+    public async Task A_save_that_cannot_be_confirmed_is_never_reported_as_saved()
+    {
+        _shell.RecordStream = true;
+        StartStream();
+
+        _shell.StreamToggleCommand.Execute(null);
+        _recorder.Complete(new RecordingResult("Session_7", 0, "the samples are not written to the database yet"));
+        await _shell.RecordingSaveTask.WaitAsync(SendTimeout);
+
+        Assert.False(_shell.RecordingSaved);
+        Assert.True(_shell.ShowRecordingWarning);
+        Assert.StartsWith("The recording could not be confirmed as saved", _shell.RecordingOutcome, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_late_confirmation_does_not_overwrite_the_next_stream()
+    {
+        _shell.RecordStream = true;
+        StartStream();
+        _shell.StreamToggleCommand.Execute(null);   // the save is still being confirmed
+
+        _shell.RecordStream = false;
+        StartStream();
+        _recorder.Complete(new RecordingResult("Session_7", 1_600, null));
+        await _shell.RecordingSaveTask.WaitAsync(SendTimeout);
+
+        Assert.False(_shell.HasRecordingOutcome);
+        Assert.False(_shell.IsSavingRecording);
     }
 
     [Fact]
@@ -151,14 +200,22 @@ public sealed class MobileShellRecordTests : IDisposable
         Assert.Equal(0, _recorder.Stops);
     }
 
+    /// <summary>
+    /// The lost-connection path (reached from the silent-stream watchdog and from the device's own
+    /// IsConnected) closes the recording. Driven straight through <c>HandleConnectionLost</c>, not
+    /// by counting watchdog polls: how the watchdog measures silence is #604's business, and this
+    /// test must not depend on it.
+    /// </summary>
     [Fact]
-    public void A_connection_the_watchdog_drops_closes_the_recording()
+    public void A_lost_connection_closes_the_recording()
     {
         _shell.RecordStream = true;
         StartStream();
 
-        // Nothing arrives, so the watchdog declares the connection dead (#358).
-        for (var i = 0; i < WatchdogPolls; i++) { _shell.PollActiveSamples(); }
+        var lost = typeof(MobileShellViewModel).GetMethod(
+            "HandleConnectionLost", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(lost);
+        lost.Invoke(_shell, null);
 
         Assert.False(_shell.IsConnected);
         Assert.False(_shell.IsRecording);
@@ -200,6 +257,8 @@ public sealed class MobileShellRecordTests : IDisposable
     [InlineData("IsVisible=\"{Binding IsRecording}\"")]
     [InlineData("IsVisible=\"{Binding HasRecordingOutcome}\"")]
     [InlineData("Text=\"{Binding RecordingOutcome}\"")]
+    [InlineData("Classes.saving=\"{Binding IsSavingRecording}\"")]
+    [InlineData("IsVisible=\"{Binding ShowRecordingWarning}\"")]
     public void The_record_controls_are_bound(string binding) =>
         BindingFacts.AssertBinds("Daqifi.Avalonia/Views/MobileShellView.axaml", binding);
 
@@ -233,7 +292,10 @@ public sealed class MobileShellRecordTests : IDisposable
         public IReadOnlyList<IChannel> Channels { get; private set; } = [];
         public bool DeviceWasStreamingAtStart { get; private set; }
         public string? StartFailure { get; set; }
-        public string? SavedSession { get; set; } = "Session_7";
+        private TaskCompletionSource<RecordingResult>? _pending;
+
+        /// <summary>Plays the writer finishing: the last stopped recording's outcome becomes known.</summary>
+        public void Complete(RecordingResult result) => Assert.True(_pending?.TrySetResult(result));
 
         public string? Start(IReadOnlyList<IChannel> channels)
         {
@@ -244,10 +306,11 @@ public sealed class MobileShellRecordTests : IDisposable
             return StartFailure;
         }
 
-        public string? Stop()
+        public Task<RecordingResult> StopAsync()
         {
             Stops++;
-            return SavedSession;
+            _pending = new TaskCompletionSource<RecordingResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            return _pending.Task;
         }
     }
 }
