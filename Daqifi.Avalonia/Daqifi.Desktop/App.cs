@@ -40,18 +40,17 @@ public static class App
     // @port: Daqifi.Desktop.App.ServiceProvider
     public static IServiceProvider ServiceProvider { get; private set; }
 
-    /// <summary>
-    /// Root directory for DAQiFi application data (logs, database). Resolved by
-    /// <see cref="AppDataPaths"/>: always per-user, elevated or not.
-    /// </summary>
-    // @port: Daqifi.Desktop.App.DaqifiDataDirectory
-    public static string DaqifiDataDirectory => AppDataPaths.DataDirectory;
+    // Upstream's App.DaqifiDataDirectory, App.IsTestMode and App.IsElevated only returned the
+    // AppDataPaths member of the same meaning, so callers read AppDataPaths directly (#448).
+    // @port: Daqifi.Desktop.App.DaqifiDataDirectory (read AppDataPaths.DataDirectory)
+    // @port: Daqifi.Desktop.App.IsTestMode (read AppDataPaths.IsTestMode)
+    // @port: Daqifi.Desktop.App.IsElevated (read AppDataPaths.IsElevated)
 
     /// <summary>
     /// Full path to the SQLite database file.
     /// </summary>
     // @port: Daqifi.Desktop.App.DatabasePath
-    public static string DatabasePath { get; } = Path.Combine(DaqifiDataDirectory, "DAQiFiDatabase.db");
+    public static string DatabasePath { get; } = Path.Combine(AppDataPaths.DataDirectory, "DAQiFiDatabase.db");
 
     // @port: Daqifi.Desktop.App.IsWindowInit
     public static bool IsWindowInit { get; set; }
@@ -68,23 +67,6 @@ public static class App
     /// that null and permits a re-entry that would double-subscribe them.
     /// </summary>
     private static bool _mobileCrashHandlersInstalled;
-
-    /// <summary>
-    /// Indicates the application was launched in unattended/test mode (environment variable
-    /// <c>DAQIFI_TEST_MODE=1</c>). In this mode modal dialogs are suppressed so UI automation
-    /// can drive the app without prompts. Defaults to <c>false</c> for normal launches.
-    /// </summary>
-    // @port: Daqifi.Desktop.App.IsTestMode
-    public static bool IsTestMode => AppDataPaths.IsTestMode;
-
-    /// <summary>
-    /// <c>true</c> when the process is running elevated (administrator). Firewall
-    /// configuration (which requires admin) only runs when elevated; un-elevated runs skip it
-    /// rather than show a "configure firewall manually" prompt. Elevation no longer moves the
-    /// data directory — see <see cref="AppDataPaths"/>.
-    /// </summary>
-    // @port: Daqifi.Desktop.App.IsElevated
-    public static bool IsElevated => AppDataPaths.IsElevated;
 
     /// <summary>
     /// WPF OnStartup → host initialization, invoked by the Daqifi.Avalonia bootstrap from
@@ -125,7 +107,7 @@ public static class App
 
         AppDataPaths.ThrowIfDataDirectoryUnusable();
 
-        if (ShouldShowSplash(OperatingSystem.IsWindows(), IsTestMode))
+        if (ShouldShowSplash(OperatingSystem.IsWindows(), AppDataPaths.IsTestMode))
         {
             ShowSplashScreen(desktop);
         }
@@ -151,8 +133,8 @@ public static class App
 
     private static void InitializeServicesAndShowMainWindow(IClassicDesktopStyleApplicationLifetime desktop)
     {
-        Directory.CreateDirectory(DaqifiDataDirectory);
-        AppDomain.CurrentDomain.SetData("DataDirectory", DaqifiDataDirectory);
+        Directory.CreateDirectory(AppDataPaths.DataDirectory);
+        AppDomain.CurrentDomain.SetData("DataDirectory", AppDataPaths.DataDirectory);
 
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddDbContextFactory<LoggingContext>(options =>
@@ -226,7 +208,7 @@ public static class App
         // and takes an *exclusive* HID handle on each — the actual side effect we want to avoid. (The
         // watcher singleton may still be lazily constructed later by the connection/firmware dialogs,
         // but construction is inert: no discovery runs and no handle is taken until Start().) (#18)
-        if (!IsTestMode)
+        if (!AppDataPaths.IsTestMode)
         {
             ServiceProvider.GetRequiredService<IBootloaderWatcher>().Start();
         }
@@ -328,8 +310,8 @@ public static class App
         // failure is the correct degraded state.
         try
         {
-            try { Directory.CreateDirectory(DaqifiDataDirectory); } catch { /* best-effort */ }
-            AppDomain.CurrentDomain.SetData("DataDirectory", DaqifiDataDirectory);
+            try { Directory.CreateDirectory(AppDataPaths.DataDirectory); } catch { /* best-effort */ }
+            AppDomain.CurrentDomain.SetData("DataDirectory", AppDataPaths.DataDirectory);
 
             var serviceCollection = new ServiceCollection();
             serviceCollection.AddDbContextFactory<LoggingContext>(options =>
