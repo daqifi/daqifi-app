@@ -334,6 +334,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     private long _analogProcessingFailureCount;
     private long _digitalProcessingFailureCount;
     private long _debugDataFailureCount;
+    private long _deviceMessageFailureCount;
 
     /// <summary>
     /// How many non-finite readings have been discarded on each analog channel index in the
@@ -376,6 +377,13 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     // The device counter on the last stream frame of this session, for DeviceMessage.Rollover.
     private bool _hasSeenStreamFrameCounter;
     private uint _lastStreamFrameCounter;
+
+    /// <summary>
+    /// The latest stream frame, held until its samples are published so its device message and
+    /// debug capture follow them. See <see cref="StreamFrameInProgress"/>. Volatile: a stop
+    /// completes it from the UI thread.
+    /// </summary>
+    private volatile StreamFrameInProgress? _frameInProgress;
 
     /// <summary>
     /// The Core streaming device created by the shared <see cref="Connect"/> template,
@@ -1253,10 +1261,14 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// 2.5 sample periods, so it discarded the first 5 genuine frames of a quick restart.
     /// </para>
     /// <para>
-    /// What stays is what needs only the raw frame: the per-frame <see cref="DeviceMessage"/>
-    /// (the Log Summary flyout counts these and lists their status codes) and the debug-mode
-    /// capture. Core raises the raw frame before it decodes the samples, so neither has Core's
-    /// reconstructed timestamp; both carry the host time of arrival instead.
+    /// What stays is what needs the raw frame: the per-frame <see cref="DeviceMessage"/> (the Log
+    /// Summary flyout counts these, lists their status codes, and refreshes on them) and the
+    /// debug-mode capture. Core raises the raw frame <em>before</em> it decodes the frame's
+    /// samples, and it raises nothing after. So the frame is held here as
+    /// <see cref="_frameInProgress"/> and completed (<see cref="CompleteStreamFrame"/>) once its
+    /// samples are published — see <see cref="StreamFrameInProgress"/> for how that is known. Both
+    /// consumers then see the frame's samples first and get the frame's decoded timestamp, as they
+    /// did when the app decoded the frame itself.
     /// </para>
     /// </remarks>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.OnStreamMessageReceived
@@ -1274,32 +1286,196 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             return;
         }
 
-        var arrival = DateTime.Now;
+        // A new frame means the previous one has all the samples it will get.
+        var previous = _frameInProgress;
+        var expectedSamples = 0;
+        if (previous != null)
+        {
+            expectedSamples = previous.Samples;
+            CompleteStreamFrame(previous);
+        }
+
+        if (expectedSamples == 0)
+        {
+            expectedSamples = PredictSampleCount(message);
+        }
+
         var rollover = _hasSeenStreamFrameCounter && message.MsgTimeStamp < _lastStreamFrameCounter;
         _lastStreamFrameCounter = message.MsgTimeStamp;
         _hasSeenStreamFrameCounter = true;
 
-        if (message.AnalogInData.Count > 0 || message.AnalogInDataFloat.Count > 0)
+        _frameInProgress = new StreamFrameInProgress(message, DateTime.Now, rollover, expectedSamples);
+    }
+
+    /// <summary>
+    /// A stream frame whose raw message has arrived and whose decoded samples are still being
+    /// published.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A frame is complete when Core has published all of its samples. Core gives no event for
+    /// that, so the frame is completed by whichever comes first:
+    /// </para>
+    /// <list type="number">
+    ///   <item><description>
+    ///     Its sample count reaches <see cref="ExpectedSamples"/>: the number the previous frame
+    ///     carried, or, when there is no previous count (the first frame of a session, or a frame
+    ///     after one with no samples), the number Core will decode from it
+    ///     (<see cref="PredictSampleCount"/>). The channel set does not change during a session in
+    ///     practice, so this completes almost every frame the moment its last sample is published.
+    ///   </description></item>
+    ///   <item><description>
+    ///     The next frame arrives (<see cref="OnStreamMessageReceived"/>) or the stream stops
+    ///     (<see cref="StopStreaming"/>). This covers a frame with no samples, and a frame that
+    ///     carries fewer samples than expected (the firmware's short warm-up frame, issue #351,
+    ///     whose analog values Core withholds).
+    ///   </description></item>
+    /// </list>
+    /// <para>
+    /// Samples and frames arrive on Core's consumer thread. Only the completion at a stop runs on
+    /// another thread, so completion is claimed with an interlocked flag and runs once.
+    /// </para>
+    /// </remarks>
+    private sealed class StreamFrameInProgress(
+        DaqifiOutMessage message, DateTime arrival, bool rollover, int expectedSamples)
+    {
+        private int _completed;
+
+        public DaqifiOutMessage Message { get; } = message;
+
+        /// <summary>When the raw frame reached the app (host clock).</summary>
+        public DateTime Arrival { get; } = arrival;
+
+        /// <summary>Whether the device counter wrapped between the previous frame and this one.</summary>
+        public bool Rollover { get; } = rollover;
+
+        /// <summary>How many samples the frame is expected to carry; 0 when it is expected to carry none.</summary>
+        public int ExpectedSamples { get; } = expectedSamples;
+
+        /// <summary>How many samples Core has published for this frame so far.</summary>
+        public int Samples { get; set; }
+
+        /// <summary>The timestamp Core reconstructed for this frame, once a sample carries it.</summary>
+        public DateTime? DecodedTimestamp { get; set; }
+
+        /// <summary>Claims completion. Returns <c>true</c> for the one caller that gets it.</summary>
+        public bool TryClaimCompletion() => Interlocked.Exchange(ref _completed, 1) == 0;
+    }
+
+    /// <summary>
+    /// How many countable samples Core will decode from a frame with no previous count: one per
+    /// enabled analog channel up to the frame's analog value count, and one per enabled digital
+    /// input whose bit the frame carries. The same rule Core 1.9.1's decode follows.
+    /// </summary>
+    /// <remarks>
+    /// Digital outputs are left out here and in <see cref="CountSampleOfFrameInProgress"/> alike.
+    /// Core 1.9.1 does not sample them and Core 1.10.0 does, and the app publishes none of them,
+    /// so leaving them out of both keeps the two counts equal on either version.
+    /// </remarks>
+    /// <param name="message">The frame that just arrived.</param>
+    private int PredictSampleCount(DaqifiOutMessage message)
+    {
+        var analogValues = message.AnalogInDataFloat.Count > 0
+            ? message.AnalogInDataFloat.Count
+            : message.AnalogInData.Count;
+        var digitalBits = message.DigitalData.Length * 8;
+        var enabledAnalog = 0;
+        var digitalInputs = 0;
+
+        lock (_coreSampleSubscriptions)
         {
-            SendDebugData(message, arrival);
+            foreach (var (coreChannel, _) in _coreSampleSubscriptions)
+            {
+                if (!coreChannel.IsEnabled)
+                {
+                    continue;
+                }
+
+                if (coreChannel.Type == ChannelType.Analog)
+                {
+                    enabledAnalog++;
+                }
+                else if (coreChannel.Direction == ChannelDirection.Input
+                         && coreChannel.ChannelNumber < digitalBits)
+                {
+                    digitalInputs++;
+                }
+            }
         }
 
-        var deviceMessage = new DeviceMessage
-        {
-            DeviceName = Name,
-            DeviceSerialNo = message.DeviceSn.ToString(CultureInfo.InvariantCulture),
-            DeviceVersion = message.DeviceFwRev,
-            TimestampTicks = arrival.Ticks,
-            AppTicks = arrival.Ticks,
-            DeviceStatus = (int)message.DeviceStatus,
-            BatteryStatus = (int)message.BattStatus,
-            PowerStatus = (int)message.PwrStatus,
-            TempStatus = message.TempStatus,
-            TargetFrequency = (int)message.TimestampFreq,
-            Rollover = rollover,
-        };
+        return Math.Min(analogValues, enabledAnalog) + digitalInputs;
+    }
 
-        DispatchDeviceMessage(deviceMessage);
+    /// <summary>
+    /// Counts a sample against the frame in progress, and completes the frame when it has as many
+    /// samples as expected.
+    /// </summary>
+    /// <param name="channel">The app channel the sample was decoded onto.</param>
+    /// <param name="coreSample">The sample Core decoded.</param>
+    private void CountSampleOfFrameInProgress(IChannel channel, Daqifi.Core.Channel.IDataSample coreSample)
+    {
+        var frame = _frameInProgress;
+        if (frame == null
+            || coreSample.DeviceTimestamp != frame.Message.MsgTimeStamp
+            || (channel.Type != ChannelType.Analog && channel.Direction != ChannelDirection.Input))
+        {
+            return;
+        }
+
+        frame.DecodedTimestamp ??= coreSample.Timestamp;
+        frame.Samples++;
+
+        if (frame.ExpectedSamples > 0 && frame.Samples >= frame.ExpectedSamples)
+        {
+            CompleteStreamFrame(frame);
+        }
+    }
+
+    /// <summary>
+    /// Sends a frame's debug capture and its <see cref="DeviceMessage"/>, once, after its samples
+    /// are published. Both carry the frame's decoded timestamp; a frame that produced no sample has
+    /// none, and carries its arrival time instead.
+    /// </summary>
+    /// <param name="frame">The frame to complete.</param>
+    private void CompleteStreamFrame(StreamFrameInProgress frame)
+    {
+        if (!frame.TryClaimCompletion())
+        {
+            return;
+        }
+
+        var message = frame.Message;
+        var timestamp = frame.DecodedTimestamp ?? frame.Arrival;
+
+        if (message.AnalogInData.Count > 0 || message.AnalogInDataFloat.Count > 0)
+        {
+            SendDebugData(message, timestamp);
+        }
+
+        try
+        {
+            DispatchDeviceMessage(new DeviceMessage
+            {
+                DeviceName = Name,
+                DeviceSerialNo = message.DeviceSn.ToString(CultureInfo.InvariantCulture),
+                DeviceVersion = message.DeviceFwRev,
+                TimestampTicks = timestamp.Ticks,
+                AppTicks = frame.Arrival.Ticks,
+                DeviceStatus = (int)message.DeviceStatus,
+                BatteryStatus = (int)message.BattStatus,
+                PowerStatus = (int)message.PwrStatus,
+                TempStatus = message.TempStatus,
+                TargetFrequency = (int)message.TimestampFreq,
+                Rollover = frame.Rollover,
+            });
+        }
+        catch (Exception ex)
+        {
+            // This can run inside Core's decode of a frame (from the last sample's handler), where
+            // an escaping exception would count as a decode failure of that frame.
+            ReportStreamProcessingFailure(
+                ref _deviceMessageFailureCount, ex, "Error dispatching a stream frame's device message");
+        }
     }
 
     /// <summary>
@@ -1396,42 +1572,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         var isAnalog = channel.Type == ChannelType.Analog;
         try
         {
-            var firmwareDeltaMs = TrackPublishedFrame(coreSample.Timestamp);
-            var value = coreSample.Value;
-
-            if (isAnalog)
-            {
-                // A reading that is not a finite number is not a measurement, and it costs far
-                // more than the one sample it arrived on. Core's per-channel statistics keep a
-                // running ValueSum, so a single NaN makes the Summary flyout's Average read NaN
-                // for the rest of the session while Min and Max keep working — one column of a
-                // row going wrong, which reads as a display bug rather than a bad reading
-                // (issue #295). The plot takes it as a series point and the exporter writes it
-                // out. Refusing it here, at the one place a streamed analog value enters the
-                // app, is what stops it being every consumer's problem to solve separately.
-                //
-                // IsFinite, not IsNaN: an infinity poisons a running sum exactly as thoroughly
-                // and is no more a voltage. That is a different question from the one
-                // SessionSampleWriter answers at the database door, where the constraint is
-                // what SQLite can store — and SQLite stores infinities fine.
-                //
-                // Core passes a non-finite value through on both payloads. The float payload is a
-                // protobuf float straight off the wire, checked by nobody; the integer payload is
-                // scaled by Core, which sanitizes its calibration coefficients, so there this is
-                // defence in depth against a Core regression.
-                if (!double.IsFinite(value))
-                {
-                    ReportNonFiniteReading((AnalogChannel)channel, value);
-                    return;
-                }
-            }
-            else if (channel.Direction != ChannelDirection.Input)
-            {
-                // Output-direction channels display the commanded state, not streamed data.
-                return;
-            }
-
-            channel.ActiveSample = new DataSample(this, channel, coreSample.Timestamp, value, firmwareDeltaMs);
+            PublishToChannel(channel, coreSample, isAnalog);
         }
         catch (Exception ex)
         {
@@ -1446,6 +1587,52 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
                     ref _digitalProcessingFailureCount, ex, "Error processing digital channel data");
             }
         }
+
+        // After the sample is published, refused or skipped: every one counts toward its frame.
+        CountSampleOfFrameInProgress(channel, coreSample);
+    }
+
+    /// <summary>
+    /// The body of <see cref="PublishCoreSample"/>: the app's three rules, then the publish.
+    /// </summary>
+    private void PublishToChannel(IChannel channel, Daqifi.Core.Channel.IDataSample coreSample, bool isAnalog)
+    {
+        var firmwareDeltaMs = TrackPublishedFrame(coreSample.Timestamp);
+        var value = coreSample.Value;
+
+        if (isAnalog)
+        {
+            // A reading that is not a finite number is not a measurement, and it costs far
+            // more than the one sample it arrived on. Core's per-channel statistics keep a
+            // running ValueSum, so a single NaN makes the Summary flyout's Average read NaN
+            // for the rest of the session while Min and Max keep working — one column of a
+            // row going wrong, which reads as a display bug rather than a bad reading
+            // (issue #295). The plot takes it as a series point and the exporter writes it
+            // out. Refusing it here, at the one place a streamed analog value enters the
+            // app, is what stops it being every consumer's problem to solve separately.
+            //
+            // IsFinite, not IsNaN: an infinity poisons a running sum exactly as thoroughly
+            // and is no more a voltage. That is a different question from the one
+            // SessionSampleWriter answers at the database door, where the constraint is
+            // what SQLite can store — and SQLite stores infinities fine.
+            //
+            // Core passes a non-finite value through on both payloads. The float payload is a
+            // protobuf float straight off the wire, checked by nobody; the integer payload is
+            // scaled by Core, which sanitizes its calibration coefficients, so there this is
+            // defence in depth against a Core regression.
+            if (!double.IsFinite(value))
+            {
+                ReportNonFiniteReading((AnalogChannel)channel, value);
+                return;
+            }
+        }
+        else if (channel.Direction != ChannelDirection.Input)
+        {
+            // Output-direction channels display the commanded state, not streamed data.
+            return;
+        }
+
+        channel.ActiveSample = new DataSample(this, channel, coreSample.Timestamp, value, firmwareDeltaMs);
     }
 
     /// <summary>
@@ -1457,7 +1644,8 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// Core reconstructs each frame's timestamp as the previous frame's plus the device-counter
     /// delta, and stamps every sample of the frame with it. So the difference between two
     /// consecutive frames' timestamps is the firmware-measured interval, immune to transport
-    /// jitter: the same figure the app's own timestamp processor used to supply.
+    /// jitter: the same figure the app's own timestamp processor used to supply. It exists only for
+    /// the live plot's gap detector; #629 replaces both with Core's <c>GapDetected</c> event.
     /// </remarks>
     /// <param name="frameTimestamp">The host timestamp Core reconstructed for the sample's frame.</param>
     private double? TrackPublishedFrame(DateTime frameTimestamp)
@@ -1821,11 +2009,13 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         _hasPublishedFrame = false;
         _publishedFrameDeltaMs = null;
         _hasSeenStreamFrameCounter = false;
+        _frameInProgress = null;
         // Interlocked, because a 64-bit assignment is not guaranteed atomic on a 32-bit
         // runtime and these are written here while a stream handler may still be incrementing.
         Interlocked.Exchange(ref _analogProcessingFailureCount, 0);
         Interlocked.Exchange(ref _digitalProcessingFailureCount, 0);
         Interlocked.Exchange(ref _debugDataFailureCount, 0);
+        Interlocked.Exchange(ref _deviceMessageFailureCount, 0);
         _nonFiniteReadingCounts.Clear();
 
         // Each session gets its own count of samples the scale expression dropped, and with it its
@@ -2062,6 +2252,12 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         coreStreamingDevice.StopStreaming();
         IsStreaming = coreStreamingDevice.IsStreaming;
         AppLogger.AddBreadcrumb("streaming", "Streaming stopped");
+
+        // The session's last frame has no next frame to complete it.
+        if (_frameInProgress is { } lastFrame)
+        {
+            CompleteStreamFrame(lastFrame);
+        }
 
         foreach (var channel in DataChannels)
         {

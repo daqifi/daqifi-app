@@ -1,5 +1,6 @@
 using Daqifi.Core.Communication.Messages;
 using Daqifi.Desktop.Channel;
+using Daqifi.Desktop.Logger;
 using Google.Protobuf;
 using Xunit;
 using ChannelDirection = Daqifi.Core.Channel.ChannelDirection;
@@ -231,6 +232,95 @@ public sealed class SingleStreamDecodeTests : IDisposable
 
         Assert.Equal(2, harness.Device.DeviceMessages.Count);
         Assert.Equal(new[] { false, true }, harness.Device.DeviceMessages.Select(m => m.Rollover));
+    }
+
+    /// <summary>
+    /// Core raises a frame's raw message before it decodes the frame's samples. The device message
+    /// must still follow its frame's samples and carry their timestamp, as it did when the app
+    /// decoded the frame itself: the Log Summary refreshes on it.
+    /// </summary>
+    [Fact]
+    public void Each_device_message_follows_its_frames_samples_and_carries_their_timestamp()
+    {
+        var harness = Harness();
+        var first = harness.EnableAnalog(0);
+        var second = harness.EnableAnalog(1);
+        var samplesPublishedFirst = new List<bool>();
+        harness.Device.DeviceMessageDispatched = message => samplesPublishedFirst.Add(
+            first.ActiveSample?.TimestampTicks == message.TimestampTicks
+            && second.ActiveSample?.TimestampTicks == message.TimestampTicks);
+        harness.Device.InitializeStreaming();
+
+        var counter = CoreDecodingHarness.FirstCounter;
+        for (var i = 0; i < 3; i++)
+        {
+            harness.Core.Feed(CoreDecodingHarness.FloatFrame(counter, 1f, 2f));
+            counter += harness.TicksPerSample;
+        }
+
+        // All three, without waiting for a fourth frame: the first is completed by the second
+        // frame's arrival, the others by their own last sample.
+        Assert.Equal(new[] { true, true, true }, samplesPublishedFirst);
+    }
+
+    [Fact]
+    public void A_summary_that_refreshes_on_every_message_shows_every_reading()
+    {
+        var harness = Harness();
+        var channel = harness.EnableAnalog(0);
+        var summary = new SummaryLogger { Enabled = true, SampleSize = 1 };
+        channel.OnChannelUpdated += (_, sample) => summary.Log(sample);
+        harness.Device.DeviceMessageDispatched = summary.Log;
+        harness.Device.InitializeStreaming();
+
+        harness.Core.Feed(CoreDecodingHarness.FloatFrame(CoreDecodingHarness.FirstCounter, 2f));
+        harness.Core.Feed(CoreDecodingHarness.FloatFrame(CoreDecodingHarness.FirstCounter + harness.TicksPerSample, 4f));
+
+        var row = Assert.Single(Assert.Single(summary.Devices).Snapshot.Channels);
+        Assert.Equal(2, row.SampleCount);
+        Assert.Equal(3.0, row.MeanValue, precision: 5);
+    }
+
+    /// <summary>
+    /// Two frames that arrive together but are one second apart on the device clock. The debug
+    /// capture must say one second, as the samples do, not the time between their arrivals.
+    /// </summary>
+    [Fact]
+    public void The_debug_capture_carries_the_decoded_frame_timestamp()
+    {
+        var harness = Harness();
+        var channel = harness.EnableAnalog(0);
+        var captured = new List<DateTime>();
+        var published = Published(channel);
+        harness.Device.SetDebugMode(true);
+        harness.Device.DebugDataReceived += debug => captured.Add(debug.Timestamp);
+        harness.Device.InitializeStreaming();
+
+        harness.Core.Feed(CoreDecodingHarness.RawFrame(CoreDecodingHarness.FirstCounter, 1000));
+        harness.Core.Feed(CoreDecodingHarness.RawFrame(
+            CoreDecodingHarness.FirstCounter + CoreDecodingHarness.TicksPerSecond, 2000));
+
+        Assert.Equal(published.Select(s => s.TimestampTicks), captured.Select(t => t.Ticks));
+        Assert.Equal(TimeSpan.FromSeconds(1), captured[1] - captured[0]);
+    }
+
+    [Fact]
+    public void The_last_frame_of_a_session_is_completed_at_the_stop()
+    {
+        var harness = Harness();
+        harness.Device.InitializeStreaming();
+
+        // No channel is on, so the frame has no sample to complete it, and no frame follows.
+        harness.Core.Feed(new DaqifiOutMessage
+        {
+            MsgTimeStamp = CoreDecodingHarness.FirstCounter,
+            DigitalData = ByteString.CopyFrom(0)
+        });
+        Assert.Empty(harness.Device.DeviceMessages);
+
+        harness.Device.StopStreaming();
+
+        Assert.Single(harness.Device.DeviceMessages);
     }
 
     [Fact]

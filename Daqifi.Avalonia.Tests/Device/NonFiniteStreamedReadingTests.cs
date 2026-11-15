@@ -77,17 +77,6 @@ public class NonFiniteStreamedReadingTests
                 CoreDecodingHarness.FirstCounter + deviceTicks, preScaledVolts));
         }
 
-        /// <summary>
-        /// Delivers a frame that carries no analog readings — only the DIO port, and no digital
-        /// channel is on — so the device dispatches one more device message and nothing else.
-        /// </summary>
-        internal void ReceiveFrameWithNoReadings(uint deviceTicks)
-        {
-            var frame = CoreDecodingHarness.FloatFrame(CoreDecodingHarness.FirstCounter + deviceTicks);
-            frame.DigitalData = Google.Protobuf.ByteString.CopyFrom(0);
-            _harness.Core.Feed(frame);
-        }
-
         internal long DiscardedNonFiniteReadings(int channelIndex) =>
             Device.DiscardedNonFiniteReadings(channelIndex);
 
@@ -114,20 +103,9 @@ public class NonFiniteStreamedReadingTests
         return summary;
     }
 
-    /// <summary>
-    /// The single channel row the flyout would render for the single reporting device, once the
-    /// panel has refreshed after the last frame <paramref name="deviceTicks"/> precedes.
-    /// </summary>
-    /// <remarks>
-    /// Core raises a frame's raw message before it decodes that frame's samples, so a refresh on a
-    /// frame's device message covers the frames before it (issue #440). One more frame, with no
-    /// readings, makes the refresh cover every frame the test sent.
-    /// </remarks>
-    private static ChannelAcquisitionStatistics TheRow(SummaryLogger summary, StreamingProbe device, uint deviceTicks)
-    {
-        device.ReceiveFrameWithNoReadings(deviceTicks);
-        return Assert.Single(Assert.Single(summary.Devices).Snapshot.Channels);
-    }
+    /// <summary>The single channel row the flyout would render for the single reporting device.</summary>
+    private static ChannelAcquisitionStatistics TheRow(SummaryLogger summary) =>
+        Assert.Single(Assert.Single(summary.Devices).Snapshot.Channels);
 
     /// <summary>
     /// The value the firmware sent is not a measurement, so it does not become the channel's
@@ -218,7 +196,7 @@ public class NonFiniteStreamedReadingTests
         device.ReceiveFloatFrame(2_000, float.NaN);
         device.ReceiveFloatFrame(3_000, 4.0f);
 
-        var row = TheRow(summary, device, 4_000);
+        var row = TheRow(summary);
 
         Assert.Equal(3.0, row.MeanValue, precision: 5);
         Assert.Equal(2, row.SampleCount);
@@ -240,7 +218,7 @@ public class NonFiniteStreamedReadingTests
         device.ReceiveFloatFrame(2_000, float.NaN);
         device.ReceiveFloatFrame(3_000, 4.0f);
 
-        var row = TheRow(summary, device, 4_000);
+        var row = TheRow(summary);
 
         Assert.Equal(2.0, row.MinValue, precision: 5);
         Assert.Equal(4.0, row.MaxValue, precision: 5);
@@ -260,7 +238,7 @@ public class NonFiniteStreamedReadingTests
         device.ReceiveFloatFrame(1_000, 1.25f);
 
         Assert.Equal(1.25, channel.ActiveSample!.Value, precision: 5);
-        Assert.Equal(1.25, TheRow(summary, device, 2_000).MeanValue, precision: 5);
+        Assert.Equal(1.25, TheRow(summary).MeanValue, precision: 5);
     }
 
     /// <summary>
