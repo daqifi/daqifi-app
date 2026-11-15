@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Threading.Tasks;
 using Avalonia.Platform.Storage;
+using Daqifi.Avalonia.Services;
 using Daqifi.Desktop.Common.Loggers;
 
 namespace Daqifi.Avalonia.Views.Mobile;
@@ -389,13 +390,21 @@ internal sealed class StorageExportWriter
     /// <para>
     /// A folder with a local path — the desktop, and an iOS folder inside the app sandbox — is
     /// created with <see cref="TryCreateNewLocalFile"/>, an atomic create-if-absent: no file can
-    /// appear and be replaced. A folder without one — every Android <c>content://</c> pick, and an
-    /// iOS security-scoped folder — has only <see cref="IStorageFolder.CreateFileAsync"/>, called
-    /// straight after the writer's name check. A file that appears in the milliseconds between that
-    /// check and the provider's own is still truncated, inside CreateFileAsync, before control returns;
-    /// that cannot be detected afterwards (the provider returns it, empty, like a new file) and cannot
-    /// be prevented through <see cref="IStorageFolder"/>. Closing that gap on Android needs
-    /// <c>DocumentsContract.CreateDocument</c> called from the Android head.
+    /// appear and be replaced.
+    /// </para>
+    /// <para>
+    /// A folder without one — every Android <c>content://</c> pick — goes to the platform's
+    /// <see cref="ExclusiveFileCreator"/>. The Android head registers one that calls
+    /// <c>DocumentsContract.CreateDocument</c> directly, which never replaces: a provider gives the
+    /// new document another name instead, so the file can be named <c>Run (1).csv</c>, and the
+    /// writer returns the name the provider chose. That closes the gap that Avalonia's
+    /// <see cref="IStorageFolder.CreateFileAsync"/> left open on Android.
+    /// </para>
+    /// <para>
+    /// Only a folder that neither way can serve — an iOS security-scoped folder outside the
+    /// sandbox — still uses <see cref="IStorageFolder.CreateFileAsync"/>, straight after the name
+    /// check. A file that appears in the milliseconds between that check and the provider's own is
+    /// truncated inside that call, before control returns, and cannot be detected afterwards.
     /// </para>
     /// </remarks>
     private sealed class StorageItemFolder(IStorageFolder folder) : IExportFolder
@@ -421,10 +430,47 @@ internal sealed class StorageExportWriter
                 }
             }
 
-            // No usable path: the provider's create (see the remarks for the gap this leaves).
-            return await folder.CreateFileAsync(name).ConfigureAwait(false) is { } file
-                ? new StorageItemFile(file)
-                : throw new IOException($"the folder refused to create '{name}'");
+            return await CreateWithoutLocalPathAsync(
+                    () => ExclusiveFileCreator.Current?.TryCreateNewAsync(folder, name)
+                          ?? Task.FromResult<ExclusiveFile?>(null),
+                    async () => await folder.CreateFileAsync(name).ConfigureAwait(false) is { } file
+                        ? new StorageItemFile(file)
+                        : null,
+                    name)
+                .ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// The create for a folder with no local path: the platform's non-replacing create when it has
+    /// one for this folder, else the provider's (see <see cref="StorageItemFolder"/> for the gap
+    /// that leaves). Separate so a test can drive the order: Avalonia 12 does not let user code
+    /// implement <see cref="IStorageFolder"/>.
+    /// </summary>
+    /// <exception cref="IOException">The folder refused to create the file.</exception>
+    internal static async Task<IExportFile> CreateWithoutLocalPathAsync(
+        Func<Task<ExclusiveFile?>> platformCreate,
+        Func<Task<IExportFile?>> providerCreate,
+        string name)
+    {
+        if (await platformCreate().ConfigureAwait(false) is { } created)
+        {
+            return new ExclusiveExportFile(created);
+        }
+
+        return await providerCreate().ConfigureAwait(false)
+               ?? throw new IOException($"the folder refused to create '{name}'");
+    }
+
+    /// <summary>Adapts a file the platform's <see cref="IExclusiveFileCreator"/> created.</summary>
+    private sealed class ExclusiveExportFile(ExclusiveFile file) : IExportFile
+    {
+        public string Name => file.Name;
+
+        public Task<Stream> OpenWriteAsync() => file.OpenWriteAsync();
+
+        public Task<ulong?> GetSizeAsync() => file.GetSizeAsync();
+
+        public Task DeleteAsync() => file.DeleteAsync();
     }
 }

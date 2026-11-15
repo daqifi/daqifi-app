@@ -385,6 +385,64 @@ public sealed class StorageExportWriterTests : IDisposable
 
     /// <summary>An in-memory file like an Android document: no local path, reachable only through
     /// its streams.</summary>
+    /// <summary>
+    /// A picked folder with no local path (every Android <c>content://</c> pick) is created through
+    /// the platform's non-replacing create when there is one (review of PR #603). Avalonia's
+    /// <c>CreateFileAsync</c>, which truncates a file of that name on Android, is then not called at
+    /// all, and the writer works with the file under the name the provider chose.
+    /// </summary>
+    [Fact]
+    public async Task A_folder_with_no_path_is_created_by_the_platforms_non_replacing_create()
+    {
+        var providerCreateCalled = false;
+        var written = new MemoryStream();
+        var deleted = false;
+        var created = new Daqifi.Avalonia.Services.ExclusiveFile(
+            "Run (1).csv",
+            () => Task.FromResult<Stream>(written),
+            () => Task.FromResult<ulong?>(7),
+            () => { deleted = true; return Task.CompletedTask; });
+
+        var file = await StorageExportWriter.CreateWithoutLocalPathAsync(
+            () => Task.FromResult<Daqifi.Avalonia.Services.ExclusiveFile?>(created),
+            () => { providerCreateCalled = true; return Task.FromResult<StorageExportWriter.IExportFile?>(null); },
+            "Run.csv");
+
+        Assert.False(providerCreateCalled, "Avalonia's create, which truncates on Android, was still called.");
+        Assert.Equal("Run (1).csv", file.Name);
+        Assert.Same(written, await file.OpenWriteAsync());
+        Assert.Equal(7UL, await file.GetSizeAsync());
+        await file.DeleteAsync();
+        Assert.True(deleted, "Deleting the export's file did not reach the file the platform created.");
+    }
+
+    /// <summary>
+    /// Where the platform has no create for the folder (no hook registered, or not a
+    /// <c>content://</c> folder), the provider's create is the way that is left.
+    /// </summary>
+    [Fact]
+    public async Task Without_a_platform_create_the_provider_creates_the_file()
+    {
+        var providerFile = MemoryStorageFile.PickerCreated("Run.csv");
+
+        var file = await StorageExportWriter.CreateWithoutLocalPathAsync(
+            () => Task.FromResult<Daqifi.Avalonia.Services.ExclusiveFile?>(null),
+            () => Task.FromResult<StorageExportWriter.IExportFile?>(providerFile),
+            "Run.csv");
+
+        Assert.Same(providerFile, file);
+    }
+
+    /// <summary>A folder that refuses both ways fails the create, which the writer reports.</summary>
+    [Fact]
+    public async Task A_folder_that_refuses_both_creates_is_an_IOException()
+    {
+        await Assert.ThrowsAsync<IOException>(() => StorageExportWriter.CreateWithoutLocalPathAsync(
+            () => Task.FromResult<Daqifi.Avalonia.Services.ExclusiveFile?>(null),
+            () => Task.FromResult<StorageExportWriter.IExportFile?>(null),
+            "Run.csv"));
+    }
+
     private sealed class MemoryStorageFile : StorageExportWriter.IExportFile
     {
         private byte[] _content;
