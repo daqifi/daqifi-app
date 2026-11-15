@@ -80,9 +80,6 @@ public sealed class LivePlot : Control
     /// </remarks>
     public long SampleCount { get; set; }
 
-    /// <summary>Request a redraw (called from the view's render timer).</summary>
-    public void Pulse() => InvalidateVisual();
-
     public override void Render(DrawingContext ctx)
     {
         var w = Bounds.Width;
