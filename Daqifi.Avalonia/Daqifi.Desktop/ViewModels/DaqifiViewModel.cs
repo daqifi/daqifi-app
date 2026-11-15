@@ -94,6 +94,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// </summary>
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.PendingFriendlyName
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SetFriendlyNameCommand))]
     private string? _pendingFriendlyName;
 
     /// <summary>
@@ -1405,7 +1406,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// Mirrors <see cref="UpdateNetworkConfiguration"/>'s guard/status-feedback shape.
     /// </summary>
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.SetFriendlyName
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanSetFriendlyName))]
     public async Task SetFriendlyName()
     {
         FriendlyNameApplied = false;
@@ -1423,7 +1424,20 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             return;
         }
 
-        var name = PendingFriendlyName?.Trim() ?? string.Empty;
+        // Refuse a name the device would refuse before anything is sent, in words the app owns.
+        // SAVE NAME is already disabled for such a name (CanSetFriendlyName); this covers a caller
+        // that executes the command without asking, and keeps the SCPI write unreachable for it.
+        var name = TrimmedPendingFriendlyName;
+        var problem = FriendlyNameRule.Describe(name);
+        if (problem is not null)
+        {
+            FriendlyNameError = problem;
+            return;
+        }
+
+        // The edit this write is for. If the user types again while it runs, the box no longer
+        // holds this name, so neither the re-seed nor "Name saved" may follow it (#599 review).
+        var editWritten = _friendlyNameEditCount;
         try
         {
             // SetFriendlyName sends SCPI commands synchronously (serial/TCP write); run it off
@@ -1436,7 +1450,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             // NOW — seeding A's name into B's open drawer would clobber B's edit buffer and, on a
             // second Save, write A's name to B's NVM. Mirror the sibling OnSelectedDeviceFriendlyNameChanged
             // guard and only touch drawer state when this device is still the selected one.
-            if (device != SelectedDevice)
+            if (device != SelectedDevice || editWritten != _friendlyNameEditCount)
             {
                 return;
             }
@@ -1448,10 +1462,25 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         }
         catch (ArgumentException ex)
         {
+            // Only reachable if Core's rule and FriendlyNameRule ever disagree. Never show
+            // ex.Message: it is developer text that ends in "(Parameter 'name')" (issue #596).
             _appLogger.Warning(ex, $"Rejected friendly name '{name}' for device {device.DeviceDisplayName}");
-            FriendlyNameError = ex.Message;
+            FriendlyNameError = FriendlyNameRule.RuleText;
         }
     }
+
+    /// <summary>Counts user edits of the NAME box, so a finished write can tell whether the box
+    /// still holds the name it wrote.</summary>
+    private int _friendlyNameEditCount;
+
+    /// <summary>The drawer's NAME box as it would be sent: trimmed, never null.</summary>
+    private string TrimmedPendingFriendlyName => PendingFriendlyName?.Trim() ?? string.Empty;
+
+    /// <summary>
+    /// SAVE NAME is enabled only for a name the device will accept, so an invalid name cannot be
+    /// submitted. The device checks stay in <see cref="SetFriendlyName"/>, which explains them.
+    /// </summary>
+    private bool CanSetFriendlyName() => FriendlyNameRule.Describe(TrimmedPendingFriendlyName) is null;
 
     /// <summary>
     /// Sets <see cref="PendingFriendlyName"/> without marking the edit buffer dirty. Used to seed
@@ -1480,6 +1509,15 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         if (!_isSeedingPendingFriendlyName)
         {
             _pendingFriendlyNameDirty = true;
+            _friendlyNameEditCount++;
+            // "Name saved" belongs to the name that was written. Once the user edits the box it
+            // would read as a verdict on the new text, next to that text's validation error.
+            CancelAndDisposeFriendlyNameAppliedCts();
+            FriendlyNameApplied = false;
+            // Validate as the user types (issue #596): the drawer says what is wrong while the
+            // name is still in the box, instead of after SAVE NAME. A programmatic seed is the
+            // device's own name, so it is not judged here.
+            FriendlyNameError = FriendlyNameRule.Describe(TrimmedPendingFriendlyName);
         }
     }
 

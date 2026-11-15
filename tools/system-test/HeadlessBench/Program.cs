@@ -54,8 +54,8 @@ using DesktopApp = Daqifi.Desktop.App;
 // Exit code 1 on any [FAIL]. Rows covered with a board: CONN-USB, DEV-INFO, DEV-TILE, CH-TILE,
 // DEV-RATE, CH-AI, STREAM-AI, LOG-SESSION, GRAPH-LIVE, CH-DIO, CH-PWM, SD-LIST, CONN-DISC,
 // DEV-NAME. Rows covered by --scripted, which needs none: LOGGED-LIST, LOGGED-PLOT, EXPORT-FAIL
-// (their double is a seeded database) and SD-LIST, CONN-LOST, CONN-DISC, LOG-MODE (their double
-// is a ScriptedDevice).
+// (their double is a seeded database) and SD-LIST, CONN-LOST, CONN-DISC, LOG-MODE, DEV-NAME
+// (their double is a ScriptedDevice).
 // Add a Step per matrix row; keep the shape.
 
 internal static class HeadlessBench
@@ -1137,9 +1137,9 @@ internal static class HeadlessBench
     // ---------------------------------------------------------------- the T1 (--scripted) states
 
     // The states --scripted understands, in two kinds. The first three fabricate a DATABASE the
-    // app finds at boot; the last four fabricate a DEVICE (ScriptedDevice) and put it in front of
+    // app finds at boot; the last five fabricate a DEVICE (ScriptedDevice) and put it in front of
     // the app through ConnectionManager.Connect. Neither kind opens a serial port, which is what
-    // makes all seven runnable with no hardware — and therefore runnable in CI.
+    // makes all eight runnable with no hardware — and therefore runnable in CI.
     private const string StateSessions500 = "sessions-500";
     private const string StateSession10H = "session-10h";
     private const string StateExportReadonly = "export-readonly";
@@ -1147,9 +1147,10 @@ internal static class HeadlessBench
     private const string StateDropMidStream = "drop-mid-stream";
     private const string StateDisconnectMidStream = "disconnect-mid-stream";
     private const string StateModeChangeMidSession = "mode-change-mid-session";
+    private const string StateNameRefused = "name-refused";
     private static readonly string[] ScriptedStates =
         [StateSessions500, StateSession10H, StateExportReadonly, StateSdEmpty, StateDropMidStream,
-         StateDisconnectMidStream, StateModeChangeMidSession];
+         StateDisconnectMidStream, StateModeChangeMidSession, StateNameRefused];
 
     /// <summary>Serial number the two device states give their <see cref="ScriptedDevice"/>. It
     /// reaches the UI — the drop notification names the device by it — so the rows assert against
@@ -1207,6 +1208,7 @@ internal static class HeadlessBench
         // The two device states have nothing to seed: their double is a ScriptedDevice, and the
         // database they do touch (drop-mid-stream opens a real logging session) is the one the app
         // creates and migrates for itself at boot, under <out>/appdata.
+        if (_scripted is StateNameRefused) { return; }
         if (_scripted is StateSdEmpty or StateDropMidStream or StateDisconnectMidStream
             or StateModeChangeMidSession) { return; }
 
@@ -1314,6 +1316,7 @@ internal static class HeadlessBench
     {
         switch (_scripted)
         {
+            case StateNameRefused: UiProbe = (1, "DEV-NAME"); RunNameRefusedRow(main, shell); break;
             case StateSessions500: UiProbe = (1, "LOGGED-LIST"); RunSessionListRow(main, shell, boot); break;
             case StateSession10H: UiProbe = (1, "LOGGED-PLOT"); RunSessionPlotRow(main, shell); break;
             case StateExportReadonly: UiProbe = (1, "EXPORT-FAIL"); RunExportFailureRow(main, shell); break;
@@ -1793,6 +1796,76 @@ internal static class HeadlessBench
              $"'{logs.SdCardStatusLine}', NO FILES panel hidden={emptyPanelHidden}, " +
              $"file grid shown={gridShownWithFile}",
              shot, sw.Elapsed.TotalSeconds);
+    }
+
+    /// <summary>
+    /// DEV-NAME at the edge case issue #596 measured on the bench board: a name the device refuses.
+    /// The drawer used to wait for SAVE NAME, then show Core's exception text, which ends in
+    /// "(Parameter 'name')". It must instead say, in the app's own words, what is wrong while the
+    /// name is still in the box, keep SAVE NAME disabled, and send nothing to the device.
+    /// </summary>
+    /// <remarks>
+    /// The drawer is opened on the window's OWN pane view model (the one
+    /// <c>DevicesPanePrototype</c> builds for itself), not on a second instance, because the PNGs
+    /// are the point: a drawer opened on another instance changes the shell's state and leaves the
+    /// window showing no drawer. SAVE NAME is pressed through <see cref="ApplyFriendlyName"/>,
+    /// which executes the command without asking <c>CanExecute</c> - what the button did before
+    /// #596 - so the command's own guard is exercised too.
+    /// </remarks>
+    private static void RunNameRefusedRow(Window main, DaqifiViewModel shell)
+    {
+        const string deviceName = "Lab Nyquist";
+        const string refused = "Lab \"A\"";
+        var device = new ScriptedDevice(ScriptedSerial) { FriendlyName = deviceName };
+        ConnectScripted(shell, device);
+
+        shell.SelectedIndex = DevicesTabIndex;
+        PumpFor(TimeSpan.FromMilliseconds(500));
+        var pane = main.GetVisualDescendants().OfType<Control>()
+            .Select(c => c.DataContext).OfType<DevicesPaneViewModel>().FirstOrDefault();
+        if (pane is null)
+        {
+            Step(1, "DEV-NAME", "limits", false,
+                 "the Devices tab is showing but no control in the window has a DevicesPaneViewModel", null);
+            return;
+        }
+        OpenDeviceDrawer(pane, device);
+        PumpFor(TimeSpan.FromMilliseconds(800));
+        var seeded = shell.PendingFriendlyName;
+        var errorOnOpen = shell.FriendlyNameError;
+
+        // Typing, as the NAME box's two-way binding does it.
+        shell.PendingFriendlyName = refused;
+        PumpFor(TimeSpan.FromMilliseconds(300));
+        var typedShot = Capture(main, "t1-devname-typed");
+        var errorWhileTyping = shell.FriendlyNameError;
+        var saveButton = main.GetVisualDescendants().OfType<Button>()
+            .FirstOrDefault(b => b.Content as string == "SAVE NAME");
+        var saveEnabled = saveButton?.IsEffectivelyEnabled;
+        var errorShown = errorWhileTyping is not null
+            && main.GetVisualDescendants().OfType<TextBlock>()
+                   .Any(t => t.IsEffectivelyVisible && t.Text == errorWhileTyping);
+
+        var errorAfterSave = ApplyFriendlyName(shell, refused);
+        PumpFor(TimeSpan.FromMilliseconds(300));
+        var savedShot = Capture(main, "t1-devname-refused");
+
+        static bool ForPeople(string? text) =>
+            !string.IsNullOrEmpty(text) && !text.Contains("Parameter", StringComparison.Ordinal)
+            && !text.Contains("ASCII", StringComparison.Ordinal);
+
+        Step(1, "DEV-NAME", "limits",
+             seeded == deviceName && errorOnOpen is null
+                 && ForPeople(errorWhileTyping) && errorShown && saveEnabled == false
+                 && ForPeople(errorAfterSave)
+                 && device.FriendlyNameWrites.Count == 0 && device.FriendlyName == deviceName,
+             $"drawer opened on '{seeded}' with error={(errorOnOpen is null ? "none" : $"'{errorOnOpen}'")}; " +
+             $"typing '{refused}' showed '{errorWhileTyping ?? "(nothing)"}' (rendered in the drawer={errorShown}) " +
+             $"with SAVE NAME enabled={(saveEnabled is null ? "BUTTON NOT FOUND" : saveEnabled)} " +
+             $"({typedShot ?? "no capture"}); pressing SAVE NAME anyway showed '{errorAfterSave ?? "(nothing)"}'; " +
+             $"{device.FriendlyNameWrites.Count} name write(s) reached the device, which is still named " +
+             $"'{device.FriendlyName}'",
+             savedShot);
     }
 
     /// <summary>Whether the Logged Data pane is showing its "NO FILES" empty state.</summary>
