@@ -167,11 +167,16 @@ public partial class PlotLogger : ObservableObject, ILogger
     /// builds a shape for every stretch of every line. None of that is visible to this class, but it
     /// all delays the next tick, which is due <see cref="RENDER_TIMER_INTERVAL_MS"/> later. Any other
     /// UI-thread work counts too, which is the point: a busy UI thread gets fewer redraws.
+    /// <para>The tick's own work is already inside the gap and is not added again: Avalonia restarts a
+    /// <c>DispatcherTimer</c> only after its Tick handler returns, so the gap is the handler, then the
+    /// interval, then any work that delayed the tick. A 25 ms handler and an on-time tick give a 41 ms
+    /// gap, which is 25 ms of work, not 50. The handler time is the floor, for a gap that timer jitter
+    /// made shorter than handler plus interval.</para>
     /// </summary>
-    /// <param name="tickGapMs">Time from the redrawing tick to the next tick.</param>
+    /// <param name="tickGapMs">Time from the start of the redrawing tick to the start of the next tick.</param>
     /// <param name="tickWorkMs">The redrawing tick's own work: the drain and the model update.</param>
     internal static double RedrawCostMs(long tickGapMs, double tickWorkMs) =>
-        Math.Max(0, tickGapMs - RENDER_TIMER_INTERVAL_MS) + tickWorkMs;
+        Math.Max(tickWorkMs, tickGapMs - RENDER_TIMER_INTERVAL_MS);
 
     /// <summary>Whether the plot-stats summary is due a recompute. Strictly greater, as upstream's tick was.</summary>
     internal static bool IsStatsDue(long nowMs, long lastStatsMs) => nowMs - lastStatsMs > STATS_INTERVAL_MS;

@@ -47,13 +47,15 @@ public class LivePlotCadenceTests
         Assert.Equal(expectedIntervalMs, PlotLogger.RedrawIntervalMs(costMs));
 
     /// <summary>
-    /// The cost is read from how late the next 16 ms timer tick came, plus the tick's own work:
-    /// OxyPlot lays out and builds its canvas shapes after the tick returns, out of this class's sight.
+    /// The cost is read from how late the next 16 ms timer tick came. The tick's own work is already
+    /// inside that gap, because Avalonia restarts the timer only after the handler returns, so it is
+    /// counted once, as a floor. OxyPlot lays out and builds its canvas shapes after the tick returns.
     /// </summary>
     [Theory]
     [InlineData(16, 0.5, 0.5)]    // the next tick came on time: only the tick's own work
-    [InlineData(10, 0.5, 0.5)]    // early (timer jitter) never reads as negative
-    [InlineData(66, 1.0, 51.0)]   // the redraw held the UI thread 50 ms past the next tick
+    [InlineData(10, 0.5, 0.5)]    // early (timer jitter) never reads as less than the tick's work
+    [InlineData(41, 25.0, 25.0)]  // a 25 ms handler, then the 16 ms wait: 25 ms of work, not 50
+    [InlineData(66, 1.0, 50.0)]   // a 1 ms tick, then 49 ms of layout and drawing before the next
     public void The_redraw_cost_is_how_late_the_next_tick_came(long gapMs, double tickWorkMs, double expected) =>
         Assert.Equal(expected, PlotLogger.RedrawCostMs(gapMs, tickWorkMs), 3);
 
