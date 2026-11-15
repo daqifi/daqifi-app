@@ -895,9 +895,12 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                 if (switched.AnyRefused)
                 {
                     // The fleet is back in its previous mode, so leave _selectedLoggingMode alone
-                    // and re-notify: the radio group is the binding source and has already moved
-                    // itself, and without this it would keep showing a mode nothing is in.
+                    // and re-notify. The radio buttons have already moved themselves, and they bind
+                    // IsLogToDeviceMode one way, so announce both properties (#578 review); without
+                    // IsLogToDeviceMode the drawer kept showing LOG TO DEVICE over a fleet that
+                    // stayed in Stream to App.
                     OnPropertyChanged();
+                    OnPropertyChanged(nameof(IsLogToDeviceMode));
 
                     var report =
                         $"The logging mode was left as \"{_selectedLoggingMode}\" because these devices could not change it:"
@@ -1020,7 +1023,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             firmwareDownload,
             resolvedFirmwareLogger,
             _appLogger,
-            App.DaqifiDataDirectory,
+            Common.AppDataPaths.DataDirectory,
             // Suspend the app-global bootloader watcher's discovery during the PIC32 flash so it doesn't
             // grab the connected device when it reboots into the bootloader mid-update.
             watcher: App.ServiceProvider?.GetService<IBootloaderWatcher>());
@@ -1115,7 +1118,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // present dialogs.
                     _diskSpaceCoordinator = new DiskSpaceMonitorCoordinator(
                         this,
-                        new DiskSpaceMonitor(App.DaqifiDataDirectory),
+                        new DiskSpaceMonitor(Common.AppDataPaths.DataDirectory),
                         _appLogger);
 
                     if (LoggingManager.Instance.LoggingSessions.Count == 0)
@@ -1132,7 +1135,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // test harness or a normal non-admin Debug launch) cannot change firewall
                     // rules and would otherwise just surface a modal "configure manually"
                     // prompt, so skip it entirely.
-                    if (App.IsElevated && !App.IsTestMode)
+                    if (Common.AppDataPaths.IsElevated && !Common.AppDataPaths.IsTestMode)
                     {
                         FirewallConfiguration.InitializeFirewallRules();
                     }
@@ -1285,6 +1288,14 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     {
         if (deviceToDisconnect == null)
         {
+            return;
+        }
+
+        // Issue #538: leave a device in a firmware update untouched — its channels, the
+        // selection the update reads after the write, and its connection.
+        if (ConnectionManager.Instance.IsDeviceBeingUpdated(deviceToDisconnect))
+        {
+            _appLogger.Warning($"Ignoring disconnect of {deviceToDisconnect.Name}: a firmware update is in progress on it.");
             return;
         }
 
@@ -1825,6 +1836,14 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             return;
         }
 
+        // Issue #538: leave a device in a firmware update untouched — its channels, the
+        // selection the update reads after the write, and its connection.
+        if (ConnectionManager.Instance.IsDeviceBeingUpdated(deviceToReboot))
+        {
+            _appLogger.Warning($"Ignoring reboot of {deviceToReboot.Name}: a firmware update is in progress on it.");
+            return;
+        }
+
         foreach (var channel in deviceToReboot.DataChannels)
         {
             if (channel.IsActive)
@@ -1959,7 +1978,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// </summary>
     private async Task OfferPreviousSessionImportAsync()
     {
-        if (App.IsTestMode)
+        if (Common.AppDataPaths.IsTestMode)
         {
             return;
         }
@@ -2651,19 +2670,6 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     private static readonly IMessageBoxService _messageBoxService = new AvaloniaMessageBoxService();
 
     /// <summary>
-    /// Displays the in-pane dark confirm overlay and returns true if the user chose the affirmative
-    /// button. Thin forwarder to <see cref="ConfirmOverlay"/> (issue #592); the existing
-    /// <see cref="ILoggingSessionListHost.ShowConfirmAsync"/> caller stays unchanged.
-    /// </summary>
-    // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.ShowConfirm
-    private Task<bool> ShowConfirm(
-        string title,
-        string message,
-        string affirmativeLabel = "OK",
-        bool isDestructive = false)
-        => ConfirmOverlay.ShowAsync(title, message, affirmativeLabel, isDestructive);
-
-    /// <summary>
     /// What installing an update would cut off right now, since installing restarts the app.
     /// </summary>
     internal UpdateBlocker CurrentUpdateBlocker()
@@ -2727,7 +2733,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         var notifier = new AppUpdateNotifier(
             AppUpdates.Current,
             CurrentUpdateBlocker,
-            // A modal box, not ShowConfirm: that overlay is only drawn inside the Profiles pane, so
+            // A modal box, not ConfirmOverlay: that overlay is only drawn inside the Profiles pane, so
             // from the notifications flyout it would wait on a question nobody can see.
             async (message, title) =>
             {
@@ -3504,8 +3510,9 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
     /// <summary>Routes the list view model's confirmations through the in-pane confirm overlay.</summary>
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.ILoggingSessionListHost.ShowConfirmAsync
+    // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.ShowConfirm (a forwarder, inlined here: #448)
     Task<bool> ILoggingSessionListHost.ShowConfirmAsync(string title, string message, string affirmativeLabel, bool isDestructive)
-        => ShowConfirm(title, message, affirmativeLabel, isDestructive);
+        => ConfirmOverlay.ShowAsync(title, message, affirmativeLabel, isDestructive);
 
     /// <summary>Routes the list view model's informational messages through the MahApps message dialog.</summary>
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.ILoggingSessionListHost.ShowMessageAsync

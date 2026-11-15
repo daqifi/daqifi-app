@@ -92,6 +92,11 @@
                 <Setter Property="Background" Value="#141821"/>
                 <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
             </Style>
+            <!-- Issue #538: without this a disabled pill (REBOOT, DISCONNECT during a firmware
+                 update) looks the same as an enabled one. Same value as AccentPillButton. -->
+            <Style Selector="^:disabled">
+                <Setter Property="Opacity" Value="0.4"/>
+            </Style>
         </ControlTheme>
 
         <ControlTheme x:Key="AccentPillButton" TargetType="Button" BasedOn="{StaticResource PillButton}">
@@ -656,42 +661,43 @@
                                      read LOGGING ON. IsEnabled is inherited, so LOG TO DEVICE keeps its own
                                      USB gate as well. -->
                                 <Grid ColumnDefinitions="*,*" IsEnabled="{Binding !Shell.IsLogging}">
-                                    <!-- Drive the mode switch off Checked rather than Command: a RadioButton's
-                                         bound Command fires only on a real Click, which a background UI-automation
-                                         host cannot raise. Checking the button through the automation Toggle
-                                         pattern raises Checked (not Click), so an EventTriggerBehavior on Checked
-                                         keeps the control drivable both interactively and from the automation
-                                         harness. The SelectedLoggingMode setter is idempotent, so the extra
-                                         Checked that fires when the OneWay binding refreshes after a switch is a
-                                         harmless no-op. -->
+                                    <!-- Each button reports its own change to OnLoggingModeIsCheckedChanged, which
+                                         sends the button's Tag to SetLoggingModeCommand only when the button became
+                                         checked (#578).
+                                         - Not Command: a RadioButton's bound Command fires only on a real Click,
+                                           which a background UI-automation host cannot raise. The automation Toggle
+                                           pattern sets IsChecked, which raises IsCheckedChanged like a click does.
+                                         - Not an EventTriggerBehavior: its EventName is a string that nothing checks
+                                           at build time. It named "Checked", the WPF event, which Avalonia's
+                                           RadioButton does not have, so a click moved the button and changed nothing.
+                                           A handler attribute names an event the XAML compiler must resolve.
+                                         - Only when checked: IsCheckedChanged also fires on the button that becomes
+                                           unchecked, and sending that button's mode as well would undo the change.
+                                         - Then the handler sets both buttons from the app's mode. A refused change
+                                           (a WiFi device in the fleet) leaves the clicked button checked otherwise.
+                                         The OneWay IsChecked bindings also raise IsCheckedChanged when the mode
+                                         changes from code; the SelectedLoggingMode setter ignores a mode it already
+                                         has, so that echo does nothing. -->
                                     <RadioButton Grid.Column="0"
                                                  Content="STREAM TO APP"
                                                  AutomationProperties.AutomationId="LoggingModeStreamToApp"
+                                                 x:Name="LoggingModeStreamToAppButton"
                                                  GroupName="LoggingMode"
+                                                 Tag="Stream to App"
                                                  IsChecked="{Binding !Shell.IsLogToDeviceMode, Mode=OneWay}"
-                                                 Theme="{StaticResource SegmentedToggle}">
-                                        <ia:Interaction.Behaviors>
-                                            <iac:EventTriggerBehavior EventName="Checked">
-                                                <iac:InvokeCommandAction Command="{Binding SetLoggingModeCommand}"
-                                                                         CommandParameter="Stream to App"/>
-                                            </iac:EventTriggerBehavior>
-                                        </ia:Interaction.Behaviors>
-                                    </RadioButton>
+                                                 IsCheckedChanged="OnLoggingModeIsCheckedChanged"
+                                                 Theme="{StaticResource SegmentedToggle}"/>
                                     <RadioButton Grid.Column="1"
                                                  Content="LOG TO DEVICE"
                                                  AutomationProperties.AutomationId="LoggingModeLogToDevice"
+                                                 x:Name="LoggingModeLogToDeviceButton"
                                                  GroupName="LoggingMode"
+                                                 Tag="Log to Device"
                                                  IsEnabled="{Binding SelectedTile.IsUsb}"
                                                  IsChecked="{Binding Shell.IsLogToDeviceMode, Mode=OneWay}"
+                                                 IsCheckedChanged="OnLoggingModeIsCheckedChanged"
                                                  Theme="{StaticResource SegmentedToggle}"
-                                                 ToolTip.Tip="SD card logging requires USB. WiFi devices do not support SD card logging.">
-                                        <ia:Interaction.Behaviors>
-                                            <iac:EventTriggerBehavior EventName="Checked">
-                                                <iac:InvokeCommandAction Command="{Binding SetLoggingModeCommand}"
-                                                                         CommandParameter="Log to Device"/>
-                                            </iac:EventTriggerBehavior>
-                                        </ia:Interaction.Behaviors>
-                                    </RadioButton>
+                                                 ToolTip.Tip="SD card logging requires USB. WiFi devices do not support SD card logging."/>
                                 </Grid>
                             </Border>
 
@@ -1001,13 +1007,21 @@
 
                             <!-- ACTIONS -->
                             <TextBlock Text="ACTIONS" Classes="sectionLabel drawerSectionLabel"/>
+                            <!-- Issue #538: both are disabled during a firmware update. The tooltip says
+                                 why, and ShowOnDisabled is needed because a disabled control shows no
+                                 tooltip by default. -->
                             <StackPanel Orientation="Horizontal">
                                 <Button Theme="{StaticResource PillButton}"
                                         Content="REBOOT"
+                                        AutomationProperties.AutomationId="RebootSelectedButton"
+                                        ToolTip.Tip="{Binding DeviceActionsToolTip}"
+                                        ToolTip.ShowOnDisabled="True"
                                         Command="{Binding RebootSelectedCommand}"/>
                                 <Button Theme="{StaticResource DangerPillButton}"
                                         Content="DISCONNECT"
                                         AutomationProperties.AutomationId="DisconnectSelectedButton"
+                                        ToolTip.Tip="{Binding DeviceActionsToolTip}"
+                                        ToolTip.ShowOnDisabled="True"
                                         Command="{Binding DisconnectSelectedCommand}"/>
                             </StackPanel>
 

@@ -149,6 +149,52 @@ jobs:
             -o "${RUNNER_TEMP}/publish"
           test -f "${RUNNER_TEMP}/publish/Daqifi.Avalonia.Desktop.exe"
 
+      # The installer must ship precompiled code (#614). Without ReadyToRun the JIT compiles about
+      # 20,500 methods before the first frame, which more than doubles start-up. The setting is
+      # in Daqifi.Avalonia.Desktop.csproj, and nothing else fails if it goes, so this step reads
+      # the shipped assemblies: an R2R assembly has a ManagedNativeHeader whose first 4 bytes are
+      # the READYTORUN_SIGNATURE 'RTR'. One assembly each from the app, Avalonia and EF Core.
+      - name: Published assemblies are ReadyToRun
+        run: |
+          set -euo pipefail
+          python - "${RUNNER_TEMP}/publish" Daqifi.Avalonia.Desktop.dll Daqifi.Avalonia.dll \
+            Avalonia.Base.dll Microsoft.EntityFrameworkCore.dll <<'PY'
+          import os, struct, sys
+
+          def is_ready_to_run(path):
+              data = open(path, "rb").read()
+              pe = struct.unpack_from("<I", data, 0x3C)[0]
+              sections = struct.unpack_from("<H", data, pe + 6)[0]
+              optional = pe + 24
+              table = optional + struct.unpack_from("<H", data, pe + 20)[0]
+              magic = struct.unpack_from("<H", data, optional)[0]
+              directories = optional + (112 if magic == 0x20B else 96)
+
+              def offset(rva):
+                  for i in range(sections):
+                      vsize, va, rawsize, raw = struct.unpack_from("<IIII", data, table + i * 40 + 8)
+                      if va <= rva < va + max(vsize, rawsize):
+                          return raw + rva - va
+                  return None
+
+              clr = struct.unpack_from("<I", data, directories + 14 * 8)[0]
+              if not clr:
+                  return False
+              native = struct.unpack_from("<I", data, offset(clr) + 64)[0]
+              if not native or offset(native) is None:
+                  return False
+              return struct.unpack_from("<I", data, offset(native))[0] == 0x00525452
+
+          root, names = sys.argv[1], sys.argv[2:]
+          il_only = [n for n in names if not is_ready_to_run(os.path.join(root, n))]
+          for n in names:
+              print(f"{n}: {'IL only' if n in il_only else 'ReadyToRun'}")
+          if il_only:
+              print("::error::The publish is not ReadyToRun. Restore PublishReadyToRun in "
+                    "Daqifi.Avalonia.Desktop.csproj (#614); without it start-up is about twice as long.")
+              raise SystemExit(1)
+          PY
+
       - name: Lock files are unchanged by the build
         run: |
           set -euo pipefail

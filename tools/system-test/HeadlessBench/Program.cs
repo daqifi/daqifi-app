@@ -7,6 +7,7 @@ using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Headless;
+using Avalonia.Input;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
@@ -804,35 +805,18 @@ internal static class HeadlessBench
             // is a field the user edits blind, so it is asserted rather than assumed.
             var seeded = shell.PendingFriendlyName;
 
-            // The tile's FriendlyName is a passthrough getter, so reading it after the save would
-            // only be reading the device again. What the Devices pane actually needs is the
-            // NOTIFICATION — DeviceTileViewModel.OnDevicePropertyChanged re-raising FriendlyName —
-            // because without it the tile's text keeps showing the old name until something else
-            // happens to refresh it. Watch for it rather than re-reading the value.
-            var tile = devicesPane.Devices.FirstOrDefault(t => ReferenceEquals(t.Device, device));
-            var tileTold = false;
-            void OnTileChanged(object? _, PropertyChangedEventArgs e)
-            {
-                if (string.IsNullOrEmpty(e.PropertyName) || e.PropertyName == nameof(DeviceTileViewModel.FriendlyName))
-                {
-                    tileTold = true;
-                }
-            }
-
+            // No Devices tile shows the friendly name (#448 removed the tile's unread FriendlyName
+            // relay), so the device, its display name and the drawer's NAME box are what to check.
             wroteNvm = true;
-            string? saveError;
-            if (tile is not null) { tile.PropertyChanged += OnTileChanged; }
-            try { saveError = ApplyFriendlyName(shell, testName); }
-            finally { if (tile is not null) { tile.PropertyChanged -= OnTileChanged; } }
+            var saveError = ApplyFriendlyName(shell, testName);
 
             Step(2, "DEV-NAME", "works",
                  saveError is null && seeded == originalName && device.FriendlyName == testName
                      && device.DeviceDisplayName == testName && shell.PendingFriendlyName == testName
-                     && shell.FriendlyNameApplied && tile?.FriendlyName == testName && tileTold,
+                     && shell.FriendlyNameApplied,
                  $"drawer opened seeded with NAME='{seeded}' (device said '{originalName}'); saved '{testName}' -> " +
                  $"FriendlyName='{device.FriendlyName}' DeviceDisplayName='{device.DeviceDisplayName}'; " +
-                 $"box re-seeded to '{shell.PendingFriendlyName}' with the 'Name saved' tick showing={shell.FriendlyNameApplied}; " +
-                 $"tile FriendlyName='{tile?.FriendlyName ?? "no tile"}' and it change-notified={tileTold}" +
+                 $"box re-seeded to '{shell.PendingFriendlyName}' with the 'Name saved' tick showing={shell.FriendlyNameApplied}" +
                  (saveError is null ? "" : $"; the drawer reported '{saveError}'"),
                  Capture(main, "t2-12-device-named"));
 
@@ -1229,7 +1213,7 @@ internal static class HeadlessBench
 
         var sw = Stopwatch.StartNew();
         var factory = new SeedContextFactory(DesktopApp.DatabasePath);
-        Directory.CreateDirectory(DesktopApp.DaqifiDataDirectory);
+        Directory.CreateDirectory(Daqifi.Desktop.Common.AppDataPaths.DataDirectory);
         if (DatabaseMigrator.PrepareMigration(factory, DesktopApp.DatabasePath))
         {
             DatabaseMigrator.ApplyMigrations(factory, DesktopApp.DatabasePath);
@@ -2174,10 +2158,10 @@ internal static class HeadlessBench
     }
 
     /// <summary>
-    /// LOG-MODE with a session running (issue #536): the two LOGGING MODE buttons in the Devices
-    /// drawer. A mode change stops each device's stream or SD log, so during a session it ended the
-    /// recording while the toggle still read LOGGING ON. The app now disables both buttons while a
-    /// session is ON.
+    /// LOG-MODE: the two LOGGING MODE buttons in the Devices drawer, clicked with the headless
+    /// window's real pointer input. With no session a click must change the mode (#578); with a
+    /// session running both buttons are disabled (#536), because a mode change stops each device's
+    /// stream or SD log and so ended the recording while the toggle still read LOGGING ON.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -2188,12 +2172,20 @@ internal static class HeadlessBench
     /// "locked" check rather than passing the "unlocked" one.
     /// </para>
     /// <para>
-    /// Two things are deliberately NOT checked here. The setter's own refusal — the backstop if a
-    /// change reaches it anyway — is <c>LoggingModeMidSessionTests</c>' job; calling the command
-    /// from this rig would not go through the control, so it would only repeat those tests. And the
-    /// row does not click the buttons: on this build a click on an ENABLED button does not change
-    /// the mode either (#578), so "a click on the disabled button changed nothing" would pass with
-    /// or without the lock. When #578 is fixed, a real click belongs here.
+    /// The <c>click</c> check comes first because the other two depend on it (#578). The buttons
+    /// started the mode change from an <c>EventTriggerBehavior</c> on an event named <c>Checked</c>,
+    /// which Avalonia's <c>RadioButton</c> does not have, so a click moved the button and changed
+    /// nothing else. Until a click on an enabled button changes the mode, "a click on the disabled
+    /// button changed nothing" passes with or without the #536 lock and proves nothing. The click
+    /// goes through <c>MouseDown</c>/<c>MouseUp</c> on the window at the button's centre, so it is
+    /// hit-tested and routed the way a mouse click is; calling the command would skip the control,
+    /// which is the part that was broken.
+    /// </para>
+    /// <para>
+    /// The <c>refused</c> check clicks LOG TO DEVICE with a WiFi device in the fleet. The fleet
+    /// refuses, so the buttons must go back to STREAM TO APP. The setter's own refusal during a
+    /// session — the backstop if a change reaches it anyway — is <c>LoggingModeMidSessionTests</c>'
+    /// job, not this row's.
     /// </para>
     /// <para>
     /// The SD half runs only against <see cref="ScriptedDevice"/>, whose SD logging is a flag. It
@@ -2209,6 +2201,7 @@ internal static class HeadlessBench
         var device = new ScriptedDevice(ScriptedSerial);
         var ai = device.AddAnalogInput(0);
         ConnectScripted(shell, device);
+        var wifi = new ScriptedDevice(ScriptedSerial + "-WIFI", ConnectionType.Wifi);
 
         using var channelsPane = new ChannelsPaneViewModel();
         try
@@ -2239,8 +2232,56 @@ internal static class HeadlessBench
             bool Unlocked() => stream.IsEffectivelyEnabled && sd.IsEffectivelyEnabled;
             bool Locked() => !stream.IsEffectivelyEnabled && !sd.IsEffectivelyEnabled;
 
-            // Procedure A: a streaming session. Control first: no session, both buttons usable.
+            bool InMode(string mode, DeviceMode deviceMode) =>
+                shell.SelectedLoggingMode == mode && device.Mode == deviceMode;
+
+            // The click check (#578): no session, so a real click on each button must change the
+            // app's mode, the device's mode and which button is checked — there and back.
             var sw = Stopwatch.StartNew();
+            var cStart = InMode(streamToApp, DeviceMode.StreamToApp) && stream.IsChecked == true;
+            var cToSdClick = Click(main, sd);
+            var cToSd = InMode(logToDevice, DeviceMode.LogToDevice)
+                        && sd.IsChecked == true && stream.IsChecked == false;
+            var cToSdState = $"app mode='{shell.SelectedLoggingMode}', device mode={device.Mode}, {Buttons()}";
+            var cShot = Capture(main, "t1-logmode-clicked-log-to-device");
+            var cToStreamClick = Click(main, stream);
+            var cToStream = InMode(streamToApp, DeviceMode.StreamToApp)
+                            && stream.IsChecked == true && sd.IsChecked == false;
+            var cToStreamState = $"app mode='{shell.SelectedLoggingMode}', device mode={device.Mode}, {Buttons()}";
+            sw.Stop();
+
+            Step(1, "LOG-MODE", "click",
+                 cStart && cToSd && cToStream,
+                 $"started in Stream to App={cStart}. LOG TO DEVICE ({cToSdClick}) changed the mode={cToSd}: " +
+                 $"{cToSdState}. STREAM TO APP ({cToStreamClick}) changed it back={cToStream}: {cToStreamState}",
+                 cShot, sw.Elapsed.TotalSeconds);
+
+            // The refused check (#578 review): add a WiFi device, which cannot log to an SD card,
+            // and click LOG TO DEVICE in the USB device's drawer. The fleet refuses and stays in
+            // Stream to App, so the buttons must show STREAM TO APP again. Before the fix the
+            // clicked button stayed checked: the drawer promised an SD card recording that the
+            // next session would not make.
+            sw.Restart();
+            ConnectScripted(shell, wifi);
+            PumpFor(TimeSpan.FromMilliseconds(300));
+            var rClick = Click(main, sd);
+            PumpFor(TimeSpan.FromMilliseconds(300));
+            var rHeld = InMode(streamToApp, DeviceMode.StreamToApp) && wifi.Mode == DeviceMode.StreamToApp;
+            var rButtons = stream.IsChecked == true && sd.IsChecked == false;
+            var rState = $"app mode='{shell.SelectedLoggingMode}', USB device={device.Mode}, WiFi device={wifi.Mode}, {Buttons()}";
+            var rShot = Capture(main, "t1-logmode-refused");
+            ConnectionManager.Instance.Disconnect(wifi);
+            var rGone = PumpUntil(() => !shell.ConnectedDevices.Contains(wifi), TimeSpan.FromSeconds(10));
+            sw.Stop();
+
+            Step(1, "LOG-MODE", "refused",
+                 rHeld && rButtons && rGone,
+                 $"USB and WiFi devices connected; LOG TO DEVICE ({rClick}): the fleet stayed in Stream to App={rHeld}, " +
+                 $"the buttons show STREAM TO APP again={rButtons}: {rState}. WiFi device disconnected afterwards={rGone}",
+                 rShot, sw.Elapsed.TotalSeconds);
+
+            // Procedure A: a streaming session. Control first: no session, both buttons usable.
+            sw.Restart();
             var aBefore = Unlocked();
             var aBeforeButtons = Buttons();
             Capture(main, "t1-logmode-idle");
@@ -2251,6 +2292,12 @@ internal static class HeadlessBench
             var aLockedButtons = Buttons();
             var aShot = Capture(main, "t1-logmode-streaming-locked");
 
+            // A click on the disabled LOG TO DEVICE must change nothing. Meaningful only because
+            // the click check above proved that a click on the enabled button does change the mode.
+            var aLockedClick = Click(main, sd);
+            var aHeld = InMode(streamToApp, DeviceMode.StreamToApp) && shell.IsLogging
+                        && LoggingManager.Instance.Active && stream.IsChecked == true && sd.IsChecked == false;
+
             shell.IsLogging = false;
             var aStopped = PumpUntil(() => !LoggingManager.Instance.Active, TimeSpan.FromSeconds(10));
             var aAfter = Unlocked();
@@ -2258,18 +2305,17 @@ internal static class HeadlessBench
             sw.Stop();
 
             Step(1, "LOG-MODE", "works",
-                 aBefore && streaming && aLocked && aStopped && aAfter,
+                 aBefore && streaming && aLocked && aHeld && aStopped && aAfter,
                  $"no session: {aBeforeButtons}. Streaming session open={streaming}: {aLockedButtons}. " +
+                 $"LOG TO DEVICE clicked while locked ({aLockedClick}): mode and session unchanged={aHeld}. " +
                  $"After the stop (closed={aStopped}): {aAfterButtons}",
                  aShot, sw.Elapsed.TotalSeconds);
 
-            // Procedure B: an SD card session. Set-up, not a check: put the app in LOG TO DEVICE
-            // through the command the button's behaviour is meant to invoke, because a click
-            // cannot do it on this build (#578).
+            // Procedure B: an SD card session. Set-up: put the app in LOG TO DEVICE with a real
+            // click, which the click check above has shown works.
             sw.Restart();
-            pane.SetLoggingModeCommand.Execute(logToDevice);
-            PumpFor(TimeSpan.FromMilliseconds(300));
-            var bSwitched = shell.SelectedLoggingMode == logToDevice && device.Mode == DeviceMode.LogToDevice;
+            var bSetUpClick = Click(main, sd);
+            var bSwitched = InMode(logToDevice, DeviceMode.LogToDevice);
             var bBefore = Unlocked() && sd.IsChecked == true;
             var bBeforeButtons = Buttons();
 
@@ -2279,6 +2325,11 @@ internal static class HeadlessBench
             var bLockedButtons = Buttons();
             var bShot = Capture(main, "t1-logmode-sd-locked");
 
+            // A click on the disabled STREAM TO APP must change nothing either.
+            var bLockedClick = Click(main, stream);
+            var bHeld = InMode(logToDevice, DeviceMode.LogToDevice) && shell.IsLogging
+                        && device.IsLoggingToSdCard && sd.IsChecked == true && stream.IsChecked == false;
+
             shell.IsLogging = false;
             var bStopped = PumpUntil(() => !device.IsLoggingToSdCard && !shell.IsLogging,
                                      TimeSpan.FromSeconds(10));
@@ -2287,9 +2338,10 @@ internal static class HeadlessBench
             sw.Stop();
 
             Step(1, "LOG-MODE", "sd",
-                 bSwitched && bBefore && sdLogging && bLocked && bStopped && bAfter,
-                 $"set-up SetLoggingModeCommand('{logToDevice}') with no session switched={bSwitched}: " +
+                 bSwitched && bBefore && sdLogging && bLocked && bHeld && bStopped && bAfter,
+                 $"set-up: LOG TO DEVICE clicked with no session ({bSetUpClick}) switched={bSwitched}: " +
                  $"{bBeforeButtons}. SD session on the scripted device={sdLogging}: {bLockedButtons}. " +
+                 $"STREAM TO APP clicked while locked ({bLockedClick}): mode and SD session unchanged={bHeld}. " +
                  $"After the stop (SD logging off={bStopped}): {bAfterButtons}",
                  bShot, sw.Elapsed.TotalSeconds);
         }
@@ -2304,14 +2356,40 @@ internal static class HeadlessBench
                     PumpUntil(() => !LoggingManager.Instance.Active, TimeSpan.FromSeconds(10));
                 }
                 shell.SelectedLoggingMode = streamToApp;
-                if (ConnectionManager.Instance.ConnectedDevices.Contains(device))
+                foreach (var scripted in new[] { wifi, device })
                 {
-                    ConnectionManager.Instance.Disconnect(device);
+                    if (ConnectionManager.Instance.ConnectedDevices.Contains(scripted))
+                    {
+                        ConnectionManager.Instance.Disconnect(scripted);
+                    }
                 }
             }
             catch (Exception ex) { Console.WriteLine($"[WARN] cleanup after LOG-MODE: {ex.Message}"); }
             Pump();
         }
+    }
+
+    /// <summary>
+    /// A real left click at the centre of <paramref name="target"/>: <c>MouseDown</c> and
+    /// <c>MouseUp</c> on the headless window, so the click is hit-tested and routed through the
+    /// same pointer pipeline as a mouse click. Returns where the click landed, for the evidence.
+    /// </summary>
+    /// <remarks>The drawer scrolls, so the target is brought into view first; a click on a point
+    /// outside the viewport would land on whatever is drawn there instead. A disabled control is
+    /// not hit-testable, so a click on one reports the element under it.</remarks>
+    private static string Click(Window main, Control target)
+    {
+        target.BringIntoView();
+        PumpFor(TimeSpan.FromMilliseconds(200));
+        var centre = target.TranslatePoint(new Point(target.Bounds.Width / 2, target.Bounds.Height / 2), main)
+            ?? throw new InvalidOperationException(
+                $"'{AutomationProperties.GetAutomationId(target)}' is not in the window, so it cannot be clicked");
+        var hit = main.InputHitTest(centre) as Visual;
+        var onTarget = hit is not null && (ReferenceEquals(hit, target) || target.IsVisualAncestorOf(hit));
+        main.MouseDown(centre, MouseButton.Left);
+        main.MouseUp(centre, MouseButton.Left);
+        PumpFor(TimeSpan.FromMilliseconds(300));
+        return $"at ({centre.X:0},{centre.Y:0}), landed on {(onTarget ? "the button" : hit?.GetType().Name ?? "nothing")}";
     }
 
     /// <summary>The control the app tagged with <paramref name="id"/>. Reading the same
