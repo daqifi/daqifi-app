@@ -101,16 +101,10 @@ public sealed class PlotModelFactory
             Title = "Digital"
         };
 
-        var timeAxis = new LinearAxis
+        // Elapsed time as a clock (m:ss / h:mm:ss), not raw milliseconds: issue #585.
+        var timeAxis = new ElapsedTimeAxis
         {
-            Position = AxisPosition.Bottom,
-            TickStyle = TickStyle.None,
-            MajorGridlineStyle = LineStyle.Solid,
-            MinorGridlineStyle = LineStyle.Solid,
-            TitleFontSize = 12,
-            TitleFontWeight = FontWeights.Bold,
-            Key = TIME_AXIS_KEY,
-            Title = "Time (ms)"
+            Key = TIME_AXIS_KEY
         };
 
         OxyPlotDarkTheme.ApplyTo(plotModel);
@@ -164,7 +158,7 @@ public sealed class PlotModelFactory
             Tag = (deviceSerialNo, channelName),
             Color = ChannelSeriesColor.ParseOrFallback(color),
             IsVisible = true,
-            TrackerFormatString = $"{channelName} ({serialSuffix})\n{{1}}: {{2:0.###}}\n{{3}}: {{4:0.######}}"
+            TrackerFormatString = $"{channelName} ({serialSuffix})\n{{1}}: {{2}}\n{{3}}: {{4:0.######}}"
         };
 
         var legendItem = new LoggedSeriesLegendItem(

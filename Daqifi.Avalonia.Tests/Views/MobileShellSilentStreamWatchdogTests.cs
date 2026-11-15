@@ -13,16 +13,16 @@ namespace Daqifi.Avalonia.Tests.Views;
 
 /// <summary>
 /// Issue #358: the mobile shell's silent-stream watchdog. A device that stops delivering samples
-/// while its socket stays open must be declared dead after
-/// <c>SilentPollsBeforeStreamDeclaredDead</c> (160) render polls of silence, so the user is not
+/// while its socket stays open must be declared dead after 8 s of silence, so the user is not
 /// left staring at "Streaming 16 channel(s) @ 100 Hz" over a frozen plot.
 /// </summary>
 /// <remarks>
 /// Everything below the view-model is real: the app's device wrapper over a real Core
 /// <c>DaqifiStreamingDevice</c>, a transport that accepts writes and never answers (which is
 /// exactly what a silent device looks like from the app's side), and channels populated by Core's
-/// own status handling. The render timer is the one piece replaced — the tests call
-/// <see cref="MobileShellViewModel.PollActiveSamples"/> directly, once per simulated 50 ms tick.
+/// own status handling. The render timer and the clock are the pieces replaced — the tests call
+/// <see cref="MobileShellViewModel.PollActiveSamples"/> directly, and move a manual
+/// <see cref="MobileShellViewModel.WatchdogClock"/> by one simulated tick before each poll.
 /// <para>
 /// In the <c>ConnectionManager</c> singleton collection because the shell's adopt step registers
 /// the device with <c>ConnectionManager.Instance</c>, and its teardown unregisters it.
@@ -31,8 +31,14 @@ namespace Daqifi.Avalonia.Tests.Views;
 [Collection(ConnectionManagerSingletonCollection.Name)]
 public sealed class MobileShellSilentStreamWatchdogTests : IDisposable
 {
-    /// <summary>Mirrors <c>MobileShellViewModel.SilentPollsBeforeStreamDeclaredDead</c>.</summary>
+    /// <summary>
+    /// The 8 s watchdog window in polls of the render timer's normal 50 ms tick
+    /// (<see cref="Tick"/>).
+    /// </summary>
     private const int WatchdogPolls = 160;
+
+    /// <summary>The render timer's tick in the foreground.</summary>
+    private static readonly TimeSpan Tick = TimeSpan.FromMilliseconds(50);
 
     private const int AnalogPorts = 16;
 
@@ -40,9 +46,13 @@ public sealed class MobileShellSilentStreamWatchdogTests : IDisposable
     private readonly CoreStreamingDevice _core;
     private readonly ShellTestDevice _device;
     private readonly MobileShellViewModel _shell = new();
+    private readonly ManualClock _clock = new();
 
     public MobileShellSilentStreamWatchdogTests()
     {
+        _shell.WatchdogClock = _clock;
+        // No dispatcher runs in the test project. Run the backstop timer's posted job inline.
+        _shell.PostToUiThread = action => action();
         _core = new CoreStreamingDevice("core", _transport, NullLogger.Instance);
         _core.Connect();
         _core.PopulateChannelsFromStatus(Status(enabledMask: null));
@@ -231,6 +241,186 @@ public sealed class MobileShellSilentStreamWatchdogTests : IDisposable
         Assert.False(_shell.IsConnected, "The restarted stream's watchdog was not re-armed.");
     }
 
+    /// <summary>
+    /// Issue #601, the first hole. The watchdog counted render polls, and 160 polls is 8 s only at
+    /// the full 50 ms tick. A dispatcher timer does not make up the ticks that it misses while the UI
+    /// thread is busy. At one poll per second the window was 160 s, so a stream that delivered
+    /// nothing for 45 s still read "Streaming". The window is time, so it must close at 8 s however
+    /// few polls ran in it.
+    /// </summary>
+    [Fact]
+    public void A_silent_stream_is_declared_dead_after_eight_seconds_even_when_polls_are_one_second_apart()
+    {
+        var slowTick = TimeSpan.FromSeconds(1);
+        StartStreaming();
+
+        Poll(7, slowTick);
+        Assert.True(_shell.IsStreaming, "The watchdog tripped before 8 s had elapsed.");
+
+        Poll(1, slowTick);
+
+        Assert.False(_shell.IsStreaming, "No sample for 8 s, and the stream still reads as live.");
+        Assert.False(_shell.IsConnected);
+        Assert.StartsWith("Lost connection to", _shell.Status, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Issue #601, the third hole. The watchdog ran only when the view's render timer called the
+    /// poll. If that timer stops, nothing judged the stream. The view-model's own backstop timer
+    /// must run the poll and trip the watchdog with no render poll at all.
+    /// </summary>
+    [Fact]
+    public void A_silent_stream_is_declared_dead_when_the_render_timer_stops_polling()
+    {
+        StartStreaming();
+
+        for (var second = 1; second < 8; second++)
+        {
+            _clock.Advance(TimeSpan.FromSeconds(1));
+            _clock.FireTimers();
+        }
+        Assert.True(_shell.IsStreaming, "The backstop tripped the watchdog before 8 s had elapsed.");
+
+        _clock.Advance(TimeSpan.FromSeconds(1));
+        _clock.FireTimers();
+
+        Assert.False(_shell.IsStreaming, "With no render poll, a silent stream was never judged.");
+        Assert.False(_shell.IsConnected);
+        Assert.StartsWith("Lost connection to", _shell.Status, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The backstop lives exactly as long as the stream: one timer while streaming, none after a
+    /// stop, and a restart does not leave the previous one running.
+    /// </summary>
+    [Fact]
+    public void The_backstop_timer_lives_only_as_long_as_the_stream()
+    {
+        StartStreaming();
+        Assert.Equal(1, _clock.LiveTimers);
+
+        _shell.StreamToggleCommand.Execute(null);   // stop
+        Assert.False(_shell.IsStreaming);
+        Assert.Equal(0, _clock.LiveTimers);
+
+        StartStreaming();
+        Assert.Equal(1, _clock.LiveTimers);
+    }
+
+    /// <summary>
+    /// While the render timer polls normally, the backstop must not judge the stream on its own.
+    /// </summary>
+    [Fact]
+    public void The_backstop_does_not_trip_a_stream_that_the_render_timer_polls_and_that_delivers()
+    {
+        StartStreaming();
+        var channel = ActiveAnalogChannels().First();
+
+        for (var i = 0; i < WatchdogPolls * 3; i++)
+        {
+            channel.ActiveSample = new DataSample { Value = i, TimestampTicks = i + 1 };
+            Poll(1);
+            if (i % 20 == 0) { _clock.FireTimers(); }
+        }
+
+        Assert.True(_shell.IsStreaming);
+        Assert.True(_shell.IsConnected);
+    }
+
+    /// <summary>
+    /// Review on #604: silence is measured from when the last sample arrived, not from the poll
+    /// that first saw it. A sample arrives 1 s after the start, then no poll runs for 9 s. The poll
+    /// that finally runs must find 9 s of silence and trip, not restart the window at its own time.
+    /// </summary>
+    [Fact]
+    public void A_late_poll_measures_silence_from_when_the_last_sample_arrived()
+    {
+        StartStreaming();
+        var channel = ActiveAnalogChannels().First();
+
+        _clock.Advance(TimeSpan.FromSeconds(1));
+        channel.ActiveSample = new DataSample { Value = 1, TimestampTicks = 1 };
+        Poll(1, TimeSpan.FromSeconds(9));
+
+        Assert.Equal(1, _shell.TotalSamples);
+        Assert.False(_shell.IsStreaming, "A sample 9 s old kept the stream live because the poll that saw it ran late.");
+        Assert.StartsWith("Lost connection to", _shell.Status, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The other side of the same rule: a late poll behind a FRESH sample is not silence.
+    /// </summary>
+    [Fact]
+    public void A_late_poll_behind_a_fresh_sample_does_not_trip()
+    {
+        StartStreaming();
+        var channel = ActiveAnalogChannels().First();
+
+        _clock.Advance(TimeSpan.FromSeconds(9));
+        channel.ActiveSample = new DataSample { Value = 1, TimestampTicks = 1 };
+        Poll(1, TimeSpan.FromSeconds(1));
+
+        Assert.True(_shell.IsStreaming, $"A sample 1 s old was judged silent ({_shell.Status}).");
+    }
+
+    /// <summary>
+    /// The same slow tick must not make a live stream look dead: samples are counted on the receive
+    /// thread, so a poll that runs late still sees every sample that arrived since the last one.
+    /// </summary>
+    [Fact]
+    public void A_stream_that_keeps_delivering_is_not_declared_dead_when_polls_are_seconds_apart()
+    {
+        StartStreaming();
+        var channel = ActiveAnalogChannels().First();
+
+        for (var i = 0; i < 60; i++)
+        {
+            channel.ActiveSample = new DataSample { Value = i, TimestampTicks = i + 1 };
+            Poll(1, TimeSpan.FromSeconds(5));
+        }
+
+        Assert.True(_shell.IsStreaming);
+        Assert.True(_shell.IsConnected);
+    }
+
+    /// <summary>
+    /// Issue #601, the second hole. A channel that comes back after a stretch with none active opens
+    /// a fresh window. So a channel set that changes at least once per window — here every 3 s —
+    /// held the watchdog open forever, and not one sample ever arrived. The fresh window must not
+    /// move the ceiling: twice the window after the last sample, the watchdog trips.
+    /// </summary>
+    [Fact]
+    public void Channels_that_keep_coming_back_cannot_hold_a_silent_stream_open()
+    {
+        StartStreaming();
+        var channels = ActiveAnalogChannels();
+        const int pollsPerPhase = 60;   // 3 s at the 50 ms tick
+        const int ceilingPolls = WatchdogPolls * 2;
+
+        for (var poll = 1; poll < ceilingPolls; poll++)
+        {
+            if (poll % pollsPerPhase == 0) { ToggleEveryChannel(channels); }
+            Poll(1);
+            Assert.True(_shell.IsStreaming, $"The watchdog tripped at poll {poll}, before the ceiling.");
+        }
+
+        Poll(1);
+
+        Assert.False(_shell.IsStreaming, "Channels that kept coming back held a silent stream open past the ceiling.");
+    }
+
+    private void ToggleEveryChannel(List<IChannel> channels)
+    {
+        if (ActiveAnalogChannels().Count > 0)
+        {
+            foreach (var channel in channels) { _device.RemoveChannel(channel); }
+        }
+        else
+        {
+            foreach (var channel in channels) { _device.AddChannel(channel); }
+        }
+    }
+
     private void AssertStreamStoppedForNoEnabledChannels()
     {
         Assert.True(_shell.IsStreaming);
@@ -253,10 +443,13 @@ public sealed class MobileShellSilentStreamWatchdogTests : IDisposable
         Assert.Equal(0, _shell.TotalSamples);
     }
 
-    private void Poll(int count)
+    private void Poll(int count) => Poll(count, Tick);
+
+    private void Poll(int count, TimeSpan interval)
     {
         for (var i = 0; i < count; i++)
         {
+            _clock.Advance(interval);
             _shell.PollActiveSamples();
         }
     }
@@ -281,4 +474,50 @@ public sealed class MobileShellSilentStreamWatchdogTests : IDisposable
         return message;
     }
 
+    /// <summary>
+    /// A clock that moves only when the test moves it. Its timers fire only when the test calls
+    /// <see cref="FireTimers"/>.
+    /// </summary>
+    private sealed class ManualClock : TimeProvider
+    {
+        private readonly List<ManualTimer> _timers = [];
+        private long _ticks;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp() => _ticks;
+
+        public void Advance(TimeSpan by) => _ticks += by.Ticks;
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new ManualTimer(callback, state);
+            _timers.Add(timer);
+            return timer;
+        }
+
+        public int LiveTimers => _timers.Count(t => !t.IsDisposed);
+
+        public void FireTimers()
+        {
+            foreach (var timer in _timers.Where(t => !t.IsDisposed).ToList()) { timer.Fire(); }
+        }
+
+        private sealed class ManualTimer(TimerCallback callback, object? state) : ITimer
+        {
+            public bool IsDisposed { get; private set; }
+
+            public void Fire() => callback(state);
+
+            public bool Change(TimeSpan dueTime, TimeSpan period) => !IsDisposed;
+
+            public void Dispose() => IsDisposed = true;
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
+    }
 }

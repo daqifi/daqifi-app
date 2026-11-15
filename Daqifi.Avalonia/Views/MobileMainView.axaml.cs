@@ -143,6 +143,8 @@ public partial class MobileMainView : UserControl
     private void OnAppDeactivated(object? sender, ActivatedEventArgs e)
     {
         SaveProfileEdit();
+        // A discovery sweep must not keep the multicast lock while nobody can see it (#591).
+        StreamView.OnAppDeactivated();
     }
 
     /// <summary>
