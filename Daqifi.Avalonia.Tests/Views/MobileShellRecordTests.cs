@@ -35,6 +35,7 @@ public sealed class MobileShellRecordTests : IDisposable
     private readonly ShellTestDevice _device;
     private readonly MobileShellViewModel _shell = new();
     private readonly FakeRecorder _recorder;
+    private readonly SerialTestUi _ui = new();
 
     public MobileShellRecordTests()
     {
@@ -65,6 +66,7 @@ public sealed class MobileShellRecordTests : IDisposable
         _transport.CloseStream();
         _core.Dispose();
         _transport.Dispose();
+        _ui.Dispose();
     }
 
     [Fact]
@@ -208,19 +210,23 @@ public sealed class MobileShellRecordTests : IDisposable
             StartStream();
             _shell.StreamToggleCommand.Execute(null);
             Assert.True(_shell.IsSavingRecording, "Arrangement: the save must still be pending.");
+            // As in the app, the shell raises the commit on the UI thread.
+            _shell.PostToUiThread = _ui.Post;
 
             // The user enters APP LOGS before the writer commits: the visit's snapshot omits it.
-            await appLogs.ReloadCommand.ExecuteAsync(null);
-            Assert.Equal(["Session_6"], appLogs.Sessions.Select(s => s.Name));
+            await _ui.RunAsync(() => appLogs.ReloadCommand.ExecuteAsync(null));
+            Assert.Equal(["Session_6"], await ListedAsync(appLogs));
             // ...and opens the older session's viewer while the save is still pending.
-            appLogs.IsViewerOpen = true;
+            await _ui.Run(() => appLogs.IsViewerOpen = true);
 
             database.Commit(new LoggingSession(7, "Session_7"));
             _recorder.Complete(new RecordingResult("Session_7", 1_600, null));
             await _shell.RecordingSaveTask.WaitAsync(SendTimeout);
 
             await WaitUntilListedAsync(appLogs, "Session_7");
-            Assert.True(appLogs.IsViewerOpen, "The refresh closed the session viewer the user had open.");
+            Assert.True(
+                await _ui.Get(() => appLogs.IsViewerOpen),
+                "The refresh closed the session viewer the user had open.");
         }
         finally
         {
@@ -245,11 +251,12 @@ public sealed class MobileShellRecordTests : IDisposable
             _shell.RecordStream = true;
             StartStream();
             _shell.StreamToggleCommand.Execute(null);
+            _shell.PostToUiThread = _ui.Post;
 
             // The visit's load reads the pre-commit snapshot, then is held until after the commit.
             using var release = new SemaphoreSlim(0);
             database.HoldNextRead(release);
-            var visit = appLogs.ReloadCommand.ExecuteAsync(null);
+            var visit = await _ui.Get(() => appLogs.ReloadCommand.ExecuteAsync(null));
             Assert.True(database.WaitForHeldRead(SendTimeout), "Arrangement: the visit's load never ran.");
 
             database.Commit(new LoggingSession(7, "Session_7"));
@@ -298,18 +305,18 @@ public sealed class MobileShellRecordTests : IDisposable
         try
         {
             var picker = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
-            appLogs.SavePathResolver = _ => picker.Task;
+            await _ui.Run(() => appLogs.SavePathResolver = _ => picker.Task);
 
-            var export = appLogs.ExportSessionCommand.ExecuteAsync(appLogs.Sessions[0]);
-            Assert.True(appLogs.IsBusy, "Arrangement: the export must hold the list busy.");
+            var export = await _ui.Get(() => appLogs.ExportSessionCommand.ExecuteAsync(appLogs.Sessions[0]));
+            Assert.True(await _ui.Get(() => appLogs.IsBusy), "Arrangement: the export must hold the list busy.");
             database.Commit(new LoggingSession(7, "Session_7"));
-            appLogs.RefreshSessions();
+            await _ui.Run(appLogs.RefreshSessions);
 
             picker.SetResult(Path.Combine(directory.FullName, "Session_6.csv"));
             await export.WaitAsync(SendTimeout);
             await WaitUntilListedAsync(appLogs, "Session_7");
 
-            Assert.Equal("Couldn't export that session — see logs.", appLogs.StatusMessage);
+            Assert.Equal("Couldn't export that session — see logs.", await _ui.Get(() => appLogs.StatusMessage));
         }
         finally
         {
@@ -330,20 +337,20 @@ public sealed class MobileShellRecordTests : IDisposable
         try
         {
             var picker = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
-            appLogs.SavePathResolver = _ => picker.Task;
+            await _ui.Run(() => appLogs.SavePathResolver = _ => picker.Task);
             var destination = Path.Combine(directory.FullName, "Session_6.csv");
 
-            var export = appLogs.ExportSessionCommand.ExecuteAsync(appLogs.Sessions[0]);
-            Assert.True(appLogs.IsBusy, "Arrangement: the export must hold the list busy.");
+            var export = await _ui.Get(() => appLogs.ExportSessionCommand.ExecuteAsync(appLogs.Sessions[0]));
+            Assert.True(await _ui.Get(() => appLogs.IsBusy), "Arrangement: the export must hold the list busy.");
             database.Commit(new LoggingSession(7, "Session_7"));
-            appLogs.RefreshSessions();
+            await _ui.Run(appLogs.RefreshSessions);
 
             picker.SetResult(destination);
             await export.WaitAsync(SendTimeout);
             await WaitUntilListedAsync(appLogs, "Session_7");
 
             Assert.True(File.Exists(destination), "Arrangement: the export wrote no CSV.");
-            Assert.Equal("Exported 1 session.", appLogs.StatusMessage);
+            Assert.Equal("Exported 1 session.", await _ui.Get(() => appLogs.StatusMessage));
         }
         finally
         {
@@ -364,15 +371,18 @@ public sealed class MobileShellRecordTests : IDisposable
         var database = new CommittedSessions(new LoggingSession(6, "Session_6"));
         var appLogs = await OpenAppLogsAsync(database);
 
-        appLogs.IsBusy = true;
-        database.Commit(new LoggingSession(7, "Session_7"));
-        appLogs.RefreshSessions();
-        Assert.DoesNotContain(appLogs.Sessions, s => s.Name == "Session_7");
-        appLogs.StatusMessage = deleteFailed;
-        appLogs.IsBusy = false;
+        await _ui.Run(() =>
+        {
+            appLogs.IsBusy = true;
+            database.Commit(new LoggingSession(7, "Session_7"));
+            appLogs.RefreshSessions();
+            Assert.DoesNotContain(appLogs.Sessions, s => s.Name == "Session_7");
+            appLogs.StatusMessage = deleteFailed;
+            appLogs.IsBusy = false;
+        });
 
         await WaitUntilListedAsync(appLogs, "Session_7");
-        Assert.Equal(deleteFailed, appLogs.StatusMessage);
+        Assert.Equal(deleteFailed, await _ui.Get(() => appLogs.StatusMessage));
     }
 
     /// <summary>
@@ -386,16 +396,18 @@ public sealed class MobileShellRecordTests : IDisposable
         var appLogs = await OpenAppLogsAsync(database);
 
         database.FailNextRead();
-        await appLogs.ReloadCommand.ExecuteAsync(null);
-        Assert.True(appLogs.LoadFailed, "Arrangement: the visit's load must fail.");
-        Assert.NotEqual(string.Empty, appLogs.StatusMessage);
+        await _ui.RunAsync(() => appLogs.ReloadCommand.ExecuteAsync(null));
+        var (failed, message) = await _ui.Get(() => (appLogs.LoadFailed, appLogs.StatusMessage));
+        Assert.True(failed, "Arrangement: the visit's load must fail.");
+        Assert.NotEqual(string.Empty, message);
 
         database.Commit(new LoggingSession(7, "Session_7"));
-        appLogs.RefreshSessions();
+        await _ui.Run(appLogs.RefreshSessions);
         await WaitUntilListedAsync(appLogs, "Session_7");
 
-        Assert.False(appLogs.LoadFailed);
-        Assert.Equal(string.Empty, appLogs.StatusMessage);
+        (failed, message) = await _ui.Get(() => (appLogs.LoadFailed, appLogs.StatusMessage));
+        Assert.False(failed);
+        Assert.Equal(string.Empty, message);
     }
 
     [Fact]
@@ -500,22 +512,30 @@ public sealed class MobileShellRecordTests : IDisposable
 
     /// <summary>
     /// The real APP LOGS view model over a stand-in for SQLite, with the ctor's first load finished.
-    /// The UI invoker runs inline: no dispatcher runs in this project.
+    /// No dispatcher runs in this project, so <see cref="SerialTestUi"/> plays the UI thread: the
+    /// view model is built on it, mutates its list on it, and the test reads the list on it.
     /// </summary>
-    private static async Task<LoggedSessionsMobileViewModel> OpenAppLogsAsync(CommittedSessions database)
+    private async Task<LoggedSessionsMobileViewModel> OpenAppLogsAsync(CommittedSessions database)
     {
-        var appLogs = new LoggedSessionsMobileViewModel(
-            database.Read,
-            action => { action(); return Task.CompletedTask; });
+        var appLogs = await _ui.Get(() => new LoggedSessionsMobileViewModel(database.Read, _ui.Run));
         var deadline = DateTime.UtcNow + SendTimeout;
-        while (!appLogs.Loaded || appLogs.IsBusy)
+        while (true)
         {
+            var (loaded, busy, failed, message) =
+                await _ui.Get(() => (appLogs.Loaded, appLogs.IsBusy, appLogs.LoadFailed, appLogs.StatusMessage));
+            if (loaded && !busy)
+            {
+                Assert.False(failed, message);
+                return appLogs;
+            }
             Assert.True(DateTime.UtcNow < deadline, "Arrangement: the first APP LOGS load never finished.");
             await Task.Delay(10);
         }
-        Assert.False(appLogs.LoadFailed, appLogs.StatusMessage);
-        return appLogs;
     }
+
+    /// <summary>The listed session names, read on the UI thread.</summary>
+    private Task<List<string>> ListedAsync(LoggedSessionsMobileViewModel appLogs) =>
+        _ui.Get(() => appLogs.Sessions.Select(s => s.Name).ToList());
 
     /// <summary>A session whose one sample is held in memory, so the exporter needs no database.</summary>
     private static LoggingSession SessionWithOneSample(int id, string name)
@@ -536,16 +556,22 @@ public sealed class MobileShellRecordTests : IDisposable
         return session;
     }
 
-    /// <summary>The refresh is fire-and-forget, so poll for its result rather than await it.</summary>
-    private static async Task WaitUntilListedAsync(LoggedSessionsMobileViewModel appLogs, string session)
+    /// <summary>
+    /// The refresh is fire-and-forget, so poll for its result rather than await it. Each poll is
+    /// one UI-thread read, so it sees a load either before it starts or after it ends: the list,
+    /// <c>IsBusy</c> and the status line are written on that thread, and <c>IsBusy</c> goes false
+    /// last (and a queued refresh sets it again in the same step).
+    /// </summary>
+    private async Task WaitUntilListedAsync(LoggedSessionsMobileViewModel appLogs, string session)
     {
         var deadline = DateTime.UtcNow + SendTimeout;
-        while (!appLogs.Sessions.ToList().Any(s => s.Name == session) || appLogs.IsBusy)
+        while (true)
         {
+            var (names, busy) = await _ui.Get(() => (appLogs.Sessions.Select(s => s.Name).ToList(), appLogs.IsBusy));
+            if (!busy && names.Contains(session)) { return; }
             Assert.True(
                 DateTime.UtcNow < deadline,
-                $"APP LOGS never listed {session} after the save was confirmed; it lists: "
-                + string.Join(", ", appLogs.Sessions.ToList().Select(s => s.Name)) + ".");
+                $"APP LOGS never listed {session} after the save was confirmed; it lists: {string.Join(", ", names)}.");
             await Task.Delay(10);
         }
     }
