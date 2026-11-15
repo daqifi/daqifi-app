@@ -149,6 +149,42 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
     }
 
     /// <summary>
+    /// Issue #583, review of PR #586: a version the app cannot read is unknown. The drawer says so
+    /// for a nonempty unreadable value as it does for an empty one, keeps the reported text as
+    /// detail, and claims neither "up to date" nor "available", also after the check has run.
+    /// </summary>
+    [Theory]
+    [InlineData("", "Installed version unknown.")]
+    [InlineData("garbage", "Installed version unknown (the device reports \"garbage\").")]
+    [InlineData("99999999999.0.0", "Installed version unknown (the device reports \"99999999999.0.0\").")]
+    public void A_version_the_app_cannot_read_is_shown_as_unknown(string reported, string expected)
+    {
+        var shell = new DaqifiViewModel(new NullDialogService());
+        var pane = Track(new DevicesPaneViewModel(shell));
+        shell.SetLatestFirmwareRelease("3.9.0", "v3.9.0");
+        var device = Nq1("9090539562006014105", reported);
+
+        pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(device));
+
+        Assert.Equal(expected, pane.FirmwareStatusText);
+        Assert.False(pane.SelectedDeviceHasFirmwareUpdate);
+        Assert.False(pane.SelectedDeviceFirmwareIsCurrent);
+    }
+
+    /// <summary>The control: a four-part version parses since Core 1.10.0, so it is shown as is.</summary>
+    [Fact]
+    public void A_four_part_version_is_shown_as_reported()
+    {
+        var shell = new DaqifiViewModel(new NullDialogService());
+        var pane = Track(new DevicesPaneViewModel(shell));
+        var device = Nq1("9090539562006014105", "3.9.0.1");
+
+        pane.OpenSettingsCommand.Execute(new DeviceTileViewModel(device));
+
+        Assert.Equal("Installed 3.9.0.1.", pane.FirmwareStatusText);
+    }
+
+    /// <summary>
     /// Before the check has succeeded (or when it failed) the drawer says only what it knows. It
     /// must not say "up to date": nothing has been compared.
     /// </summary>

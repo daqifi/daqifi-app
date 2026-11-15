@@ -144,10 +144,11 @@ public class SerialStreamingDevice : AbstractStreamingDevice, ILanChipInfoProvid
                 break;
             case ScpiInitializationErrorException:
                 // Core's init sequence throws the typed ScpiInitializationErrorException (Core #317)
-                // when a command gets a SCPI -200 execution error back, from two sibling sites:
-                // "SCPI error during initialization" (echo/stop/power/stream-format/sysinfo) and
-                // "SCPI error while setting stream interface to USB" (the SYSTem:STReam:INTerface 0
-                // switch). Firmware persists the last stream interface across sessions, so a device
+                // when a command gets a SCPI -200 execution error back. Since Core 1.10.0 the
+                // SYSTem:STReam:INTerface 0 switch is part of the same setup block as
+                // echo/stop/power/stream-format/sysinfo (daqifi-core#918), so every case reads
+                // "SCPI error during initialization"; before that the switch had its own site and
+                // message. Firmware persists the last stream interface across sessions, so a device
                 // previously left streaming over WiFi commonly triggers this on the next USB connect.
                 // Classified by the typed exception, not a message match (Core added the type in
                 // 1.3.0 for exactly this) — a device/environmental condition, not an app bug
@@ -305,43 +306,6 @@ public class SerialStreamingDevice : AbstractStreamingDevice, ILanChipInfoProvid
             AppLogger.Warning(ex, $"Failed to power on WiFi module for {PortName}");
             return false;
         }
-    }
-
-    // @port: Daqifi.Desktop.Device.SerialDevice.SerialStreamingDevice.EnableLanUpdateMode
-    public bool EnableLanUpdateMode()
-    {
-        AppLogger.Information($"Preparing {PortName} for WiFi firmware mode.");
-        if (CoreDevice == null || !CoreDevice.IsConnected)
-        {
-            AppLogger.Warning($"Cannot prepare {PortName} for WiFi firmware mode: core device is not connected.");
-            return false;
-        }
-
-        // Power on the WiFi module and set the FW-update-requested flag.
-        // APPLY (SYSTem:COMMunicate:LAN:APPLY) is intentionally NOT sent here.
-        // The APPLY that triggers bridge-mode initialisation is sent later — via the raw serial
-        // bridge-activation callback Core invokes — at the moment the flash tool shows
-        // its "Power cycle WINC" prompt.  Sending APPLY here (before the flash tool starts)
-        // introduces a race: the WiFi deinit/reinit cycle can take several seconds, and the
-        // bridge may not be ready by the time the flash tool's programming phase begins.
-        // Sending it at the prompt gives the firmware a guaranteed ~2 s window to initialise
-        // the bridge before the tool issues its first serial query.
-        Thread.Sleep(2000);
-        AppLogger.Information("Sending LAN FW update prep command: SYSTem:POWer:STATe 1");
-        CoreDevice.Send(ScpiMessageProducer.TurnDeviceOn);
-        Thread.Sleep(1000);
-        AppLogger.Information("Sending LAN FW update prep command: SYSTem:COMMUnicate:LAN:FWUpdate");
-        CoreDevice.Send(ScpiMessageProducer.SetLanFirmwareUpdateMode);
-        return true;
-    }
-
-    // @port: Daqifi.Desktop.Device.SerialDevice.SerialStreamingDevice.ResetLanAfterUpdate
-    public void ResetLanAfterUpdate()
-    {
-        CoreDevice?.Send(ScpiMessageProducer.SetUsbTransparencyMode(0));
-        CoreDevice?.Send(ScpiMessageProducer.EnableNetworkLan);
-        CoreDevice?.Send(ScpiMessageProducer.ApplyNetworkLan);
-        CoreDevice?.Send(ScpiMessageProducer.SaveNetworkLan);
     }
 
     /// <summary>

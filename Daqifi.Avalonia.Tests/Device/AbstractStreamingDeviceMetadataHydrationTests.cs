@@ -23,24 +23,30 @@ namespace Daqifi.Avalonia.Tests.Device;
 /// <c>ChannelsPopulated</c> raise the metadata held <c>MaxSamplingRate</c> 1000 and a null
 /// <c>CapabilityDocument</c>; when <c>InitializeAsync()</c> returned it held the device's own
 /// schema-2 document and <c>MaxSamplingRate</c> 22000, from that document's
-/// <c>streaming.sample_rate_range_hz.max</c>. That ordering is what the double below replays. The
-/// figures are this board's, not constants — see <see cref="BoardTableCeilingHz"/>.
+/// <c>streaming.sample_rate_range_hz.max</c>. That ordering is what the double below replays.
+///
+/// Core 1.10.0 (daqifi-core#907) moved the Nyquist1 board-table ceiling to 22000, the value the
+/// bench document states, so the bench figures can no longer tell the two hydrates apart. The
+/// document below therefore states a LOWER ceiling than the board table: a value a device is free
+/// to state (fewer channels or a slower build), and one the first hydrate cannot have copied.
 /// </summary>
 public class AbstractStreamingDeviceMetadataHydrationTests
 {
     /// <summary>
-    /// What <c>DeviceCapabilities.FromDeviceType</c> returns for every Nyquist board in the pinned
-    /// Core: the bootstrap value, used before the device has been asked anything and kept for
-    /// firmware that cannot answer.
+    /// What <c>DeviceCapabilities.FromDeviceType</c> returns for a Nyquist1 in the pinned Core
+    /// (1.10.0, daqifi-core#907; it was 1000 before): the bootstrap value, used before the device
+    /// has been asked anything and kept for firmware that cannot answer.
     /// </summary>
-    private const int BoardTableCeilingHz = 1000;
+    private const int BoardTableCeilingHz = 22000;
 
     /// <summary>
-    /// The ceiling the bench Nq1's own capability document states. A device property read back from
-    /// the board, not a limit this app or Core defines — another unit or another firmware is free
-    /// to state something else, which is the whole reason the wrapper reads it instead of assuming.
+    /// The ceiling this test's capability document states. A device property read back from the
+    /// board, not a limit this app or Core defines — a unit or a firmware is free to state a value
+    /// other than the board table, which is the whole reason the wrapper reads it instead of
+    /// assuming. It differs from <see cref="BoardTableCeilingHz"/> so that the assertions can tell
+    /// which hydrate a value came from.
     /// </summary>
-    private const int DocumentCeilingHz = 22000;
+    private const int DocumentCeilingHz = 4000;
 
     [Fact]
     public void The_capability_document_reaches_the_wrapper_only_after_initialization()
@@ -48,7 +54,7 @@ public class AbstractStreamingDeviceMetadataHydrationTests
         DeviceCapabilities? capabilitiesAtChannelsPopulated = null;
         CapabilityDocument? documentAtChannelsPopulated = null;
 
-        var device = new TestDevice(CoreDeviceThatLearns(BenchDocument()));
+        var device = new TestDevice(CoreDeviceThatLearns(LowerCeilingDocument()));
         device.CoreDeviceDouble.AfterChannelsPopulated = () =>
         {
             capabilitiesAtChannelsPopulated = device.Metadata.Capabilities;
@@ -70,17 +76,18 @@ public class AbstractStreamingDeviceMetadataHydrationTests
     }
 
     [Fact]
-    public void The_ceiling_the_rate_guard_clamps_against_is_the_one_the_document_raised()
+    public void The_ceiling_the_rate_guard_clamps_against_is_the_one_the_document_states()
     {
         // Why the hydrate is not merely tidy: AbstractStreamingDevice.StreamingFrequency clamps to
-        // Capabilities.MaxSamplingRate, so a wrapper still holding the board table would refuse a
-        // rate this device advertises it can sustain, and Core would have accepted it.
-        var device = new TestDevice(CoreDeviceThatLearns(BenchDocument()));
+        // Capabilities.MaxSamplingRate, so a wrapper still holding the board table would accept a
+        // rate this device says it cannot sustain (or, with a higher document ceiling, refuse one
+        // it can).
+        var device = new TestDevice(CoreDeviceThatLearns(LowerCeilingDocument()));
         Assert.True(device.Connect());
 
         device.StreamingFrequency = 5000;
 
-        Assert.Equal(5000, device.StreamingFrequency);
+        Assert.Equal(DocumentCeilingHz, device.StreamingFrequency);
     }
 
     [Fact]
@@ -91,7 +98,7 @@ public class AbstractStreamingDeviceMetadataHydrationTests
         var device = new TestDevice(CoreDeviceThatLearns(document: null));
         Assert.True(device.Connect());
 
-        device.StreamingFrequency = 5000;
+        device.StreamingFrequency = BoardTableCeilingHz + 5000;
 
         Assert.Null(device.Metadata.CapabilityDocument);
         Assert.Equal(BoardTableCeilingHz, device.Metadata.Capabilities.MaxSamplingRate);
@@ -99,10 +106,10 @@ public class AbstractStreamingDeviceMetadataHydrationTests
     }
 
     /// <summary>
-    /// The bench Nq1's document reduced to the field this test turns on. Built directly rather than
+    /// A schema-2 document reduced to the field this test turns on. Built directly rather than
     /// parsed so the test states what it depends on; the parse itself is Core's to cover.
     /// </summary>
-    private static CapabilityDocument BenchDocument() => new()
+    private static CapabilityDocument LowerCeilingDocument() => new()
     {
         SchemaVersion = 2,
         Streaming = new CapabilityStreaming { MaximumSampleRateHz = DocumentCeilingHz }

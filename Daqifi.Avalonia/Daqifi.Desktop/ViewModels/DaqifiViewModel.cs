@@ -2384,9 +2384,13 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             var SerailDeviceProperty = connectedDevice.GetType().GetProperty("DeviceVersion");
             var DeviceVersion = SerailDeviceProperty.GetValue(connectedDevice)?.ToString();
             var latestFirmwareVersion = _firmwareCoordinator.LatestFirmwareVersion;
-            if (!string.IsNullOrEmpty(latestFirmwareVersion))
+            // The coordinator's rule (issue #569). FirmwareVersion.Compare sorts a version that does
+            // not parse before every release, which would mark an unknown version outdated; Core
+            // 1.10.0 offers no update for it, and neither does the app (issue #583).
+            if (FirmwareVersion.TryParse(latestFirmwareVersion, out var latestRelease))
             {
-                connectedDevice.IsFirmwareOutdated = FirmwareVersion.Compare(DeviceVersion, latestFirmwareVersion) < 0;
+                connectedDevice.IsFirmwareOutdated =
+                    FirmwareUpdateCoordinator.CompareWithRelease(DeviceVersion, latestRelease) == true;
             }
 
             ConnectedDevices.Add(connectedDevice);

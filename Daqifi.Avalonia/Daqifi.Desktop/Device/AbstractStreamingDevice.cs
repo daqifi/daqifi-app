@@ -2430,6 +2430,21 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         {
             if (enabled)
             {
+                // A frequency stored before this device's floor was known (set while
+                // disconnected, or before the capability document arrived) can sit below it, and
+                // Core 1.10.0 refuses that, which stopped the enable at this step with the error
+                // only in the log (issue #584). Raise it to the floor, and show the raised value.
+                var floorHz = coreDevice.PwmFrequencyFloorHz;
+                if (frequencyHz < floorHz)
+                {
+                    AppLogger.Information(
+                        $"PWM frequency {frequencyHz} Hz is below device {DeviceDisplayName}'s floor of " +
+                        $"{floorHz} Hz; using {floorHz} Hz.");
+                    frequencyHz = floorHz;
+                    _pwmFrequencyHz = floorHz;
+                    OnPropertyChanged(nameof(PwmFrequencyHz));
+                }
+
                 // Core-documented call order: duty, then the shared frequency, then enable
                 // (issue #664). Duty and frequency are resent on every enable so the device
                 // runs exactly what the UI shows — a device keeps its PWM state across host
@@ -2465,8 +2480,10 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         get => _pwmFrequencyHz;
         set
         {
-            var clamped = Math.Clamp(
-                value, CoreStreamingDevice.MinPwmFrequencyHz, CoreStreamingDevice.MaxPwmFrequencyHz);
+            // The device's own floor, not the fixed 6 Hz: Core 1.10.0 refuses a value below the
+            // floor a firmware 3.9.0 device advertises, and the refusal reached only the log
+            // (issue #584). Clamping here snaps the bound control to a value the device accepts.
+            var clamped = Math.Clamp(value, PwmFrequencyFloorHz, CoreStreamingDevice.MaxPwmFrequencyHz);
             if (_pwmFrequencyHz != clamped)
             {
                 _pwmFrequencyHz = clamped;
@@ -2478,6 +2495,10 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             OnPropertyChanged();
         }
     }
+
+    /// <inheritdoc />
+    // Downstream-only: no upstream counterpart.
+    public int PwmFrequencyFloorHz => CoreDevice?.PwmFrequencyFloorHz ?? CoreStreamingDevice.MinPwmFrequencyHz;
 
     /// <summary>
     /// Runs a Core DIO command against the wrapped Core channel, with the same
@@ -2682,6 +2703,10 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         // generated setter also notifies it, but only when the board's *value* changes — a
         // re-derived capability set on an unchanged board would otherwise go unannounced.
         OnPropertyChanged(nameof(HasWincWifiModule));
+
+        // The PWM floor reads the capability document and the firmware version, both copied above
+        // (issue #584).
+        OnPropertyChanged(nameof(PwmFrequencyFloorHz));
 
         // Capabilities was replaced above, so the ceiling the stored rate was clamped against may
         // just have moved.

@@ -51,6 +51,45 @@ public class SdCardFailureClassifierTests
 
     #endregion
 
+    #region A missing file is not a damaged card
+
+    /// <summary>
+    /// On firmware v3.9.0 and later, Core 1.10.0 reports a download of a file that is not on the
+    /// card as <see cref="SdCardFileNotFoundException"/> (daqifi-core#967). That type derives from
+    /// <see cref="SdCardFilesystemException"/>, whose arm tells the user to reformat the card. A
+    /// reformat erases every other log, so the missing-file arm must win.
+    /// </summary>
+    [Theory]
+    [InlineData(-256, "-256,\"File name not found\"")]
+    [InlineData(-257, "-257,\"File name error\"")]
+    public void A_file_the_device_cannot_find_is_not_reported_as_a_corrupt_card(int code, string scpiError)
+    {
+        var failure = SdCardFailureClassifier.Classify(
+            new SdCardFileNotFoundException("log_20261114.bin", code, [scpiError], scpiError));
+
+        Assert.Equal(SdCardFailureClassifier.FILE_NOT_FOUND_GUIDANCE, failure.Guidance);
+        Assert.NotEqual(SdCardFailureClassifier.GENERIC_CARD_GUIDANCE, failure.Guidance);
+        Assert.DoesNotContain(scpiError, failure.StatusMessage);
+        Assert.True(failure.IsExpectedDeviceCondition);
+        Assert.False(failure.IsCardUnavailable);
+    }
+
+    /// <summary>
+    /// The control: a filesystem error that is not a missing file keeps the card guidance.
+    /// </summary>
+    [Fact]
+    public void Another_filesystem_error_keeps_the_card_guidance()
+    {
+        const string scpiError = "-250,\"Mass storage error\"";
+        var failure = SdCardFailureClassifier.Classify(
+            new SdCardFilesystemException([scpiError], scpiError, scpiError));
+
+        Assert.Equal(SdCardFailureClassifier.GENERIC_CARD_GUIDANCE, failure.Guidance);
+        Assert.False(failure.IsCardUnavailable);
+    }
+
+    #endregion
+
     #region A stall is described by its reason
 
     [Fact]

@@ -800,7 +800,7 @@
                                            Foreground="{DynamicResource TextTertiary}"
                                            TextWrapping="Wrap"
                                            Margin="0,6,0,0"
-                                           Text="6–50,000 Hz. One hardware timer drives PWM, so this frequency is shared by every PWM channel on this device."/>
+                                           Text="{Binding SelectedDevice.PwmFrequencyFloorHz, StringFormat='{}{0:N0}–50,000 Hz. One hardware timer drives PWM, so this frequency is shared by every PWM channel on this device.'}"/>
                             </StackPanel>
 
                             <!-- SCALING (analog only) -->
