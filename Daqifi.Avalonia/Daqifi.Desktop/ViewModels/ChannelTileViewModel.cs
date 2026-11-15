@@ -140,8 +140,9 @@ public sealed class ChannelTileViewModel : ObservableObject, IDisposable
     // @port: Daqifi.Desktop.ViewModels.ChannelTileViewModel.OnChannelPropertyChanged
     private void OnChannelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        // ActiveSample fires from the streaming thread; handle it via the UI-thread
-        // ValueRefresh tick instead. Only react here to properties set from the UI thread.
+        // ActiveSample changes on the streaming thread and raises no PropertyChanged (#620); the
+        // value is read on the UI-thread ValueRefresh tick instead. Only react here to properties
+        // set from the UI thread.
         if (e.PropertyName == nameof(IChannel.IsActive))
         {
             OnPropertyChanged(nameof(IsActive));
