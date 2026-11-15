@@ -57,6 +57,9 @@ internal static class GraphImageSaver
     private const string RENDER_FAILED =
         "Could not save the graph — the image could not be created. Please try again.";
 
+    /// <summary>Title of the save picker.</summary>
+    internal const string PICKER_TITLE = "Save graph as image";
+
     /// <summary>How many names to draw before giving up on finding an unused temporary one.</summary>
     private const int TEMPORARY_NAME_ATTEMPTS = 5;
     #endregion
@@ -80,7 +83,11 @@ internal static class GraphImageSaver
     /// Title for the failure dialog, so it names the button the user actually pressed
     /// ("Save Graph" / "Save Live Graph").
     /// </param>
-    internal static async Task SaveAsync(PlotModel plotModel, string caption)
+    /// <param name="sessionName">
+    /// The logged session on the plot, which the suggested file name starts with; null for the live
+    /// graph (#632).
+    /// </param>
+    internal static async Task SaveAsync(PlotModel plotModel, string caption, string? sessionName = null)
     {
         // Ownerless Win32 SaveFileDialog → StorageProvider picker owned by the app main
         // window (hal: file_pickers), matching the ownerless-dialog dialect in
@@ -93,11 +100,8 @@ internal static class GraphImageSaver
         string? path;
         try
         {
-            var file = await main.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-            {
-                DefaultExtension = "png",
-                FileTypeChoices = new[] { FilePickerFileTypes.ImagePng }
-            });
+            var file = await main.StorageProvider.SaveFilePickerAsync(
+                PickerOptions(SuggestedFileNames.GraphImage(sessionName, DateTime.Now)));
 
             path = file?.TryGetLocalPath();
         }
@@ -123,6 +127,19 @@ internal static class GraphImageSaver
             await ReportAsync(failure, caption);
         }
     }
+
+    /// <summary>
+    /// What the save picker is opened with. The suggested name fills the name field, so the user can
+    /// push Return to save: without it the macOS panel opened with an empty field and a disabled
+    /// <b>Save</b> button (#632). The title tells the user what the panel saves.
+    /// </summary>
+    internal static FilePickerSaveOptions PickerOptions(string suggestedFileName) => new()
+    {
+        Title = PICKER_TITLE,
+        SuggestedFileName = suggestedFileName,
+        DefaultExtension = "png",
+        FileTypeChoices = new[] { FilePickerFileTypes.ImagePng }
+    };
 
     /// <summary>
     /// Renders through <paramref name="render"/> and writes the result to <paramref name="path"/>.

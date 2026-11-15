@@ -180,10 +180,18 @@ public partial class ExportDialogViewModel : ObservableObject, IDisposable
     /// Test seam: supplies the logging-context factory directly so unit tests can exercise the
     /// dialog's state machine and export flow without booting the App/DI container.
     /// </summary>
-    internal ExportDialogViewModel(IDbContextFactory<LoggingContext> loggingContext, int sessionId)
+    /// <param name="loggingContext">The database the export reads.</param>
+    /// <param name="sessionId">The one session to export.</param>
+    /// <param name="sessionNameLookup">
+    /// Replaces <see cref="LoggingManager"/> as the name source, which a test host cannot read. Null
+    /// keeps the production source.
+    /// </param>
+    internal ExportDialogViewModel(
+        IDbContextFactory<LoggingContext> loggingContext, int sessionId, Func<int, string?>? sessionNameLookup = null)
     {
         _loggingContext = loggingContext;
         _sessionsIds = [sessionId];
+        _sessionNameLookup = sessionNameLookup ?? SessionNameFromLoggingManager;
         BrowseCommand = BrowseExportPathCommand;
     }
 
@@ -217,16 +225,29 @@ public partial class ExportDialogViewModel : ObservableObject, IDisposable
         var owner = FindOwnerWindowForPicker();
         if (owner == null) { return; }
 
-        var file = await owner.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-        {
-            DefaultExtension = "csv",
-            FileTypeChoices = new[] { new FilePickerFileType("Log File") { Patterns = new[] { "*.csv" } } }
-        });
+        var file = await owner.StorageProvider.SaveFilePickerAsync(ExportFilePickerOptions());
 
         var path = file?.TryGetLocalPath();
         if (path == null) { return; }
 
         ExportFilePath = path;
+    }
+
+    /// <summary>
+    /// What the single-session save picker is opened with. The suggested name is the session name
+    /// with one <c>.csv</c>, as on the mobile Storage tab, so the user can push Return to save (#632).
+    /// The panel used to open with an empty name field and a disabled <b>Save</b> button.
+    /// </summary>
+    internal FilePickerSaveOptions ExportFilePickerOptions()
+    {
+        var sessionId = _sessionsIds[0];
+        return new FilePickerSaveOptions
+        {
+            Title = "Export logged data",
+            SuggestedFileName = SuggestedFileNames.SessionCsv(_sessionNameLookup(sessionId), sessionId),
+            DefaultExtension = "csv",
+            FileTypeChoices = new[] { new FilePickerFileType("Log File") { Patterns = new[] { "*.csv" } } }
+        };
     }
 
     [RelayCommand]
