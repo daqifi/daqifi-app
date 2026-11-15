@@ -177,7 +177,6 @@ public sealed class StorageExportWriterTests : IDisposable
         Assert.Equal(ExportByPath(first), folder.Files["Run (2).csv"].Bytes);
         Assert.Equal(ExportByPath(second), folder.Files["Run (3).csv"].Bytes);
         Assert.Equal(PriorContent, folder.Files["Run.csv"].Text);
-        Assert.Equal(0, folder.Truncations);
         AssertNoStagingLeft();
     }
 
@@ -196,8 +195,63 @@ public sealed class StorageExportWriterTests : IDisposable
         Assert.Equal(PriorContent, folder.Files["Run.csv"].Text);
         Assert.False(folder.Files["Run.csv"].Deleted);
         Assert.True(folder.Files["Run (2).csv"].Deleted);
-        Assert.Equal(0, folder.Truncations);
         AssertNoStagingLeft();
+    }
+
+    /// <summary>The second review case (review of PR #603): a file appears in the folder AFTER the
+    /// name check and before the create — cloud sync, say. It must keep its bytes, and the export
+    /// must land under a fresh name instead of creating over it.</summary>
+    [Fact]
+    public async Task Export_all_never_replaces_a_file_that_appears_after_the_name_check()
+    {
+        var session = SeedSession("Run", "AI0", 1.25);
+        var folder = new MemoryStorageFolder("Documents");
+        folder.AppearBeforeCreate("Run.csv", PriorContent);
+
+        var name = await Writer().WriteNewAsync(folder, "Run.csv", ExportTo(session));
+
+        Assert.Equal("Run (2).csv", name);
+        Assert.Equal(PriorContent, folder.Files["Run.csv"].Text);
+        Assert.False(folder.Files["Run.csv"].Deleted);
+        Assert.Equal(ExportByPath(session), folder.Files["Run (2).csv"].Bytes);
+        AssertNoStagingLeft();
+    }
+
+    /// <summary>As above, with a copy that fails: the cleanup removes only the file this export
+    /// created, never the one that appeared under the checked name.</summary>
+    [Fact]
+    public async Task Export_all_does_not_delete_a_file_that_appears_after_the_name_check_when_the_copy_fails()
+    {
+        var session = SeedSession("Run", "AI0", 1.25);
+        var folder = new MemoryStorageFolder("Documents") { FailNewFilesAfterBytes = 10 };
+        folder.AppearBeforeCreate("Run.csv", PriorContent);
+
+        var name = await Writer().WriteNewAsync(folder, "Run.csv", ExportTo(session));
+
+        Assert.Null(name);
+        Assert.Equal(PriorContent, folder.Files["Run.csv"].Text);
+        Assert.False(folder.Files["Run.csv"].Deleted);
+        Assert.True(folder.Files["Run (2).csv"].Deleted);
+        AssertNoStagingLeft();
+    }
+
+    /// <summary>The create a folder with a local path uses (the desktop, an in-sandbox iOS folder),
+    /// against a real directory: it never replaces a file or steps onto a folder, and it creates an
+    /// empty file only under a free name.</summary>
+    [Fact]
+    public void The_local_create_never_replaces_an_existing_file()
+    {
+        var directory = Path.Combine(_root, "picked");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "Run.csv"), PriorContent);
+        Directory.CreateDirectory(Path.Combine(directory, "Sub.csv"));
+
+        Assert.False(StorageExportWriter.TryCreateNewLocalFile(directory, "Run.csv"));
+        Assert.False(StorageExportWriter.TryCreateNewLocalFile(directory, "Sub.csv"));
+        Assert.True(StorageExportWriter.TryCreateNewLocalFile(directory, "Run (2).csv"));
+
+        Assert.Equal(PriorContent, File.ReadAllText(Path.Combine(directory, "Run.csv")));
+        Assert.Equal(0, new FileInfo(Path.Combine(directory, "Run (2).csv")).Length);
     }
 
     /// <summary>A folder (not a file) with the export's name is taken too.</summary>
@@ -428,8 +482,8 @@ public sealed class StorageExportWriterTests : IDisposable
         }
     }
 
-    /// <summary>An in-memory folder like an Android document tree. CreateFileAsync behaves as
-    /// Avalonia's providers do for a name that exists: it truncates that file and returns it.</summary>
+    /// <summary>An in-memory folder like an Android document tree. CreateNewFileAsync keeps the
+    /// writer's contract: an atomic create-if-absent that returns null for a taken name.</summary>
     private sealed class MemoryStorageFolder(string name) : StorageExportWriter.IExportFolder
     {
         private readonly HashSet<string> _subfolders = new();
@@ -438,11 +492,9 @@ public sealed class StorageExportWriterTests : IDisposable
 
         internal bool RefuseCreate { get; init; }
 
-        /// <summary>Makes every file this folder creates fail its copy after this many bytes.</summary>
+        /// <summary>Makes every file this folder creates — and a file that appears before a create —
+        /// fail its copy after this many bytes.</summary>
         internal int? FailNewFilesAfterBytes { get; init; }
-
-        /// <summary>How many times CreateFileAsync truncated an existing file — must stay 0.</summary>
-        internal int Truncations { get; private set; }
 
         public string Name { get; } = name;
 
@@ -450,25 +502,35 @@ public sealed class StorageExportWriterTests : IDisposable
 
         internal void SeedSubfolder(string folderName) => _subfolders.Add(folderName);
 
+        private (string Name, string Content)? _appearBeforeCreate;
+
+        /// <summary>Puts a file called <paramref name="fileName"/> into the folder at the start of the
+        /// next create — after the writer's name check has seen the name free.</summary>
+        internal void AppearBeforeCreate(string fileName, string content) => _appearBeforeCreate = (fileName, content);
+
         public Task<bool> ContainsAsync(string itemName) =>
             Task.FromResult(Files.ContainsKey(itemName) || _subfolders.Contains(itemName));
 
-        public async Task<StorageExportWriter.IExportFile?> CreateFileAsync(string fileName)
+        public Task<StorageExportWriter.IExportFile?> CreateNewFileAsync(string fileName)
         {
-            if (RefuseCreate) { return null; }
-            if (_subfolders.Contains(fileName)) { throw new IOException("a folder has that name"); }
-
-            if (Files.TryGetValue(fileName, out var existing))
+            if (_appearBeforeCreate is { } appear)
             {
-                Truncations++;
-                await using (await existing.OpenWriteAsync()) { }
-                return existing;
+                _appearBeforeCreate = null;
+                Seed(appear.Name, appear.Content);
+                // Storage is full for it too, so a writer that copies into it shows its cleanup.
+                Files[appear.Name].FailAfterBytes = FailNewFilesAfterBytes;
+            }
+
+            if (RefuseCreate) { throw new IOException("the folder refused to create the file"); }
+            if (Files.ContainsKey(fileName) || _subfolders.Contains(fileName))
+            {
+                return Task.FromResult<StorageExportWriter.IExportFile?>(null);
             }
 
             var file = MemoryStorageFile.PickerCreated(fileName);
             file.FailAfterBytes = FailNewFilesAfterBytes;
             Files[fileName] = file;
-            return file;
+            return Task.FromResult<StorageExportWriter.IExportFile?>(file);
         }
     }
 }

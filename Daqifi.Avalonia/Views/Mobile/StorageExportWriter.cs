@@ -89,11 +89,21 @@ internal sealed class StorageExportWriter
     /// is created only after the CSV is complete, so a failed export creates nothing in the folder.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Never over an existing file. <see cref="IStorageFolder.CreateFileAsync"/> truncates a file of
     /// that name (the desktop and iOS providers, and Android's too), so creating over it would
     /// destroy a previous export before this one had written a byte, and the cleanup after a failed
     /// copy would then delete it. The path exporter this replaced only ever replaced a file once the
     /// new CSV was complete; picking a free name keeps every existing file safe instead.
+    /// </para>
+    /// <para>
+    /// A file can also appear AFTER the name check — cloud sync, another app (review of PR #603). So
+    /// the create itself must not replace: <see cref="IExportFolder.CreateNewFileAsync"/> returns null
+    /// for a name that is taken by then, and the writer checks the names again and takes the next
+    /// free one. Because every file the writer copies into is one that call created, the cleanup
+    /// after a failed copy can only ever delete this export's own output. How far each platform can
+    /// keep that promise is on <see cref="StorageItemFolder"/>.
+    /// </para>
     /// </remarks>
     /// <returns>The name of the file written — which the provider can still change — or null when
     /// the export failed.</returns>
@@ -111,28 +121,29 @@ internal sealed class StorageExportWriter
                 return null;
             }
 
-            IExportFile? file;
+            IExportFile? file = null;
+            var candidate = fileName;
             try
             {
-                var freeName = await FreeNameAsync(folder, fileName).ConfigureAwait(false);
-                if (freeName is null)
+                for (var attempt = 0; file is null; attempt++)
                 {
-                    _logger.Error($"Export: no free name like '{fileName}' in '{folder.Name}'");
-                    return null;
-                }
+                    var freeName = attempt < MaxCreateAttempts
+                        ? await FreeNameAsync(folder, fileName).ConfigureAwait(false)
+                        : null;
+                    if (freeName is null)
+                    {
+                        _logger.Error($"Export: no free name like '{fileName}' in '{folder.Name}'");
+                        return null;
+                    }
 
-                fileName = freeName;
-                file = await folder.CreateFileAsync(fileName).ConfigureAwait(false);
+                    candidate = freeName;
+                    // Null: a file took the name after the check. Check again; that name is now seen.
+                    file = await folder.CreateNewFileAsync(candidate).ConfigureAwait(false);
+                }
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, $"Export: could not create '{fileName}' in '{folder.Name}'");
-                return null;
-            }
-
-            if (file is null)
-            {
-                _logger.Error($"Export: the folder '{folder.Name}' refused to create '{fileName}'");
+                _logger.Error(ex, $"Export: could not create '{candidate}' in '{folder.Name}'");
                 return null;
             }
 
@@ -147,6 +158,42 @@ internal sealed class StorageExportWriter
     /// <summary>Upper bound on the " (n)" suffixes tried, so a folder that claims every name exists
     /// fails the export instead of looping forever.</summary>
     private const int MaxNameAttempts = 1000;
+
+    /// <summary>Upper bound on creates that find their checked name taken, so a folder whose names
+    /// are taken as fast as they are checked fails the export instead of looping forever.</summary>
+    private const int MaxCreateAttempts = 10;
+
+    /// <summary>
+    /// Creates an empty file at <paramref name="directory"/>/<paramref name="name"/> only if nothing
+    /// has that name — one create-if-absent operation in the OS (<see cref="FileMode.CreateNew"/>,
+    /// O_CREAT|O_EXCL), so there is no gap in which a file can appear and be replaced.
+    /// </summary>
+    /// <returns>True when this call created the file; false when the name is taken (a file or a
+    /// folder); null when the path is not accessible (an iOS security-scoped folder outside the
+    /// sandbox is reachable only through its storage item).</returns>
+    internal static bool? TryCreateNewLocalFile(string directory, string name)
+    {
+        var path = Path.Combine(directory, name);
+        try
+        {
+            using (new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            if (File.Exists(path) || Directory.Exists(path))
+            {
+                return false;
+            }
+
+            if (ex is UnauthorizedAccessException)
+            {
+                return null;
+            }
+
+            throw;
+        }
+    }
 
     /// <summary><paramref name="fileName"/> if nothing in the folder has that name, else the first
     /// free <c>stem (n).ext</c> from n = 2 (the suffix <c>ExportFileNamer</c> uses), or null.</summary>
@@ -310,9 +357,10 @@ internal sealed class StorageExportWriter
         /// <summary>True when the folder already holds a file or a folder called <paramref name="name"/>.</summary>
         Task<bool> ContainsAsync(string name);
 
-        /// <summary>Creates the file, truncating one of the same name: call it only with a name that
-        /// <see cref="ContainsAsync"/> reported free.</summary>
-        Task<IExportFile?> CreateFileAsync(string name);
+        /// <summary>Creates a file called <paramref name="name"/> that did not exist and returns it, or
+        /// returns null when the name is taken — never replaces an existing file. Throws when the
+        /// folder refuses to create it.</summary>
+        Task<IExportFile?> CreateNewFileAsync(string name);
     }
 
     /// <summary>Adapts a picked <see cref="IStorageFile"/>. Does not dispose it: the caller owns it.</summary>
@@ -328,6 +376,28 @@ internal sealed class StorageExportWriter
     }
 
     /// <summary>Adapts a picked <see cref="IStorageFolder"/>. Does not dispose it: the caller owns it.</summary>
+    /// <remarks>
+    /// <para>
+    /// What "never replaces" can and cannot mean here (review of PR #603, against the Avalonia 12.1.6
+    /// source). <see cref="IStorageFolder"/> has no create-if-absent operation, and its
+    /// <see cref="IStorageFolder.CreateFileAsync"/> replaces on every provider: the desktop's
+    /// <c>BclStorageFolder</c> calls <c>FileInfo.Create()</c> (truncates); iOS calls
+    /// <c>NSFileManager.CreateFile</c> (replaces); Android's <c>AndroidStorageFolder</c> looks the
+    /// name up itself, truncates the file it finds, and only otherwise calls
+    /// <c>DocumentsContract.CreateDocument</c> (which never replaces — a provider renames instead).
+    /// </para>
+    /// <para>
+    /// A folder with a local path — the desktop, and an iOS folder inside the app sandbox — is
+    /// created with <see cref="TryCreateNewLocalFile"/>, an atomic create-if-absent: no file can
+    /// appear and be replaced. A folder without one — every Android <c>content://</c> pick, and an
+    /// iOS security-scoped folder — has only <see cref="IStorageFolder.CreateFileAsync"/>, called
+    /// straight after the writer's name check. A file that appears in the milliseconds between that
+    /// check and the provider's own is still truncated, inside CreateFileAsync, before control returns;
+    /// that cannot be detected afterwards (the provider returns it, empty, like a new file) and cannot
+    /// be prevented through <see cref="IStorageFolder"/>. Closing that gap on Android needs
+    /// <c>DocumentsContract.CreateDocument</c> called from the Android head.
+    /// </para>
+    /// </remarks>
     private sealed class StorageItemFolder(IStorageFolder folder) : IExportFolder
     {
         public string Name => folder.Name;
@@ -336,7 +406,25 @@ internal sealed class StorageExportWriter
             await folder.GetFileAsync(name).ConfigureAwait(false) is not null
             || await folder.GetFolderAsync(name).ConfigureAwait(false) is not null;
 
-        public async Task<IExportFile?> CreateFileAsync(string name) =>
-            await folder.CreateFileAsync(name).ConfigureAwait(false) is { } file ? new StorageItemFile(file) : null;
+        public async Task<IExportFile?> CreateNewFileAsync(string name)
+        {
+            if (folder.TryGetLocalPath() is { } directory)
+            {
+                switch (TryCreateNewLocalFile(directory, name))
+                {
+                    case false:
+                        return null;
+                    case true:
+                        return await folder.GetFileAsync(name).ConfigureAwait(false) is { } created
+                            ? new StorageItemFile(created)
+                            : throw new IOException($"created '{name}' but the folder cannot open it");
+                }
+            }
+
+            // No usable path: the provider's create (see the remarks for the gap this leaves).
+            return await folder.CreateFileAsync(name).ConfigureAwait(false) is { } file
+                ? new StorageItemFile(file)
+                : throw new IOException($"the folder refused to create '{name}'");
+        }
     }
 }
