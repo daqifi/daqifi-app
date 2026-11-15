@@ -32,6 +32,8 @@ public class ElapsedTimeFormatTests
     [InlineData(65_250, 50, false, "1:05.25")]
     [InlineData(1_234, 2, false, "0:01.234")]
     [InlineData(18_000_200, 200, true, "5:00:00.2")]
+    [InlineData(0.35, 0.05, false, "0:00.00035")]
+    [InlineData(18_000_000.0015, 0.0005, true, "5:00:00.0000015")]
     public void A_value_reads_as_a_clock(double valueMs, double stepMs, bool showHours, string expected)
     {
         Assert.Equal(expected, Format(valueMs, stepMs, showHours));
@@ -99,6 +101,36 @@ public class ElapsedTimeFormatTests
         Assert.Equal("10:00:00.000", ElapsedTimeFormat.FormatPrecise(10 * Hour, CultureInfo.InvariantCulture));
     }
 
+    /// <summary>
+    /// Review on #594: two samples of a 20 kHz recording, 0.05 ms apart, must not share one tracker
+    /// time. The tracker keeps the digits the timestamp has, down to its 0.1 µs resolution.
+    /// </summary>
+    [Theory]
+    [InlineData(0.05, "0:00.00005")]
+    [InlineData(0.10, "0:00.0001")]
+    [InlineData(1_234.0001, "0:01.2340001")]
+    [InlineData(5 * 3_600_000.0 + 0.05, "5:00:00.00005")]
+    public void The_tracker_value_keeps_the_sub_millisecond_digits_a_sample_has(double valueMs, string expected)
+    {
+        Assert.Equal(expected, ElapsedTimeFormat.FormatPrecise(valueMs, CultureInfo.InvariantCulture));
+    }
+
+    [Theory]
+    [InlineData(1_000, 0)]
+    [InlineData(500, 1)]
+    [InlineData(100, 1)]
+    [InlineData(50, 2)]
+    [InlineData(10, 2)]
+    [InlineData(1, 3)]
+    [InlineData(0.5, 4)]
+    [InlineData(0.05, 5)]
+    [InlineData(0.0001, 7)]
+    [InlineData(0.00001, 7)]
+    public void A_finer_step_gets_one_more_digit_per_tenfold_drop(double stepMs, int expected)
+    {
+        Assert.Equal(expected, ElapsedTimeFormat.FractionDigitsFor(stepMs));
+    }
+
     [Theory]
     [InlineData(0, 59 * 60_000, false)]
     [InlineData(0, 3_600_000, true)]
@@ -114,7 +146,9 @@ public class ElapsedTimeFormatTests
     /// evenly, never a decimal step such as the 5,000,000 ms that put a tick at 1:23:20.
     /// </summary>
     [Theory]
-    [InlineData(10, 1)]                         // the narrowest zoom
+    [InlineData(0.001, 0.0001)]                 // the narrowest zoom: 1 µs
+    [InlineData(1, 0.1)]                        // 20 samples of a 20 kHz recording
+    [InlineData(10, 1)]
     [InlineData(3 * Second, 200)]
     [InlineData(10 * Second, 1 * Second)]
     [InlineData(60 * Second, 5 * Second)]       // the empty frame

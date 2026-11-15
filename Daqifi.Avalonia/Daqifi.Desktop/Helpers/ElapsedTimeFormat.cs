@@ -25,12 +25,27 @@ public static class ElapsedTimeFormat
     public const double MS_PER_DAY = 24 * MS_PER_HOUR;
 
     /// <summary>
+    /// The finest tick spacing: 0.1 µs, which is the resolution of a sample timestamp (.NET ticks of
+    /// 100 ns). A zoom never needs ticks closer than the samples can be told apart.
+    /// </summary>
+    public const double FINEST_STEP_MS = 0.0001;
+
+    /// <summary>The most fraction digits a label carries: the 7 that write 0.1 µs in seconds.</summary>
+    public const int MAX_FRACTION_DIGITS = 7;
+
+    /// <summary>
     /// Every major tick spacing the axis may use, smallest first, each with the minor spacing drawn
-    /// between its ticks. The steps are the ones a clock divides into evenly (15 s, 30 min, 3 h …),
-    /// never a decimal step such as 5,000,000 ms that would put ticks on odd times.
+    /// between its ticks. Below a millisecond the steps are decimal (1, 2, 5 × 10^n down to
+    /// <see cref="FINEST_STEP_MS"/>), so a high-rate recording can be zoomed to single samples; from
+    /// there on they are the ones a clock divides into evenly (15 s, 30 min, 3 h …), never a decimal
+    /// step such as 5,000,000 ms that would put ticks on odd times.
     /// </summary>
     private static readonly (double Major, double Minor)[] Steps =
     [
+        (0.0001, 0.00002), (0.0002, 0.00005), (0.0005, 0.0001),
+        (0.001, 0.0002), (0.002, 0.0005), (0.005, 0.001),
+        (0.01, 0.002), (0.02, 0.005), (0.05, 0.01),
+        (0.1, 0.02), (0.2, 0.05), (0.5, 0.1),
         (1, 0.2), (2, 0.5), (5, 1),
         (10, 2), (20, 5), (50, 10),
         (100, 20), (200, 50), (500, 100),
@@ -112,10 +127,20 @@ public static class ElapsedTimeFormat
 
     /// <summary>
     /// Digits after the decimal point that tell ticks <paramref name="majorStepMs"/> apart: none at
-    /// one second or more, then one, two or three as the spacing drops below 1 s, 100 ms and 10 ms.
+    /// one second or more, then one more for each tenfold drop (one below 1 s, two below 100 ms,
+    /// three below 10 ms, four below 1 ms …), up to <see cref="MAX_FRACTION_DIGITS"/>.
     /// </summary>
-    public static int FractionDigitsFor(double majorStepMs) =>
-        majorStepMs >= 1_000 ? 0 : majorStepMs >= 100 ? 1 : majorStepMs >= 10 ? 2 : 3;
+    public static int FractionDigitsFor(double majorStepMs)
+    {
+        if (!double.IsFinite(majorStepMs) || majorStepMs <= 0)
+        {
+            return 3;
+        }
+
+        // The small epsilon keeps an exact power of ten (100 ms) from rounding up to an extra digit.
+        var digits = (int)Math.Ceiling(-Math.Log10(majorStepMs / MS_PER_SECOND) - 1e-9);
+        return Math.Clamp(digits, 0, MAX_FRACTION_DIGITS);
+    }
 
     /// <summary>
     /// Writes <paramref name="valueMs"/> as <c>m:ss</c>, or <c>h:mm:ss</c> when
@@ -124,15 +149,21 @@ public static class ElapsedTimeFormat
     /// </summary>
     /// <example><c>Format(36_000_000, 3_600_000, true)</c> is <c>10:00:00</c>;
     /// <c>Format(65_250, 250, false)</c> is <c>1:05.3</c>.</example>
-    public static string Format(double valueMs, double majorStepMs, bool showHours, IFormatProvider? provider = null)
+    public static string Format(double valueMs, double majorStepMs, bool showHours, IFormatProvider? provider = null) =>
+        FormatWithDigits(valueMs, FractionDigitsFor(majorStepMs), showHours, provider);
+
+    private static string FormatWithDigits(double valueMs, int digits, bool showHours, IFormatProvider? provider)
     {
         if (!double.IsFinite(valueMs))
         {
             return string.Empty;
         }
 
-        var digits = FractionDigitsFor(majorStepMs);
-        long unitsPerSecond = digits switch { 0 => 1, 1 => 10, 2 => 100, _ => 1_000 };
+        var unitsPerSecond = 1L;
+        for (var i = 0; i < digits; i++)
+        {
+            unitsPerSecond *= 10;
+        }
 
         // Round ONCE, in the smallest unit shown, then split with integer arithmetic. Rounding each
         // field separately would let a tick computed as 59999.99998 ms read 0:59 instead of 1:00.
@@ -169,12 +200,27 @@ public static class ElapsedTimeFormat
     }
 
     /// <summary>
-    /// One instant to the millisecond, for the hover tracker: <c>m:ss.fff</c>, or <c>h:mm:ss.fff</c>
-    /// from an hour on. The tracker names a point, so it shows the point's own precision rather than
-    /// the axis's tick precision.
+    /// One instant for the hover tracker: <c>m:ss.fff</c>, or <c>h:mm:ss.fff</c> from an hour on, with
+    /// more digits when the instant has them — down to 0.1 µs, the timestamp resolution. So a 1 kHz
+    /// recording reads <c>0:01.234</c>, and two samples of a 20 kHz recording read <c>0:00.00005</c>
+    /// and <c>0:00.0001</c> rather than the same millisecond. The tracker names a point, so it shows
+    /// the point's own precision rather than the axis's tick precision.
     /// </summary>
-    public static string FormatPrecise(double valueMs, IFormatProvider? provider = null) =>
-        Format(valueMs, majorStepMs: 1, showHours: Math.Abs(valueMs) >= MS_PER_HOUR, provider);
+    public static string FormatPrecise(double valueMs, IFormatProvider? provider = null)
+    {
+        var text = FormatWithDigits(valueMs, MAX_FRACTION_DIGITS, Math.Abs(valueMs) >= MS_PER_HOUR, provider);
+
+        // Trim zeros past the millisecond; the separator and three digits always stay.
+        var separator = NumberFormatInfo.GetInstance(provider ?? CultureInfo.CurrentCulture).NumberDecimalSeparator;
+        var keep = text.LastIndexOf(separator, StringComparison.Ordinal) + separator.Length + 3;
+        var end = text.Length;
+        while (end > keep && text[end - 1] == '0')
+        {
+            end--;
+        }
+
+        return text[..end];
+    }
 
     private static double NextOneTwoFive(double value)
     {

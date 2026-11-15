@@ -30,10 +30,12 @@ public sealed class ElapsedTimeAxis : LinearAxis
     public const double EMPTY_RANGE_MS = ElapsedTimeFormat.MS_PER_MINUTE;
 
     /// <summary>
-    /// The narrowest window a zoom can reach. At this width the axis still draws ticks 1 or 2 ms
-    /// apart, so the labels (to the millisecond) always differ from each other.
+    /// The narrowest window a zoom can reach: 1 µs, twenty times finer than the 50 µs between samples
+    /// of a 20 kHz recording, so single samples stay inspectable. At this width the axis still draws
+    /// ticks 0.1 µs apart (<see cref="ElapsedTimeFormat.FINEST_STEP_MS"/>), the timestamp resolution,
+    /// so the labels always differ from each other.
     /// </summary>
-    public const double MINIMUM_RANGE_MS = 10;
+    public const double MINIMUM_RANGE_MS = 0.001;
 
     public ElapsedTimeAxis()
     {
@@ -74,8 +76,8 @@ public sealed class ElapsedTimeAxis : LinearAxis
         ElapsedTimeFormat.Format(x, ActualMajorStep, Unit == HOURS_UNIT, ActualCulture);
 
     /// <summary>
-    /// The value the hover tracker shows for <paramref name="x"/>: the instant to the millisecond,
-    /// already written as a clock reading (so a tracker format uses it as <c>{2}</c>, with no
+    /// The value the hover tracker shows for <paramref name="x"/>: the instant to the millisecond or
+    /// finer when the sample has it (see <see cref="ElapsedTimeFormat.FormatPrecise"/>), already written as a clock reading (so a tracker format uses it as <c>{2}</c>, with no
     /// numeric format).
     /// </summary>
     public override object GetValue(double x) => ElapsedTimeFormat.FormatPrecise(x, ActualCulture);

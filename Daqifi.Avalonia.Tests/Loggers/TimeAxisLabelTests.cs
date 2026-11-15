@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using Daqifi.Avalonia.Tests.ViewModels;
 using Daqifi.Desktop.Channel;
@@ -62,6 +63,29 @@ public partial class TimeAxisLabelTests
         Assert.All(labels, l => Assert.StartsWith("5:00:0", l));
     }
 
+    /// <summary>
+    /// Review on #594: a 20 kHz recording (samples 0.05 ms apart) zoomed to 1 ms must still draw
+    /// distinct labels with sub-millisecond digits, and the zoom must reach below the old 10 ms floor.
+    /// </summary>
+    [Fact]
+    public void A_high_rate_recording_zoomed_to_one_millisecond_keeps_distinct_sub_millisecond_labels()
+    {
+        var model = new PlotModelFactory().CreateMainPlotModel();
+        model.Series.Add(SessionSeries(spanMs: 100, everyMs: 0.05));
+        var axis = model.Axes.Single(a => a.Key == PlotModelFactory.TIME_AXIS_KEY);
+        axis.Zoom(50, 51);
+
+        var labels = RenderedTimeLabels(model, out _);
+
+        Assert.Equal(1, axis.ActualMaximum - axis.ActualMinimum, 9);
+        Assert.Equal(0.1, axis.ActualMajorStep, 12);
+        Assert.True(labels.Count >= 5, $"only {labels.Count} label(s): {string.Join(", ", labels)}");
+        Assert.Equal(labels.Count, labels.Distinct().Count());
+        Assert.Contains("0:00.0505", labels);
+        Assert.Equal("0:00.00005", axis.GetValue(0.05));
+        Assert.Equal("0:00.0001", axis.GetValue(0.10));
+    }
+
     /// <summary>The empty frame shows a minute, not 0 to 100 ms (which in this format would be a tenth of a second).</summary>
     [Fact]
     public void The_empty_logged_plot_frame_reads_one_minute()
@@ -83,6 +107,8 @@ public partial class TimeAxisLabelTests
             plotter.Log(LiveSample(second * 10_000_000L));
         }
 
+        DrainPendingSamples(plotter);
+
         var labels = RenderedTimeLabels(plotter.PlotModel, out var axis);
 
         AssertNoScientificNotation(labels);
@@ -98,6 +124,8 @@ public partial class TimeAxisLabelTests
         {
             plotter.Log(LiveSample(second * 10_000_000L));
         }
+
+        DrainPendingSamples(plotter);
 
         var labels = RenderedTimeLabels(plotter.PlotModel, out var axis);
 
@@ -138,6 +166,18 @@ public partial class TimeAxisLabelTests
         Assert.Contains(time.ActualTitle, drawn);
         return expected;
     }
+
+    /// <summary>
+    /// Moves logged samples into the series when <see cref="PlotLogger"/> queues them for its render
+    /// tick (#600 changes <c>Log</c> to enqueue only). Found by reflection so this file builds and
+    /// passes both before and after that change; where <c>Log</c> writes the series directly, there
+    /// is nothing to drain and this does nothing.
+    /// </summary>
+    private static void DrainPendingSamples(PlotLogger plotter) =>
+        typeof(PlotLogger)
+            .GetMethod("DrainPendingSamples", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                Type.EmptyTypes)
+            ?.Invoke(plotter, null);
 
     private static void AssertNoScientificNotation(IEnumerable<string> labels) =>
         Assert.All(labels, l => Assert.DoesNotMatch("[eE][+-]?[0-9]", l));
