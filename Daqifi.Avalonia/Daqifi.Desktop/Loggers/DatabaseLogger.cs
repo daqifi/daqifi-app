@@ -1102,7 +1102,7 @@ public partial class DatabaseLogger : ObservableObject, ILogger, IDisposable
     #region Commands
     [RelayCommand]
     // @port: Daqifi.Desktop.Logger.DatabaseLogger.SaveGraph
-    private Task SaveGraphAsync() => GraphImageSaver.SaveAsync(PlotModel, "Save Graph");
+    private Task SaveGraphAsync() => GraphImageSaver.SaveAsync(PlotModel, "Save Graph", CurrentSession?.Name);
 
     [RelayCommand]
     // @port: Daqifi.Desktop.Logger.DatabaseLogger.ResetZoom
