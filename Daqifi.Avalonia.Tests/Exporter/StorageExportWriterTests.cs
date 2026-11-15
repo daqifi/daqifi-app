@@ -1,4 +1,6 @@
+using System.Runtime.Versioning;
 using System.Text;
+using Daqifi.Avalonia.Services;
 using Daqifi.Avalonia.Views.Mobile;
 using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Exporter;
@@ -35,6 +37,7 @@ public sealed class StorageExportWriterTests : IDisposable
     private readonly string _staging;
     private readonly IDbContextFactory<LoggingContext> _contexts;
     private readonly RecordingAppLogger _logger = new();
+    private readonly List<string> _lockedDirectories = [];
     private int _nextSessionId;
 
     public StorageExportWriterTests()
@@ -49,6 +52,16 @@ public sealed class StorageExportWriterTests : IDisposable
 
     public void Dispose()
     {
+        // A 0555 directory accepts no deletions from its own entries: writable again first.
+        if (!OperatingSystem.IsWindows())
+        {
+            foreach (var directory in _lockedDirectories)
+            {
+                try { File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute); }
+                catch (IOException) { /* best effort, as below */ }
+            }
+        }
+
         try { Directory.Delete(_root, recursive: true); }
         catch (IOException) { /* best effort — a leftover temp directory must not fail a test */ }
         catch (UnauthorizedAccessException) { /* ditto */ }
@@ -383,32 +396,38 @@ public sealed class StorageExportWriterTests : IDisposable
         return new LoggingSession { ID = session.ID, Name = session.Name };
     }
 
-    /// <summary>An in-memory file like an Android document: no local path, reachable only through
-    /// its streams.</summary>
+    // ---- Create routing for Export all (review of PR #603) ----
+
+    private const string ScopeNeedsEnforcedReadOnly =
+        "Models an iOS folder outside the sandbox as a 0555 directory that only the fake scope makes writable, so it needs a host where 0555 binds on the current user.";
+
     /// <summary>
     /// A picked folder with no local path (every Android <c>content://</c> pick) is created through
-    /// the platform's non-replacing create when there is one (review of PR #603). Avalonia's
-    /// <c>CreateFileAsync</c>, which truncates a file of that name on Android, is then not called at
-    /// all, and the writer works with the file under the name the provider chose.
+    /// the platform's non-replacing create (review of PR #603), and the writer works with the file
+    /// under the name the provider chose. The scope hook is for a folder WITH a path, so it is not
+    /// asked.
     /// </summary>
     [Fact]
     public async Task A_folder_with_no_path_is_created_by_the_platforms_non_replacing_create()
     {
-        var providerCreateCalled = false;
+        var scopeAsked = false;
         var written = new MemoryStream();
         var deleted = false;
-        var created = new Daqifi.Avalonia.Services.ExclusiveFile(
+        var created = new ExclusiveFile(
             "Run (1).csv",
             () => Task.FromResult<Stream>(written),
             () => Task.FromResult<ulong?>(7),
             () => { deleted = true; return Task.CompletedTask; });
 
-        var file = await StorageExportWriter.CreateWithoutLocalPathAsync(
-            () => Task.FromResult<Daqifi.Avalonia.Services.ExclusiveFile?>(created),
-            () => { providerCreateCalled = true; return Task.FromResult<StorageExportWriter.IExportFile?>(null); },
-            "Run.csv");
+        var file = await StorageExportWriter.CreateNewFileRoutedAsync(
+            directory: null,
+            "Run.csv",
+            () => throw new InvalidOperationException("a folder with no path has no local file to open"),
+            () => { scopeAsked = true; return Task.FromResult<IScopedFolder?>(null); },
+            () => Task.FromResult<ExclusiveFile?>(created));
 
-        Assert.False(providerCreateCalled, "Avalonia's create, which truncates on Android, was still called.");
+        Assert.NotNull(file);
+        Assert.False(scopeAsked, "The scope hook was asked about a folder with no path.");
         Assert.Equal("Run (1).csv", file.Name);
         Assert.Same(written, await file.OpenWriteAsync());
         Assert.Equal(7UL, await file.GetSizeAsync());
@@ -417,32 +436,306 @@ public sealed class StorageExportWriterTests : IDisposable
     }
 
     /// <summary>
-    /// Where the platform has no create for the folder (no hook registered, or not a
-    /// <c>content://</c> folder), the provider's create is the way that is left.
+    /// The finding (review of PR #603): where no non-replacing create applies, the create is
+    /// REFUSED. It used to fall back to Avalonia's <c>CreateFileAsync</c>, which replaces a file of
+    /// that name (<c>NSFileManager.CreateFile</c> on iOS). The routing no longer has that create to
+    /// call at all, so this pins the refusal.
     /// </summary>
     [Fact]
-    public async Task Without_a_platform_create_the_provider_creates_the_file()
+    public async Task Without_a_non_replacing_create_the_export_is_refused_not_replaced()
     {
-        var providerFile = MemoryStorageFile.PickerCreated("Run.csv");
+        var ex = await Assert.ThrowsAsync<IOException>(() => StorageExportWriter.CreateNewFileRoutedAsync(
+            directory: null,
+            "Run.csv",
+            () => throw new InvalidOperationException("no local create was made"),
+            () => Task.FromResult<IScopedFolder?>(null),
+            () => Task.FromResult<ExclusiveFile?>(null)));
 
-        var file = await StorageExportWriter.CreateWithoutLocalPathAsync(
-            () => Task.FromResult<Daqifi.Avalonia.Services.ExclusiveFile?>(null),
-            () => Task.FromResult<StorageExportWriter.IExportFile?>(providerFile),
-            "Run.csv");
-
-        Assert.Same(providerFile, file);
+        Assert.Contains("cannot replace an existing file", ex.Message, StringComparison.Ordinal);
     }
 
-    /// <summary>A folder that refuses both ways fails the create, which the writer reports.</summary>
+    /// <summary>
+    /// A folder with a usable local path (the desktop, an iOS folder inside the sandbox) is
+    /// created in place with the create-if-absent, and neither hook is asked. A taken name is
+    /// reported as taken (null), not replaced.
+    /// </summary>
     [Fact]
-    public async Task A_folder_that_refuses_both_creates_is_an_IOException()
+    public async Task A_folder_with_a_usable_path_is_created_in_place_without_asking_either_hook()
     {
-        await Assert.ThrowsAsync<IOException>(() => StorageExportWriter.CreateWithoutLocalPathAsync(
-            () => Task.FromResult<Daqifi.Avalonia.Services.ExclusiveFile?>(null),
-            () => Task.FromResult<StorageExportWriter.IExportFile?>(null),
-            "Run.csv"));
+        var directory = Path.Combine(_root, "picked");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "Run.csv"), PriorContent);
+        var hookAsked = false;
+
+        Task<StorageExportWriter.IExportFile?> Route(string name) => StorageExportWriter.CreateNewFileRoutedAsync(
+            directory,
+            name,
+            () => Task.FromResult<StorageExportWriter.IExportFile?>(MemoryStorageFile.PickerCreated(name)),
+            () => { hookAsked = true; return Task.FromResult<IScopedFolder?>(null); },
+            () => { hookAsked = true; return Task.FromResult<ExclusiveFile?>(null); });
+
+        Assert.Null(await Route("Run.csv"));
+        var file = await Route("Run (2).csv");
+
+        Assert.Equal("Run (2).csv", file?.Name);
+        Assert.False(hookAsked, "A hook was asked about a folder whose path is usable.");
+        Assert.Equal(PriorContent, File.ReadAllText(Path.Combine(directory, "Run.csv")));
+        Assert.Equal(0, new FileInfo(Path.Combine(directory, "Run (2).csv")).Length);
     }
 
+    /// <summary>
+    /// The iOS case of the finding: the folder's path is refused outside its security scope, and
+    /// no platform scope is available. The export is refused, and nothing in the folder changes.
+    /// </summary>
+    [EnforcedReadOnlyDirectoryFact(ScopeNeedsEnforcedReadOnly)]
+    public async Task A_folder_refused_outside_its_scope_with_no_scope_hook_is_refused_not_replaced()
+    {
+        if (OperatingSystem.IsWindows()) { Assert.Fail(ScopeNeedsEnforcedReadOnly); return; }
+        var directory = LockedDirectory("outside-sandbox", ("Run.csv", PriorContent));
+        var platformAsked = false;
+
+        await Assert.ThrowsAsync<IOException>(() => StorageExportWriter.CreateNewFileRoutedAsync(
+            directory,
+            "Run (2).csv",
+            () => throw new InvalidOperationException("the path was refused, so nothing was created to open"),
+            () => Task.FromResult<IScopedFolder?>(null),
+            () => { platformAsked = true; return Task.FromResult<ExclusiveFile?>(null); }));
+
+        Assert.True(platformAsked, "The platform's create was not tried before refusing.");
+        Assert.Equal("Run.csv", Path.GetFileName(Assert.Single(Directory.GetFileSystemEntries(directory))));
+        Assert.Equal(PriorContent, File.ReadAllText(Path.Combine(directory, "Run.csv")));
+    }
+
+    /// <summary>
+    /// The fix for the iOS case (review of PR #603): a folder whose path is refused outside its
+    /// security scope is created with the create-if-absent INSIDE the scope, and every later write,
+    /// size check and delete runs inside it too. The write stream holds the scope until it is
+    /// closed. The platform's create is not needed.
+    /// </summary>
+    [EnforcedReadOnlyDirectoryFact(ScopeNeedsEnforcedReadOnly)]
+    public async Task A_folder_refused_outside_its_scope_is_created_and_written_inside_the_scope()
+    {
+        if (OperatingSystem.IsWindows()) { Assert.Fail(ScopeNeedsEnforcedReadOnly); return; }
+        var directory = LockedDirectory("outside-sandbox");
+        var scope = new ChmodScope(directory);
+        var platformAsked = false;
+        var path = Path.Combine(directory, "Run.csv");
+
+        var file = await StorageExportWriter.CreateNewFileRoutedAsync(
+            directory,
+            "Run.csv",
+            () => throw new InvalidOperationException("the path was refused, so nothing was created to open"),
+            () => Task.FromResult<IScopedFolder?>(scope),
+            () => { platformAsked = true; return Task.FromResult<ExclusiveFile?>(null); });
+
+        Assert.NotNull(file);
+        Assert.False(platformAsked, "The platform's create was asked although the scope served the folder.");
+        Assert.Equal(0, scope.Depth);
+        Assert.Equal(0, new FileInfo(path).Length);
+
+        var bytes = Encoding.UTF8.GetBytes(PriorContent);
+        await using (var stream = await file.OpenWriteAsync())
+        {
+            Assert.Equal(1, scope.Depth); // held while the stream is open
+            await stream.WriteAsync(bytes);
+        }
+
+        Assert.Equal(0, scope.Depth);
+        Assert.Equal(bytes, File.ReadAllBytes(path));
+        Assert.Equal((ulong)bytes.Length, await file.GetSizeAsync());
+
+        // A delete needs write access to the folder, so it succeeds only inside the scope.
+        await file.DeleteAsync();
+        Assert.False(File.Exists(path));
+        Assert.Equal(0, scope.Depth);
+        Assert.Throws<UnauthorizedAccessException>(() => File.Create(Path.Combine(directory, "outside.csv")));
+    }
+
+    /// <summary>Inside the scope the create still never replaces: a taken name is null, and the
+    /// file keeps its bytes.</summary>
+    [EnforcedReadOnlyDirectoryFact(ScopeNeedsEnforcedReadOnly)]
+    public void The_create_inside_a_scope_never_replaces_an_existing_file()
+    {
+        if (OperatingSystem.IsWindows()) { Assert.Fail(ScopeNeedsEnforcedReadOnly); return; }
+        var directory = LockedDirectory("outside-sandbox", ("Run.csv", PriorContent));
+        var scope = new ChmodScope(directory);
+
+        Assert.Null(StorageExportWriter.CreateNewInScope(scope, "Run.csv"));
+
+        Assert.Equal(0, scope.Depth);
+        Assert.Equal(PriorContent, File.ReadAllText(Path.Combine(directory, "Run.csv")));
+    }
+
+    /// <summary>
+    /// The finding's race, end to end, in a folder reachable only inside its scope: a file appears
+    /// under the checked name after the check. It keeps its bytes, and the export lands complete
+    /// under the next free name.
+    /// </summary>
+    [EnforcedReadOnlyDirectoryFact(ScopeNeedsEnforcedReadOnly)]
+    public async Task Export_all_into_a_scoped_folder_never_replaces_a_file_that_appears_after_the_name_check()
+    {
+        if (OperatingSystem.IsWindows()) { Assert.Fail(ScopeNeedsEnforcedReadOnly); return; }
+        var session = SeedSession("Run", "AI0", 1.25);
+        var directory = LockedDirectory("outside-sandbox");
+        var scope = new ChmodScope(directory);
+        var folder = new ScopedDirectoryFolder(scope) { AppearAfterCheck = ("Run.csv", PriorContent) };
+
+        var name = await Writer().WriteNewAsync(folder, "Run.csv", ExportTo(session));
+
+        Assert.Equal("Run (2).csv", name);
+        Assert.Equal(PriorContent, File.ReadAllText(Path.Combine(directory, "Run.csv")));
+        Assert.Equal(ExportByPath(session), File.ReadAllBytes(Path.Combine(directory, "Run (2).csv")));
+        Assert.Equal(0, scope.Depth);
+        AssertNoStagingLeft();
+    }
+
+    // ---- Avalonia bookmark decode (the iOS head's way to a scoped URL) ----
+
+    /// <summary>The iOS head resolves a scoped URL from the folder's Avalonia bookmark. The decode
+    /// must return exactly the native bytes after Avalonia's 16-byte header.</summary>
+    [Fact]
+    public void An_avalonia_ios_bookmark_yields_its_native_bytes()
+    {
+        byte[] native = [0x62, 0x6F, 0x6F, 0x6B, 0x00, 0xFF];
+
+        var decoded = AvaloniaStorageBookmark.TryGetNativeBookmark(
+            AvaloniaBookmark("ios", native), AvaloniaStorageBookmark.IosPlatformKey);
+
+        Assert.Equal(native, decoded);
+    }
+
+    /// <summary>Anything that is not an Avalonia v1 bookmark for iOS yields nothing, so the head
+    /// reports no scope rather than resolving the wrong bytes.</summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("not base64!")]
+    [InlineData("YXZhLnYxLmlvcw==")] // "ava.v1.ios": a header with no bookmark after it
+    public void A_string_that_is_not_an_ios_bookmark_yields_nothing(string? bookmark)
+    {
+        Assert.Null(AvaloniaStorageBookmark.TryGetNativeBookmark(bookmark, AvaloniaStorageBookmark.IosPlatformKey));
+    }
+
+    [Fact]
+    public void A_bookmark_for_another_platform_yields_nothing()
+    {
+        byte[] native = [1, 2, 3];
+
+        Assert.Null(AvaloniaStorageBookmark.TryGetNativeBookmark(AvaloniaBookmark("android", native), "ios"));
+        // "iosx" shares the key's first bytes; the zero padding after the key must match too.
+        Assert.Null(AvaloniaStorageBookmark.TryGetNativeBookmark(AvaloniaBookmark("iosx", native), "ios"));
+        byte[] version2 = [.. "ava.v2.ios\0\0\0\0\0\0"u8, .. native];
+        Assert.Null(AvaloniaStorageBookmark.TryGetNativeBookmark(Convert.ToBase64String(version2), "ios"));
+    }
+
+    /// <summary>Avalonia 12.1.6's encoding (<c>StorageBookmarkHelper.EncodeBookmark</c>): Base64 of
+    /// "ava.v1." + platform key, zero-padded to 16 bytes, + the native bookmark.</summary>
+    private static string AvaloniaBookmark(string platform, byte[] native)
+    {
+        var bytes = new byte[16 + native.Length];
+        Encoding.ASCII.GetBytes("ava.v1." + platform).CopyTo(bytes, 0);
+        native.CopyTo(bytes, 16);
+        return Convert.ToBase64String(bytes);
+    }
+
+    /// <summary>A 0555 directory, holding <paramref name="files"/>: a folder the app cannot write
+    /// outside a scope. Made writable again in <see cref="Dispose"/> so it can be deleted.</summary>
+    [UnsupportedOSPlatform("windows")]
+    private string LockedDirectory(string name, params (string Name, string Content)[] files)
+    {
+        var directory = Path.Combine(_root, name);
+        Directory.CreateDirectory(directory);
+        foreach (var (fileName, content) in files)
+        {
+            File.WriteAllText(Path.Combine(directory, fileName), content);
+        }
+
+        File.SetUnixFileMode(directory, ChmodScope.Locked);
+        _lockedDirectories.Add(directory);
+        return directory;
+    }
+
+    /// <summary>
+    /// Stands in for an iOS security scope: the directory is writable only while the scope is
+    /// entered, as an out-of-sandbox folder is accessible only between
+    /// <c>StartAccessingSecurityScopedResource</c> and <c>StopAccessingSecurityScopedResource</c>.
+    /// </summary>
+    [UnsupportedOSPlatform("windows")]
+    private sealed class ChmodScope(string directory) : IScopedFolder
+    {
+        internal const UnixFileMode Locked = UnixFileMode.UserRead | UnixFileMode.UserExecute;
+        private const UnixFileMode Open = Locked | UnixFileMode.UserWrite;
+
+        /// <summary>How many entries are open now.</summary>
+        internal int Depth { get; private set; }
+
+        public string LocalPath => directory;
+
+        public IDisposable Enter()
+        {
+            if (Depth++ == 0)
+            {
+                File.SetUnixFileMode(directory, Open);
+            }
+
+            return new Exit(this);
+        }
+
+        private sealed class Exit(ChmodScope owner) : IDisposable
+        {
+            private bool _done;
+
+            public void Dispose()
+            {
+                if (_done) { return; }
+                _done = true;
+                if (--owner.Depth == 0)
+                {
+                    File.SetUnixFileMode(owner.LocalPath, Locked);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The writer's folder seam over a real directory that is reachable only inside its scope,
+    /// creating through the production routing. <see cref="AppearAfterCheck"/> makes a file appear
+    /// right after the first name check for it reports the name free, as cloud sync could.
+    /// </summary>
+    [UnsupportedOSPlatform("windows")]
+    private sealed class ScopedDirectoryFolder(ChmodScope scope) : StorageExportWriter.IExportFolder
+    {
+        internal (string Name, string Content)? AppearAfterCheck { get; set; }
+
+        public string Name => Path.GetFileName(scope.LocalPath);
+
+        public Task<bool> ContainsAsync(string name)
+        {
+            var path = Path.Combine(scope.LocalPath, name);
+            var contains = File.Exists(path) || Directory.Exists(path);
+            if (!contains && AppearAfterCheck is { } appear && appear.Name == name)
+            {
+                AppearAfterCheck = null;
+                using (scope.Enter())
+                {
+                    File.WriteAllText(path, appear.Content);
+                }
+            }
+
+            return Task.FromResult(contains);
+        }
+
+        public Task<StorageExportWriter.IExportFile?> CreateNewFileAsync(string name) =>
+            StorageExportWriter.CreateNewFileRoutedAsync(
+                scope.LocalPath,
+                name,
+                () => throw new InvalidOperationException("the path is refused outside the scope, so the local create cannot succeed"),
+                () => Task.FromResult<IScopedFolder?>(scope),
+                () => Task.FromResult<ExclusiveFile?>(null));
+    }
+
+    /// <summary>An in-memory file like an Android document: no local path, reachable only through
+    /// its streams.</summary>
     private sealed class MemoryStorageFile : StorageExportWriter.IExportFile
     {
         private byte[] _content;

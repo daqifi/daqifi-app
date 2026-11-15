@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Platform.Storage;
 using Daqifi.Avalonia.Services;
@@ -9,8 +10,9 @@ namespace Daqifi.Avalonia.Views.Mobile;
 
 /// <summary>
 /// Writes a finished CSV export into a file or folder that the platform picker returned, through
-/// the storage item's own stream (<see cref="IStorageFile.OpenWriteAsync"/>,
-/// <see cref="IStorageFolder.CreateFileAsync"/>) and never through a file-system path (issue #587).
+/// the storage item's own stream (<see cref="IStorageFile.OpenWriteAsync"/>) and never by requiring a
+/// file-system path (issue #587). A new file in a picked folder is made by a create that never
+/// replaces (<see cref="CreateNewFileRoutedAsync"/>), not by <see cref="IStorageFolder.CreateFileAsync"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -102,8 +104,8 @@ internal sealed class StorageExportWriter
     /// the create itself must not replace: <see cref="IExportFolder.CreateNewFileAsync"/> returns null
     /// for a name that is taken by then, and the writer checks the names again and takes the next
     /// free one. Because every file the writer copies into is one that call created, the cleanup
-    /// after a failed copy can only ever delete this export's own output. How far each platform can
-    /// keep that promise is on <see cref="StorageItemFolder"/>.
+    /// after a failed copy can only ever delete this export's own output. How each platform keeps
+    /// that promise, and the refusal where none can, is on <see cref="CreateNewFileRoutedAsync"/>.
     /// </para>
     /// </remarks>
     /// <returns>The name of the file written — which the provider can still change — or null when
@@ -170,8 +172,8 @@ internal sealed class StorageExportWriter
     /// O_CREAT|O_EXCL), so there is no gap in which a file can appear and be replaced.
     /// </summary>
     /// <returns>True when this call created the file; false when the name is taken (a file or a
-    /// folder); null when the path is not accessible (an iOS security-scoped folder outside the
-    /// sandbox is reachable only through its storage item).</returns>
+    /// folder); null when the path is not accessible (an iOS folder outside the sandbox, while its
+    /// security scope is not active).</returns>
     internal static bool? TryCreateNewLocalFile(string directory, string name)
     {
         var path = Path.Combine(directory, name);
@@ -378,7 +380,6 @@ internal sealed class StorageExportWriter
 
     /// <summary>Adapts a picked <see cref="IStorageFolder"/>. Does not dispose it: the caller owns it.</summary>
     /// <remarks>
-    /// <para>
     /// What "never replaces" can and cannot mean here (review of PR #603, against the Avalonia 12.1.6
     /// source). <see cref="IStorageFolder"/> has no create-if-absent operation, and its
     /// <see cref="IStorageFolder.CreateFileAsync"/> replaces on every provider: the desktop's
@@ -386,26 +387,8 @@ internal sealed class StorageExportWriter
     /// <c>NSFileManager.CreateFile</c> (replaces); Android's <c>AndroidStorageFolder</c> looks the
     /// name up itself, truncates the file it finds, and only otherwise calls
     /// <c>DocumentsContract.CreateDocument</c> (which never replaces — a provider renames instead).
-    /// </para>
-    /// <para>
-    /// A folder with a local path — the desktop, and an iOS folder inside the app sandbox — is
-    /// created with <see cref="TryCreateNewLocalFile"/>, an atomic create-if-absent: no file can
-    /// appear and be replaced.
-    /// </para>
-    /// <para>
-    /// A folder without one — every Android <c>content://</c> pick — goes to the platform's
-    /// <see cref="ExclusiveFileCreator"/>. The Android head registers one that calls
-    /// <c>DocumentsContract.CreateDocument</c> directly, which never replaces: a provider gives the
-    /// new document another name instead, so the file can be named <c>Run (1).csv</c>, and the
-    /// writer returns the name the provider chose. That closes the gap that Avalonia's
-    /// <see cref="IStorageFolder.CreateFileAsync"/> left open on Android.
-    /// </para>
-    /// <para>
-    /// Only a folder that neither way can serve — an iOS security-scoped folder outside the
-    /// sandbox — still uses <see cref="IStorageFolder.CreateFileAsync"/>, straight after the name
-    /// check. A file that appears in the milliseconds between that check and the provider's own is
-    /// truncated inside that call, before control returns, and cannot be detected afterwards.
-    /// </para>
+    /// So the writer never calls it. <see cref="CreateNewFileRoutedAsync"/> lists the three creates
+    /// it uses instead, and it refuses the export where none of them applies.
     /// </remarks>
     private sealed class StorageItemFolder(IStorageFolder folder) : IExportFolder
     {
@@ -415,51 +398,206 @@ internal sealed class StorageExportWriter
             await folder.GetFileAsync(name).ConfigureAwait(false) is not null
             || await folder.GetFolderAsync(name).ConfigureAwait(false) is not null;
 
-        public async Task<IExportFile?> CreateNewFileAsync(string name)
-        {
-            if (folder.TryGetLocalPath() is { } directory)
-            {
-                switch (TryCreateNewLocalFile(directory, name))
-                {
-                    case false:
-                        return null;
-                    case true:
-                        return await folder.GetFileAsync(name).ConfigureAwait(false) is { } created
-                            ? new StorageItemFile(created)
-                            : throw new IOException($"created '{name}' but the folder cannot open it");
-                }
-            }
-
-            return await CreateWithoutLocalPathAsync(
-                    () => ExclusiveFileCreator.Current?.TryCreateNewAsync(folder, name)
-                          ?? Task.FromResult<ExclusiveFile?>(null),
-                    async () => await folder.CreateFileAsync(name).ConfigureAwait(false) is { } file
-                        ? new StorageItemFile(file)
-                        : null,
-                    name)
-                .ConfigureAwait(false);
-        }
+        public Task<IExportFile?> CreateNewFileAsync(string name) =>
+            CreateNewFileRoutedAsync(
+                folder.TryGetLocalPath(),
+                name,
+                async () => await folder.GetFileAsync(name).ConfigureAwait(false) is { } created
+                    ? new StorageItemFile(created)
+                    : null,
+                () => ScopedFolderAccess.Current?.TryResolveAsync(folder)
+                      ?? Task.FromResult<IScopedFolder?>(null),
+                () => ExclusiveFileCreator.Current?.TryCreateNewAsync(folder, name)
+                      ?? Task.FromResult<ExclusiveFile?>(null));
     }
 
     /// <summary>
-    /// The create for a folder with no local path: the platform's non-replacing create when it has
-    /// one for this folder, else the provider's (see <see cref="StorageItemFolder"/> for the gap
-    /// that leaves). Separate so a test can drive the order: Avalonia 12 does not let user code
-    /// implement <see cref="IStorageFolder"/>.
+    /// Creates a file called <paramref name="name"/> in a picked folder only if nothing has that
+    /// name, by the first of these that applies to the folder (review of PR #603):
+    /// <list type="number">
+    /// <item>The folder has a local path that the app can use (the desktop, an iOS folder inside the
+    /// app sandbox): <see cref="TryCreateNewLocalFile"/>, an atomic create-if-absent.</item>
+    /// <item>The folder has a local path that the sandbox refuses outside the folder's security
+    /// scope (an iOS folder outside the sandbox: Avalonia holds that scope only during its own
+    /// calls): the same create-if-absent, inside the scope that the platform's
+    /// <see cref="ScopedFolderAccess"/> resolves. Every later write, size check and delete of that
+    /// file also runs inside the scope.</item>
+    /// <item>The platform has a non-replacing create for the folder (every Android
+    /// <c>content://</c> pick): the platform's <see cref="ExclusiveFileCreator"/>, whose provider
+    /// renames the new file instead of replacing (<c>Run (1).csv</c>).</item>
+    /// </list>
+    /// Otherwise the create is REFUSED. It used to fall back to
+    /// <see cref="IStorageFolder.CreateFileAsync"/>, which replaces a file of that name: a file that
+    /// appeared after the name check could be emptied, and the cleanup after a failed copy would
+    /// then delete it. A failed export can be done again; a replaced file cannot be recovered.
     /// </summary>
-    /// <exception cref="IOException">The folder refused to create the file.</exception>
-    internal static async Task<IExportFile> CreateWithoutLocalPathAsync(
-        Func<Task<ExclusiveFile?>> platformCreate,
-        Func<Task<IExportFile?>> providerCreate,
-        string name)
+    /// <param name="directory">The folder's local path (<c>TryGetLocalPath()</c>), or null.</param>
+    /// <param name="name">The name to create.</param>
+    /// <param name="openLocal">Opens the file that step 1 created, through the folder.</param>
+    /// <param name="resolveScope">The platform's scope for the folder, or null (step 2).</param>
+    /// <param name="platformCreate">The platform's non-replacing create, or null (step 3).</param>
+    /// <returns>The new file, or null when the name is taken.</returns>
+    /// <exception cref="IOException">The folder refused the create, or no non-replacing create
+    /// applies to it.</exception>
+    /// <remarks>Static, with the folder's parts passed in, so a test can drive every route:
+    /// Avalonia 12 does not let user code implement <see cref="IStorageFolder"/>.</remarks>
+    internal static async Task<IExportFile?> CreateNewFileRoutedAsync(
+        string? directory,
+        string name,
+        Func<Task<IExportFile?>> openLocal,
+        Func<Task<IScopedFolder?>> resolveScope,
+        Func<Task<ExclusiveFile?>> platformCreate)
     {
+        if (directory is not null)
+        {
+            switch (TryCreateNewLocalFile(directory, name))
+            {
+                case false:
+                    return null;
+                case true:
+                    return await openLocal().ConfigureAwait(false)
+                           ?? throw new IOException($"created '{name}' but the folder cannot open it");
+            }
+
+            // Null: the path is refused. On iOS that is a folder outside the sandbox, whose
+            // security scope is not active between Avalonia's own calls.
+            if (await resolveScope().ConfigureAwait(false) is { } scope)
+            {
+                return CreateNewInScope(scope, name);
+            }
+        }
+
         if (await platformCreate().ConfigureAwait(false) is { } created)
         {
             return new ExclusiveExportFile(created);
         }
 
-        return await providerCreate().ConfigureAwait(false)
-               ?? throw new IOException($"the folder refused to create '{name}'");
+        throw new IOException(
+            $"this folder offers no way to create '{name}' that cannot replace an existing file, so the export was not written");
+    }
+
+    /// <summary>
+    /// <see cref="TryCreateNewLocalFile"/> inside the folder's security scope. The file it returns
+    /// enters the scope again for each later operation.
+    /// </summary>
+    /// <returns>The new file, or null when the name is taken.</returns>
+    /// <exception cref="IOException">The path is refused even inside the scope.</exception>
+    internal static IExportFile? CreateNewInScope(IScopedFolder scope, string name)
+    {
+        bool? created;
+        using (scope.Enter())
+        {
+            created = TryCreateNewLocalFile(scope.LocalPath, name);
+        }
+
+        return created switch
+        {
+            true => new ScopedLocalExportFile(scope, name),
+            false => null,
+            null => throw new IOException($"the folder refused to create '{name}' inside its security scope"),
+        };
+    }
+
+    /// <summary>A file that <see cref="CreateNewInScope"/> created. Each operation runs inside the
+    /// folder's scope. The write stream keeps the scope until it is disposed, as Avalonia's own
+    /// <c>IOSStorageFile.OpenWriteAsync</c> does.</summary>
+    private sealed class ScopedLocalExportFile(IScopedFolder scope, string name) : IExportFile
+    {
+        private readonly string _path = Path.Combine(scope.LocalPath, name);
+
+        public string Name => name;
+
+        public Task<Stream> OpenWriteAsync()
+        {
+            var access = scope.Enter();
+            try
+            {
+                // Open, not Create: this is the empty file that this export created. If it has gone,
+                // fail; do not create it again outside the create-if-absent.
+                var stream = new FileStream(_path, FileMode.Open, FileAccess.Write, FileShare.None);
+                return Task.FromResult<Stream>(new ScopeHoldingStream(stream, access));
+            }
+            catch
+            {
+                access.Dispose();
+                throw;
+            }
+        }
+
+        public Task<ulong?> GetSizeAsync()
+        {
+            using (scope.Enter())
+            {
+                var info = new FileInfo(_path);
+                return Task.FromResult(info.Exists ? (ulong?)info.Length : null);
+            }
+        }
+
+        public Task DeleteAsync()
+        {
+            using (scope.Enter())
+            {
+                File.Delete(_path);
+            }
+
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>Passes every call to <paramref name="inner"/>, and stops the scope when the stream
+    /// is closed.</summary>
+    private sealed class ScopeHoldingStream(Stream inner, IDisposable access) : Stream
+    {
+        private bool _disposed;
+
+        public override bool CanRead => inner.CanRead;
+        public override bool CanSeek => inner.CanSeek;
+        public override bool CanWrite => inner.CanWrite;
+        public override long Length => inner.Length;
+
+        public override long Position
+        {
+            get => inner.Position;
+            set => inner.Position = value;
+        }
+
+        public override void Flush() => inner.Flush();
+        public override Task FlushAsync(CancellationToken cancellationToken) => inner.FlushAsync(cancellationToken);
+        public override int Read(byte[] buffer, int offset, int count) => inner.Read(buffer, offset, count);
+        public override long Seek(long offset, SeekOrigin origin) => inner.Seek(offset, origin);
+        public override void SetLength(long value) => inner.SetLength(value);
+        public override void Write(byte[] buffer, int offset, int count) => inner.Write(buffer, offset, count);
+        public override void Write(ReadOnlySpan<byte> buffer) => inner.Write(buffer);
+
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            inner.WriteAsync(buffer, offset, count, cancellationToken);
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
+            inner.WriteAsync(buffer, cancellationToken);
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && !_disposed)
+            {
+                _disposed = true;
+                try { inner.Dispose(); }
+                finally { access.Dispose(); }
+            }
+
+            base.Dispose(disposing);
+        }
+
+        public override async ValueTask DisposeAsync()
+        {
+            if (!_disposed)
+            {
+                _disposed = true;
+                try { await inner.DisposeAsync().ConfigureAwait(false); }
+                finally { access.Dispose(); }
+            }
+
+            await base.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     /// <summary>Adapts a file the platform's <see cref="IExclusiveFileCreator"/> created.</summary>

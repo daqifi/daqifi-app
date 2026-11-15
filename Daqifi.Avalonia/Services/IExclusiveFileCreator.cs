@@ -53,7 +53,9 @@ public sealed record ExclusiveFile(
 /// <summary>
 /// Static registration point: a platform head sets <see cref="Current"/> at startup. It stays null
 /// where no hook is needed: the writer creates a file in a folder with a local path (desktop, and
-/// iOS inside the app sandbox) with an atomic create-if-absent.
+/// iOS inside the app sandbox) with an atomic create-if-absent. An iOS folder outside the sandbox
+/// gets the same create inside its security scope, through <see cref="ScopedFolderAccess"/>. Where
+/// no non-replacing create applies, the writer refuses the export instead of replacing.
 /// </summary>
 public static class ExclusiveFileCreator
 {
