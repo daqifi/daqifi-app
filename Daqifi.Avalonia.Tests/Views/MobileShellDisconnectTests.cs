@@ -24,6 +24,7 @@ public sealed class MobileShellDisconnectTests : IDisposable
 {
     private const int AnalogPorts = 16;
     private static readonly TimeSpan ReleaseTimeout = TimeSpan.FromSeconds(10);
+    private const string Endpoint = "192.168.4.1";
 
     private readonly CapturingTransport _transport = new();
     private readonly CoreStreamingDevice _core;
@@ -45,7 +46,7 @@ public sealed class MobileShellDisconnectTests : IDisposable
         _device.AttachCore(_core);
         _device.SyncFromCore(_core);
         // After the sync, which writes the metadata the Core device reports (none, here).
-        _device.IpAddress = "192.168.4.1";
+        _device.IpAddress = Endpoint;
         _device.DeviceVersion = "3.9.0";
     }
 
@@ -97,7 +98,7 @@ public sealed class MobileShellDisconnectTests : IDisposable
         Assert.DoesNotContain(_device, ConnectionManager.Instance.ConnectedDevices);
         Assert.Equal("Disconnected from DAQiFi-TEST. Tap Scan to find devices.", _shell.Status);
 
-        await _shell.PendingRelease.WaitAsync(ReleaseTimeout);
+        await _shell.PendingRelease(Endpoint).WaitAsync(ReleaseTimeout);
         Assert.Equal(1, _device.DisconnectCalls);
     }
 
@@ -122,7 +123,7 @@ public sealed class MobileShellDisconnectTests : IDisposable
             _transport.WaitForSentText("SYSTem:StopStreamData", ReleaseTimeout),
             $"Disconnect did not stop the stream on the device. Sent: {_transport.SentText}");
 
-        await _shell.PendingRelease.WaitAsync(ReleaseTimeout);
+        await _shell.PendingRelease(Endpoint).WaitAsync(ReleaseTimeout);
         Assert.Equal(1, _device.DisconnectCalls);
     }
 
@@ -134,9 +135,88 @@ public sealed class MobileShellDisconnectTests : IDisposable
         _shell.DisconnectCommand.Execute(null);
 
         Assert.Equal(before, _shell.Status);
-        Assert.True(_shell.PendingRelease.IsCompleted);
+        Assert.True(_shell.PendingRelease(Endpoint).IsCompleted);
         Assert.Equal(0, _device.DisconnectCalls);
     }
+
+    /// <summary>
+    /// Review on PR #608: board A's close was chained in front of board B's. If A's close hangs,
+    /// B's DISCONNECT must still close B at once, or B keeps its only TCP slot while the screen
+    /// says it is disconnected.
+    /// </summary>
+    [Fact]
+    public async Task A_slow_close_of_one_board_does_not_hold_up_the_close_of_another()
+    {
+        using var gate = new ManualResetEventSlim(false);
+        var boardA = new ShellTestDevice("Board A") { IpAddress = "192.168.4.10", DisconnectGate = gate };
+        var boardB = new ShellTestDevice("Board B") { IpAddress = "192.168.4.20" };
+        try
+        {
+            boardA.AdoptInto(_shell);
+            boardB.AdoptInto(_shell);   // replaces A: A's close starts and hangs on the gate
+            Assert.True(SpinWait.SpinUntil(() => boardA.DisconnectCalls == 1, ReleaseTimeout),
+                "Arrangement: board A's close never started.");
+
+            _shell.DisconnectCommand.Execute(null);
+
+            await _shell.PendingRelease("192.168.4.20").WaitAsync(ReleaseTimeout);
+            Assert.Equal(1, boardB.DisconnectCalls);
+            Assert.False(_shell.PendingRelease("192.168.4.10").IsCompleted,
+                "Arrangement: board A's close was meant to be still running.");
+        }
+        finally
+        {
+            gate.Set();
+        }
+
+        await _shell.PendingRelease("192.168.4.10").WaitAsync(ReleaseTimeout);
+    }
+
+    /// <summary>
+    /// The other half of the same review: a connect waits only for a close to the SAME board.
+    /// </summary>
+    [Fact]
+    public async Task A_connect_waits_for_a_close_to_the_same_board_only()
+    {
+        using var gate = new ManualResetEventSlim(false);
+        var boardA = new ShellTestDevice("Board A") { IpAddress = "192.168.4.10", DisconnectGate = gate };
+        _shell.ReleaseWaitLimit = TimeSpan.FromSeconds(20);
+        try
+        {
+            boardA.AdoptInto(_shell);
+            _shell.DisconnectCommand.Execute(null);   // A's close hangs on the gate
+
+            var toOtherBoard = _shell.WaitForPendingReleaseAsync("192.168.4.20");
+            Assert.True(toOtherBoard.IsCompleted, "A connect to board B waited for board A's close.");
+
+            var toSameBoard = _shell.WaitForPendingReleaseAsync("192.168.4.10");
+            await Task.Delay(200);
+            Assert.False(toSameBoard.IsCompleted, "A reconnect to board A did not wait for A's old socket.");
+
+            gate.Set();
+            await toSameBoard.WaitAsync(ReleaseTimeout);
+        }
+        finally
+        {
+            gate.Set();
+        }
+    }
+
+    [Theory]
+    [InlineData("10.0.0.7", "10.0.0.7")]
+    [InlineData(" 10.0.0.7 ", "10.0.0.7")]
+    public void A_WiFi_device_is_keyed_by_its_address(string address, string expected) =>
+        Assert.Equal(expected, MobileShellViewModel.EndpointKey(new ShellTestDevice("x") { IpAddress = address }));
+
+    [Fact]
+    public void Every_USB_device_shares_the_one_OTG_endpoint() =>
+        Assert.Equal(MobileShellViewModel.UsbEndpoint, MobileShellViewModel.EndpointKey(new UsbShellDevice()));
+
+    [Fact]
+    public void Two_devices_with_no_address_never_share_an_endpoint() =>
+        Assert.NotEqual(
+            MobileShellViewModel.EndpointKey(new ShellTestDevice("a")),
+            MobileShellViewModel.EndpointKey(new ShellTestDevice("b")));
 
     [Fact]
     public void A_USB_device_bar_says_USB_instead_of_an_address() =>

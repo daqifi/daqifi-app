@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using Avalonia.Media;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -379,6 +380,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         }
         return ConnectCoreAsync(
             $"{ip}:{port}",
+            ip.ToString(),
             () => new DaqifiStreamingDevice(ip, port, $"DAQiFi @ {ip}"));
     }
 
@@ -407,7 +409,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     {
         Status = "Connecting via USB…";
         AppLogger.Instance.AddBreadcrumb("ui", "Tapped Connect via USB");
-        await WaitForPendingReleaseAsync();
+        await WaitForPendingReleaseAsync(UsbEndpoint);
         var result = await MobileUsbConnector.ConnectAsync();
         if (result.Device != null)
         {
@@ -425,13 +427,14 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     internal Task ConnectAsync(MobileDeviceItem item) =>
         ConnectCoreAsync(
             $"{item.Name} ({item.Ip})",
+            item.Ip,
             () => new DaqifiStreamingDevice(item.Device));
 
-    private async Task ConnectCoreAsync(string label, Func<DaqifiStreamingDevice> factory)
+    private async Task ConnectCoreAsync(string label, string endpoint, Func<DaqifiStreamingDevice> factory)
     {
         Status = $"Connecting to {label}…";
         AppLogger.Instance.AddBreadcrumb("ui", $"Tapped Connect — {label}");
-        await WaitForPendingReleaseAsync();
+        await WaitForPendingReleaseAsync(endpoint);
         try
         {
             // Do NOT tear down the current connection before the new one succeeds:
@@ -1021,7 +1024,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     /// so the disconnect must never skip the stop.
     /// <para>
     /// The screen goes back to the disconnected state at once. The socket closes on a pool thread
-    /// (<see cref="ReleaseDevice"/>), and the next connect waits for it, so a tap on the same board
+    /// (<see cref="ReleaseDevice"/>), and the next connect to that board waits for it, so a tap on the same board
     /// straight after Disconnect does not race the old connection for the one slot.
     /// </para>
     /// </remarks>
@@ -1064,48 +1067,82 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     /// <remarks>
     /// Detaches the shell from the device's events, unregisters it from
     /// <see cref="ConnectionManager"/> so the projected panes stop showing it, then disconnects it
-    /// off the UI thread, because a wedged transport must not stall the UI. The disconnect task is
-    /// kept in <see cref="PendingRelease"/> so the next connect can wait for the socket to close.
+    /// off the UI thread, because a wedged transport must not stall the UI.
+    /// <para>
+    /// Each close starts at once and on its own. A slow close of board A must not hold up the close
+    /// of board B: B's single TCP slot would stay taken while the screen says B is disconnected.
+    /// The close is kept per endpoint (<see cref="EndpointKey"/>), so a reconnect waits only for the
+    /// socket to the SAME board.
+    /// </para>
     /// </remarks>
     private void ReleaseDevice(AbstractStreamingDevice device)
     {
         device.PropertyChanged -= OnConnectedDevicePropertyChanged;
         try { ConnectionManager.Instance.UnregisterConnectedDevice(device); } catch { /* best-effort */ }
-        var previous = PendingRelease;
-        PendingRelease = Task.Run(async () =>
+
+        var key = EndpointKey(device);
+        var close = Task.Run(() =>
         {
-            // One release at a time, in order: the slot is free only when every older socket is closed.
-            try { await previous.ConfigureAwait(false); } catch { /* best-effort */ }
             try { device.Disconnect(); } catch { /* best-effort */ }
         });
+        lock (_pendingReleases)
+        {
+            // Two closes to one endpoint (a reconnect that outlived its wait, then let go again)
+            // must both finish before that board's slot is free.
+            _pendingReleases[key] = _pendingReleases.TryGetValue(key, out var earlier) && !earlier.IsCompleted
+                ? Task.WhenAll(earlier, close)
+                : close;
+        }
+    }
+
+    /// <summary>The close still running for each endpoint the shell let go of. Guarded by itself.</summary>
+    private readonly Dictionary<string, Task> _pendingReleases = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The close of the connection to <paramref name="endpoint"/>, or a completed task when there
+    /// is none. Internal so a test can wait for one board's teardown.
+    /// </summary>
+    internal Task PendingRelease(string endpoint)
+    {
+        lock (_pendingReleases)
+        {
+            return _pendingReleases.TryGetValue(endpoint, out var task) ? task : Task.CompletedTask;
+        }
     }
 
     /// <summary>
-    /// The disconnect of the device the shell let go of last, or a completed task when there is
-    /// none. Internal so a test can wait for the teardown to finish.
+    /// Which board a connection holds a slot on: the IP address for WiFi, and one shared key for
+    /// the USB (OTG) port. A device with no address gets a key of its own, so it never makes a
+    /// connect to another board wait.
     /// </summary>
-    internal Task PendingRelease { get; private set; } = Task.CompletedTask;
+    internal static string EndpointKey(AbstractStreamingDevice device) =>
+        device.ConnectionType == ConnectionType.Usb ? UsbEndpoint
+        : !string.IsNullOrWhiteSpace(device.IpAddress) ? device.IpAddress.Trim()
+        : $"device:{RuntimeHelpers.GetHashCode(device)}";
+
+    internal const string UsbEndpoint = "usb";
 
     /// <summary>
-    /// The longest a connect waits for the previous socket to close. A board that never answers
-    /// the close must not block a connect to a different board for ever.
+    /// The longest a connect waits for the previous socket to the same board to close. A board that
+    /// never answers the close must not block the reconnect for ever.
     /// </summary>
     internal TimeSpan ReleaseWaitLimit = TimeSpan.FromSeconds(5);
 
     /// <summary>
-    /// Waits, for <see cref="ReleaseWaitLimit"/> at most, until the device the shell let go of last
-    /// has closed its connection. The Nyquist accepts one TCP client, so a reconnect that starts
-    /// while the old socket is still open is refused.
+    /// Waits, for <see cref="ReleaseWaitLimit"/> at most, until the shell's last connection to
+    /// <paramref name="endpoint"/> has closed. The Nyquist accepts one TCP client, so a reconnect
+    /// that starts while the old socket is still open is refused. A close to a different board is
+    /// not waited for.
     /// </summary>
-    private async Task WaitForPendingReleaseAsync()
+    internal async Task WaitForPendingReleaseAsync(string endpoint)
     {
-        var pending = PendingRelease;
+        var pending = PendingRelease(endpoint);
         if (pending.IsCompleted) { return; }
         try { await pending.WaitAsync(ReleaseWaitLimit); }
         catch (TimeoutException)
         {
             AppLogger.Instance.AddBreadcrumb(
-                "device", "Previous device still disconnecting; connecting anyway", BreadcrumbLevel.Warning);
+                "device", "Previous connection to this device still closing; connecting anyway", BreadcrumbLevel.Warning);
         }
         catch { /* the release logs its own failures */ }
     }
