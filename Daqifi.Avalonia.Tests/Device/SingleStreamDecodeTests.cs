@@ -258,9 +258,41 @@ public sealed class SingleStreamDecodeTests : IDisposable
             counter += harness.TicksPerSample;
         }
 
-        // All three, without waiting for a fourth frame: the first is completed by the second
-        // frame's arrival, the others by their own last sample.
+        // All three, without waiting for a fourth frame: each is completed by its own last sample.
         Assert.Equal(new[] { true, true, true }, samplesPublishedFirst);
+    }
+
+    /// <summary>
+    /// A short frame in the middle of a stream (issue #595 records them on the bench) must not set
+    /// the completion threshold of the full frame after it. Review of PR #621: the wrapper took the
+    /// previous frame's sample count as the next frame's threshold, so the full frame after a
+    /// one-reading frame dispatched its device message after its first channel and before its
+    /// second, and a Log Summary refreshing on that message missed the second channel's reading.
+    /// </summary>
+    [Fact]
+    public void A_full_frame_after_a_short_one_dispatches_its_device_message_after_both_channels()
+    {
+        var harness = Harness();
+        var first = harness.EnableAnalog(0);
+        var second = harness.EnableAnalog(1);
+        var channelsCurrent = new List<(bool First, bool Second)>();
+        harness.Device.DeviceMessageDispatched = message => channelsCurrent.Add((
+            first.ActiveSample?.TimestampTicks == message.TimestampTicks,
+            second.ActiveSample?.TimestampTicks == message.TimestampTicks));
+        harness.Device.InitializeStreaming();
+
+        var counter = CoreDecodingHarness.FirstCounter;
+        harness.Core.Feed(CoreDecodingHarness.RawFrame(counter, 1000, 2000));
+        counter += harness.TicksPerSample;
+        // One reading for two enabled channels. The first full frame has disarmed Core's warm-up
+        // guard, so Core decodes this frame's one value onto the first channel only.
+        harness.Core.Feed(CoreDecodingHarness.RawFrame(counter, 1000));
+        counter += harness.TicksPerSample;
+        harness.Core.Feed(CoreDecodingHarness.RawFrame(counter, 1000, 2000));
+
+        // The short frame's message carries only the first channel's reading: the second channel
+        // got none from that frame. The full frames' messages each follow both channels' readings.
+        Assert.Equal(new[] { (true, true), (true, false), (true, true) }, channelsCurrent);
     }
 
     [Fact]

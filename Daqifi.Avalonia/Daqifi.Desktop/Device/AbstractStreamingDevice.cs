@@ -1288,17 +1288,15 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
 
         // A new frame means the previous one has all the samples it will get.
         var previous = _frameInProgress;
-        var expectedSamples = 0;
         if (previous != null)
         {
-            expectedSamples = previous.Samples;
             CompleteStreamFrame(previous);
         }
 
-        if (expectedSamples == 0)
-        {
-            expectedSamples = PredictSampleCount(message);
-        }
+        // The threshold comes from this frame, never from the previous one. Review of PR #621:
+        // a threshold carried over from a short frame (issue #595 records them mid-stream) let
+        // the full frame after it complete after its first channel and before its second.
+        var expectedSamples = PredictSampleCount(message);
 
         var rollover = _hasSeenStreamFrameCounter && message.MsgTimeStamp < _lastStreamFrameCounter;
         _lastStreamFrameCounter = message.MsgTimeStamp;
@@ -1318,11 +1316,12 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// </para>
     /// <list type="number">
     ///   <item><description>
-    ///     Its sample count reaches <see cref="ExpectedSamples"/>: the number the previous frame
-    ///     carried, or, when there is no previous count (the first frame of a session, or a frame
-    ///     after one with no samples), the number Core will decode from it
-    ///     (<see cref="PredictSampleCount"/>). The channel set does not change during a session in
-    ///     practice, so this completes almost every frame the moment its last sample is published.
+    ///     Its sample count reaches <see cref="ExpectedSamples"/>: the number Core will decode from
+    ///     this frame (<see cref="PredictSampleCount"/>), worked out from the frame's own analog
+    ///     value count and digital bytes and the enabled channels. So a frame completes the moment
+    ///     its last sample is published, whatever the frame before it carried. Until the review of
+    ///     PR #621 the threshold was the previous frame's sample count, and a full frame after a
+    ///     short one (issue #595) completed after its first channel and before the others.
     ///   </description></item>
     ///   <item><description>
     ///     The next frame arrives (<see cref="OnStreamMessageReceived"/>) or the stream stops
@@ -1363,14 +1362,22 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     }
 
     /// <summary>
-    /// How many countable samples Core will decode from a frame with no previous count: one per
-    /// enabled analog channel up to the frame's analog value count, and one per enabled digital
-    /// input whose bit the frame carries. The same rule Core 1.9.1's decode follows.
+    /// How many countable samples Core will decode from a frame: one per enabled analog channel up
+    /// to the frame's analog value count, and one per enabled digital input whose bit the frame
+    /// carries. The same rule Core 1.9.1's decode follows.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// Only Core channels the app wraps are counted, because only their samples reach
+    /// <see cref="CountSampleOfFrameInProgress"/>. If the count is ever too high (a channel
+    /// switched off between this read and Core's decode), the frame is completed by the next frame
+    /// or the stop instead, so its message is late but still follows its samples.
+    /// </para>
+    /// <para>
     /// Digital outputs are left out here and in <see cref="CountSampleOfFrameInProgress"/> alike.
     /// Core 1.9.1 does not sample them and Core 1.10.0 does, and the app publishes none of them,
     /// so leaving them out of both keeps the two counts equal on either version.
+    /// </para>
     /// </remarks>
     /// <param name="message">The frame that just arrived.</param>
     private int PredictSampleCount(DaqifiOutMessage message)
