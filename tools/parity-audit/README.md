@@ -512,6 +512,16 @@ captures once and verifies against the one for the current host, failing on a ch
 screen, a missing one, and one the baseline does not list (`shasum -c` only checks the
 names it was given, so the extra-file direction is checked separately).
 
+Three dialog screens were re-recorded 2026-11-14 (macOS 26.5, Apple silicon, .NET SDK 10.0.302)
+for #631: `DarkSecondaryButton` and `DarkPrimaryButton` now apply the `Padding="16,6"` they
+always set. `dialog-export-configure` shows the visible change: its Browse button has no fixed
+width, so it grew from the width of its text to the text plus 16 px at each side.
+`dialog-firmware-uploading` and `dialog-firmware-close-refused` moved by about one pixel only: the
+Browse label in their fixed 75 px button is now centred inside the padded area, not inside the
+whole button. The other thirty-seven hashes did not move. The pre-change capture at `origin/main`
+(`99cc6be`) reproduced the manifest on all forty, five `--determinism` runs agreed on all forty
+after the change, and the hashes are from run 1.
+
 The eight drawer screens (`desktop-6` to `-9` and `desktop-min-6` to `-9`) were re-recorded
 again 2026-11-14 for #615, on top of the #613/#618/#619 recording below: the settings drawer
 moved into the SplitView pane beside the three flyouts, all four share one `DrawerHeader`, one

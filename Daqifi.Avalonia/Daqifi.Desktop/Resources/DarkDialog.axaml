@@ -52,7 +52,10 @@
 
     <!-- ── Secondary (non-accent) button ───────────────────────────────────
          SurfaceActive (the lightest surface token) so the button reads as a control
-         on both the root Surface and the raised SurfaceRaised GroupBox panels. -->
+         on both the root Surface and the raised SurfaceRaised GroupBox panels.
+         The Border binds Padding (#631). Without it a button with no fixed Width, such as
+         the Debug Console's Clear and Close or the export dialog's Browse, shrank to its
+         text and the text touched the border. TemplatePaddingTests guards the rule. -->
     <ControlTheme x:Key="DarkSecondaryButton" TargetType="Button">
         <Setter Property="Background"      Value="{DynamicResource SurfaceActive}"/>
         <Setter Property="BorderBrush"     Value="{DynamicResource BorderBright}"/>
@@ -67,6 +70,7 @@
                         Background="{TemplateBinding Background}"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
+                        Padding="{TemplateBinding Padding}"
                         CornerRadius="3">
                     <ContentPresenter Content="{TemplateBinding Content}"
                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -120,6 +124,7 @@
                         Background="{TemplateBinding Background}"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
+                        Padding="{TemplateBinding Padding}"
                         CornerRadius="3">
                     <ContentPresenter Content="{TemplateBinding Content}"
                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
