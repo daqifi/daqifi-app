@@ -210,8 +210,6 @@ internal sealed class RecordingStreamingDevice : IStreamingDevice
 
     public void SetFriendlyName(string name) { }
 
-    public void InitializeDeviceState() { }
-
     public void AddChannel(IChannel channel) { }
 
     public void RemoveChannel(IChannel channel) { }

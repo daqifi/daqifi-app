@@ -1,11 +1,13 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Net;
+using System.Net.Sockets;
 using Avalonia.Media;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Daqifi.Avalonia.Services;
+using Daqifi.Core.Communication.Transport;
 using Daqifi.Desktop;
 using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Common.Loggers;
@@ -444,9 +446,13 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             }
             else
             {
+                // The reason, not "see device log": the phone has no log screen, and DEVICE LOGS
+                // lists the SD card (#593).
+                var reason = DescribeConnectFailure(device.LastConnectError);
                 AppLogger.Instance.AddBreadcrumb(
-                    "device", $"Connect refused by {label}", BreadcrumbLevel.Warning);
-                Status = $"Connect to {label} failed — see device log.";
+                    "device", $"Connect refused by {label}: {reason}", BreadcrumbLevel.Warning);
+                Status = $"Could not connect to {label} — {reason}. " +
+                         "Make sure that the phone and the device are on the same WiFi network.";
             }
         }
         catch (Exception ex)
@@ -455,6 +461,45 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
                 "device", $"Connect to {label} threw: {ex.GetType().Name}", BreadcrumbLevel.Error);
             Status = $"Connect failed: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// A short reason for a failed connect, for the status line (#593).
+    /// </summary>
+    /// <remarks>
+    /// Looks through the inner exceptions too, because the socket error can arrive wrapped.
+    /// Anything not recognised falls back to the exception's own message, which is still more
+    /// use to the user than no reason at all.
+    /// </remarks>
+    /// <param name="error">
+    /// <see cref="AbstractStreamingDevice.LastConnectError"/>; <c>null</c> when the connect failed
+    /// without an exception.
+    /// </param>
+    internal static string DescribeConnectFailure(Exception? error)
+    {
+        for (var ex = error; ex != null; ex = ex.InnerException)
+        {
+            switch (ex)
+            {
+                case TimeoutException:
+                    return "no reply (timeout)";
+                case SocketException socket:
+                    return socket.SocketErrorCode switch
+                    {
+                        SocketError.TimedOut => "no reply (timeout)",
+                        SocketError.ConnectionRefused => "connection refused",
+                        SocketError.HostUnreachable or SocketError.HostDown => "the address cannot be reached",
+                        SocketError.NetworkUnreachable or SocketError.NetworkDown => "the network cannot be reached",
+                        _ => $"network error ({socket.SocketErrorCode})",
+                    };
+                case TransportNotConnectedException:
+                    return "the connection closed during setup";
+                case Daqifi.Core.Device.ScpiInitializationErrorException:
+                    return "the device returned an error during setup";
+            }
+        }
+
+        return error?.Message ?? "no connection was made";
     }
 
     /// <summary>

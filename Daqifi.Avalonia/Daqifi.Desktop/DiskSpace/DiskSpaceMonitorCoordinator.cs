@@ -15,7 +15,7 @@ namespace Daqifi.Desktop.DiskSpace;
 /// Extracted from <c>DaqifiViewModel</c> (issue #592). The monitor and logger are constructor-injected
 /// and the two view concerns it cannot own — stopping the session and presenting a dialog — are
 /// reached through the <see cref="IDiskSpaceMonitorHost"/> seam, so the coordinator has no dependency
-/// on WPF or on desktop singletons (<c>AppLogger.Instance</c>, <c>App.DaqifiDataDirectory</c>) and is
+/// on WPF or on desktop singletons (<c>AppLogger.Instance</c>, <c>AppDataPaths.DataDirectory</c>) and is
 /// unit-testable in isolation.
 /// </para>
 /// </summary>

@@ -195,8 +195,9 @@
       </StackPanel>
     </Border>
 
-    <!-- Shared content area -->
-    <Panel Grid.Column="1" Grid.Row="1">
+    <!-- Shared content area. The code-behind lifts its bottom edge above the on-screen
+         keyboard (#589), so it carries a name. -->
+    <Panel x:Name="ContentArea" Grid.Column="1" Grid.Row="1">
       <v:MobileShellView x:Name="StreamView" />
       <ContentControl x:Name="SecondaryHost" IsVisible="False" />
     </Panel>

@@ -227,7 +227,18 @@ internal sealed class ScriptedDevice : IStreamingDevice
 
     public void Reboot() { }
 
-    public void SwitchMode(DeviceMode newMode) => Mode = newMode;
+    /// <summary>Refuses SD card logging off USB with the exception
+    /// <c>AbstractStreamingDevice.SwitchMode</c> throws, so a mixed fleet is refused the way a real
+    /// one is (#578).</summary>
+    public void SwitchMode(DeviceMode newMode)
+    {
+        if (newMode == DeviceMode.LogToDevice && ConnectionType != ConnectionType.Usb)
+        {
+            throw new InvalidOperationException("SD Card logging is only available when connected via USB");
+        }
+
+        Mode = newMode;
+    }
 
     public void StartSdCardLogging() => IsLoggingToSdCard = true;
 
@@ -238,8 +249,6 @@ internal sealed class ScriptedDevice : IStreamingDevice
     public void InitializeStreaming() { }
 
     public void StopStreaming() { }
-
-    public void InitializeDeviceState() { }
 
     public void AddChannel(IChannel channel) { }
 

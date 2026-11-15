@@ -279,6 +279,35 @@ public class DeviceRefusalCrashTests : IDisposable
     }
 
     /// <summary>
+    /// A refused switch announces <see cref="DaqifiViewModel.IsLogToDeviceMode"/> too (#578
+    /// review). The LOGGING MODE buttons bind that property, not SelectedLoggingMode, and the
+    /// clicked one has already checked itself, so a refusal that announced only SelectedLoggingMode
+    /// told nothing bound to the buttons that the mode had stayed where it was.
+    /// </summary>
+    [Fact]
+    public void SwitchingToLogToDevice_WhenTheFleetRefuses_AnnouncesTheModeTheButtonsBind()
+    {
+        _viewModel.ConnectedDevices.Add(new RecordingStreamingDevice("Nq1-USB", ConnectionType.Usb));
+        _viewModel.ConnectedDevices.Add(AGhostDevice("Nq1-WIFI", ConnectionType.Wifi));
+
+        var announced = new List<string?>();
+        void Record(object? sender, System.ComponentModel.PropertyChangedEventArgs e) => announced.Add(e.PropertyName);
+        _viewModel.PropertyChanged += Record;
+        try
+        {
+            _viewModel.SelectedLoggingMode = "Log to Device";
+        }
+        finally
+        {
+            _viewModel.PropertyChanged -= Record;
+        }
+
+        Assert.False(_viewModel.IsLogToDeviceMode);
+        Assert.Contains(nameof(DaqifiViewModel.SelectedLoggingMode), announced);
+        Assert.Contains(nameof(DaqifiViewModel.IsLogToDeviceMode), announced);
+    }
+
+    /// <summary>
     /// The guard on the above: the ordinary all-USB switch must still work, or the fix would have
     /// bought crash-freedom by making the feature unreachable.
     /// </summary>
