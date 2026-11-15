@@ -127,6 +127,49 @@ public class FriendlyNameErrorTests
         Assert.DoesNotContain("Parameter", shell.FriendlyNameError);
     }
 
+    /// <summary>
+    /// Review on #599: after a save, "Name saved" stayed for three seconds even when the user had
+    /// already typed a refused name, so it read as a verdict on that name, next to its error.
+    /// </summary>
+    [Fact]
+    public async Task Editing_after_a_save_clears_name_saved()
+    {
+        var (shell, _) = DrawerOpenOnADevice();
+        shell.PendingFriendlyName = "Rig A";
+        await shell.SetFriendlyName();
+        Assert.True(shell.FriendlyNameApplied);
+
+        shell.PendingFriendlyName = "Rig \"A\"";
+
+        Assert.False(shell.FriendlyNameApplied);
+        Assert.True(shell.HasFriendlyNameError);
+    }
+
+    /// <summary>
+    /// The confirmation belongs to the edit that was written. If the user types while the write is
+    /// still running, the write must neither re-seed the box over the new text nor show
+    /// "Name saved" for it.
+    /// </summary>
+    [Fact]
+    public async Task An_edit_during_a_slow_write_keeps_the_new_text_and_shows_no_name_saved()
+    {
+        var (shell, device) = DrawerOpenOnADevice();
+        using var gate = new ManualResetEventSlim();
+        device.FriendlyNameWriteGate = gate;
+        shell.PendingFriendlyName = "Rig A";
+
+        var save = shell.SetFriendlyName();
+        Assert.True(device.FriendlyNameWriteStarted.Wait(TimeSpan.FromSeconds(10)));
+        shell.PendingFriendlyName = "Rig \"B\"";
+        gate.Set();
+        await save;
+
+        Assert.Equal(["Rig A"], device.FriendlyNameWrites);
+        Assert.Equal("Rig \"B\"", shell.PendingFriendlyName);
+        Assert.False(shell.FriendlyNameApplied);
+        Assert.True(shell.HasFriendlyNameError);
+    }
+
     /// <summary>A name the device reports is not judged as user input: seeding the box must not
     /// raise an error even when the stored name is one the rule would refuse.</summary>
     [Fact]

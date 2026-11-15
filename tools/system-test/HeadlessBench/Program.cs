@@ -1208,8 +1208,9 @@ internal static class HeadlessBench
         // The two device states have nothing to seed: their double is a ScriptedDevice, and the
         // database they do touch (drop-mid-stream opens a real logging session) is the one the app
         // creates and migrates for itself at boot, under <out>/appdata.
+        if (_scripted is StateNameRefused) { return; }
         if (_scripted is StateSdEmpty or StateDropMidStream or StateDisconnectMidStream
-            or StateModeChangeMidSession or StateNameRefused) { return; }
+            or StateModeChangeMidSession) { return; }
 
         var sw = Stopwatch.StartNew();
         var factory = new SeedContextFactory(DesktopApp.DatabasePath);
@@ -1315,6 +1316,7 @@ internal static class HeadlessBench
     {
         switch (_scripted)
         {
+            case StateNameRefused: UiProbe = (1, "DEV-NAME"); RunNameRefusedRow(main, shell); break;
             case StateSessions500: UiProbe = (1, "LOGGED-LIST"); RunSessionListRow(main, shell, boot); break;
             case StateSession10H: UiProbe = (1, "LOGGED-PLOT"); RunSessionPlotRow(main, shell); break;
             case StateExportReadonly: UiProbe = (1, "EXPORT-FAIL"); RunExportFailureRow(main, shell); break;
@@ -1322,7 +1324,6 @@ internal static class HeadlessBench
             case StateDropMidStream: UiProbe = (1, "CONN-LOST"); RunDropMidStreamRow(main, shell); break;
             case StateDisconnectMidStream: UiProbe = (1, "CONN-DISC"); RunDisconnectMidStreamRow(main, shell); break;
             case StateModeChangeMidSession: UiProbe = (1, "LOG-MODE"); RunModeChangeMidSessionRow(main, shell); break;
-            case StateNameRefused: UiProbe = (1, "DEV-NAME"); RunNameRefusedRow(main, shell); break;
             default: throw new ArgumentException($"unknown --scripted state '{_scripted}'");
         }
     }

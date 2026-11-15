@@ -1435,6 +1435,9 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             return;
         }
 
+        // The edit this write is for. If the user types again while it runs, the box no longer
+        // holds this name, so neither the re-seed nor "Name saved" may follow it (#599 review).
+        var editWritten = _friendlyNameEditCount;
         try
         {
             // SetFriendlyName sends SCPI commands synchronously (serial/TCP write); run it off
@@ -1447,7 +1450,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             // NOW — seeding A's name into B's open drawer would clobber B's edit buffer and, on a
             // second Save, write A's name to B's NVM. Mirror the sibling OnSelectedDeviceFriendlyNameChanged
             // guard and only touch drawer state when this device is still the selected one.
-            if (device != SelectedDevice)
+            if (device != SelectedDevice || editWritten != _friendlyNameEditCount)
             {
                 return;
             }
@@ -1465,6 +1468,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             FriendlyNameError = FriendlyNameRule.RuleText;
         }
     }
+
+    /// <summary>Counts user edits of the NAME box, so a finished write can tell whether the box
+    /// still holds the name it wrote.</summary>
+    private int _friendlyNameEditCount;
 
     /// <summary>The drawer's NAME box as it would be sent: trimmed, never null.</summary>
     private string TrimmedPendingFriendlyName => PendingFriendlyName?.Trim() ?? string.Empty;
@@ -1502,6 +1509,11 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         if (!_isSeedingPendingFriendlyName)
         {
             _pendingFriendlyNameDirty = true;
+            _friendlyNameEditCount++;
+            // "Name saved" belongs to the name that was written. Once the user edits the box it
+            // would read as a verdict on the new text, next to that text's validation error.
+            CancelAndDisposeFriendlyNameAppliedCts();
+            FriendlyNameApplied = false;
             // Validate as the user types (issue #596): the drawer says what is wrong while the
             // name is still in the box, instead of after SAVE NAME. A programmatic seed is the
             // device's own name, so it is not judged here.

@@ -216,8 +216,18 @@ internal sealed class RecordingStreamingDevice : IStreamingDevice
     /// real device does when Core's validator refuses the name.</summary>
     internal Exception? FriendlyNameRefusal { get; set; }
 
+    /// <summary>Set when a name write has started; with <see cref="FriendlyNameWriteGate"/> it lets
+    /// a test act while the write is still running.</summary>
+    internal ManualResetEventSlim FriendlyNameWriteStarted { get; } = new();
+
+    /// <summary>When set, <see cref="SetFriendlyName"/> waits for it before it records — a slow
+    /// device write.</summary>
+    internal ManualResetEventSlim? FriendlyNameWriteGate { get; set; }
+
     public void SetFriendlyName(string name)
     {
+        FriendlyNameWriteStarted.Set();
+        FriendlyNameWriteGate?.Wait(TimeSpan.FromSeconds(10));
         if (FriendlyNameRefusal is not null)
         {
             throw FriendlyNameRefusal;
