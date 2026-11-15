@@ -5,6 +5,8 @@
 
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Daqifi.Desktop.ViewModels;
 
@@ -69,6 +71,62 @@ public partial class DevicesPanePrototype : UserControl
 
     /// <summary>Space kept below CANCEL UPDATE when it is scrolled into view, in pixels.</summary>
     private const double FirmwareRunBottomClearance = 16;
+
+    /// <summary>
+    /// Sends the logging mode of a LOGGING MODE button that became checked to
+    /// <see cref="DevicesPaneViewModel.SetLoggingModeCommand"/> (issue #578), then sets both buttons
+    /// from the mode the app is in after the command. The mode is the button's <c>Tag</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>IsCheckedChanged</c> fires on both buttons of the group: on the one the user checked and
+    /// on the one that became unchecked. Only the checked one is sent, because the last call wins
+    /// and the unchecked button's mode is the one the user moved away from. The OneWay
+    /// <c>IsChecked</c> bindings also raise the event when the mode changes from code; the
+    /// <c>SelectedLoggingMode</c> setter ignores the mode it already has, so that echo does nothing.
+    /// The DataContext is the host's <c>DaqifiViewModel</c> until attach replaces it, so the type
+    /// is checked rather than assumed.
+    /// </para>
+    /// <para>
+    /// The setter can refuse the change: a WiFi device cannot log to an SD card, so a mixed fleet
+    /// stays in Stream to App. The clicked button has already checked itself by then, and the
+    /// bindings cannot put it back: <c>IsLogToDeviceMode</c> did not change, and a notification
+    /// for an unchanged value lands in the middle of the group's own update. The drawer then showed
+    /// LOG TO DEVICE over a fleet in Stream to App, and a second click on LOG TO DEVICE did nothing,
+    /// because the button was already checked. So the buttons are set from the app's mode in a job
+    /// posted after the click, when the group has finished. A mode that was accepted makes this a
+    /// no-op.
+    /// </para>
+    /// </remarks>
+    private void OnLoggingModeIsCheckedChanged(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not RadioButton { IsChecked: true, Tag: string mode }
+            || DataContext is not DevicesPaneViewModel pane)
+        {
+            return;
+        }
+
+        if (pane.SetLoggingModeCommand.CanExecute(mode))
+        {
+            pane.SetLoggingModeCommand.Execute(mode);
+        }
+
+        Dispatcher.UIThread.Post(() => ShowLoggingMode(pane));
+    }
+
+    /// <summary>Checks the LOGGING MODE button for the mode the app is in. SetCurrentValue, so the
+    /// OneWay bindings stay in place for the next change from code.</summary>
+    private void ShowLoggingMode(DevicesPaneViewModel pane)
+    {
+        if (!ReferenceEquals(DataContext, pane) || pane.Shell is not { } shell)
+        {
+            return;
+        }
+
+        var logToDevice = shell.IsLogToDeviceMode;
+        LoggingModeStreamToAppButton.SetCurrentValue(ToggleButton.IsCheckedProperty, !logToDevice);
+        LoggingModeLogToDeviceButton.SetCurrentValue(ToggleButton.IsCheckedProperty, logToDevice);
+    }
 
     // Upstream swaps the VM in on Loaded. Avalonia raises Loaded at DispatcherPriority.Loaded,
     // BELOW Render, so the pane was laid out and presented for a frame with the host's

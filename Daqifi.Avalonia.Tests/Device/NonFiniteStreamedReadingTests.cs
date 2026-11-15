@@ -59,7 +59,7 @@ public class NonFiniteStreamedReadingTests
             DeviceSerialNo = "SN-PROBE";
 
             // Wires the real protocol handler; the app calls this once a device is connected.
-            InitializeDeviceState();
+            InitializeProtocolHandler();
 
             // The stream gate ProcessStreamMessage sits behind. Set directly rather than through
             // InitializeStreaming, which needs a connected Core device this double has no business

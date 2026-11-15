@@ -3,6 +3,7 @@ using Daqifi.Core.Communication.Transport;
 using Daqifi.Core.Device;
 using Daqifi.Core.Device.Capabilities;
 using Daqifi.Desktop.Device;
+using System.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Sentry.Extensibility;
 using Xunit;
@@ -403,9 +404,177 @@ public class CurrentRateCapEnforcementTests
     }
     #endregion
 
+    #region The read cannot hold the start longer than its limit (#547)
+    /// <summary>
+    /// Issue #547, Case B, through Core's real read. An SD card download holds Core's operation
+    /// lock for all of its duration, and the capability read is a text exchange that must get
+    /// that lock first. The start runs on the UI thread, so before the limit the window froze
+    /// until the download ended. Here a <c>RunExclusiveAsync</c> block holds the lock the way the
+    /// download does, and the start must be refused within the limit.
+    /// </summary>
+    /// <remarks>
+    /// Refused, and nothing sent — not even after the "download" ends. A start queued behind the
+    /// download would carry the chosen rate unchecked against the connect-time cap, and the
+    /// firmware refuses a rate the channel set cannot sustain, so the session would show LOGGING
+    /// on with no samples (review on PR #580).
+    /// </remarks>
+    [Fact]
+    public async Task A_start_while_another_operation_holds_the_device_is_refused_within_the_limit()
+    {
+        const int rateHz = 1000;
+        using var harness = ConnectedCoreDevice(useCoresOwnRead: true);
+        harness.CoreDevice.Metadata.UpdateFromProtobuf(BenchStatus());
+        Assert.True(harness.CoreDevice.Supports(DeviceFeature.CapabilityDocument));
+        var device = WrapperAt(rateHz, harness.CoreDevice);
+
+        var lockHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var downloadEnds = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var download = harness.CoreDevice.RunExclusiveAsync(async _ =>
+        {
+            lockHeld.SetResult();
+            // The safety net only matters without the limit: it ends the "download" so that a
+            // start which waits for it fails on the time assertion instead of hanging the run.
+            await Task.WhenAny(downloadEnds.Task, Task.Delay(UnansweredReadSafetyNet));
+        });
+        await lockHeld.Task.WaitAsync(SendTimeout);
+        harness.Transport.ClearSent();
+
+        var stopwatch = Stopwatch.StartNew();
+        var refusal = Record.Exception(device.InitializeStreaming);
+        stopwatch.Stop();
+
+        try
+        {
+            Assert.InRange(
+                stopwatch.Elapsed,
+                AbstractStreamingDevice.CapabilityRefreshTimeout - TimeSpan.FromMilliseconds(100),
+                AbstractStreamingDevice.CapabilityRefreshTimeout + LimitSlack);
+            var busy = Assert.IsType<DeviceBusyException>(refusal);
+            Assert.IsAssignableFrom<OperationCanceledException>(busy.InnerException);
+            Assert.Contains("did not answer within 5 s", busy.Message, StringComparison.Ordinal);
+            Assert.False(device.IsStreaming);
+            Assert.False(harness.CoreDevice.IsStreaming);
+        }
+        finally
+        {
+            downloadEnds.TrySetResult();
+            await download;
+        }
+
+        // Nothing was queued behind the operation: once it ends, no start goes out.
+        Assert.False(
+            harness.Transport.WaitForSentText("SYSTem:StartStreamData", RefusedStartQuietPeriod),
+            $"A refused start must send nothing; saw: {harness.Transport.SentText}");
+    }
+
+    /// <summary>
+    /// The read that the limit ends is a refusal, not a failed read: the start does not go on
+    /// against the last stated cap, the rate the user chose is left alone, and the read's own
+    /// token is the one that was cancelled. The refusal reaches the user through the fleet, as
+    /// every other device refusal does: the toggle sees
+    /// <see cref="FleetCommandResult.EveryDeviceRefused"/> and turns LOGGING back off with the
+    /// device's sentence.
+    /// </summary>
+    [Fact]
+    public void A_read_that_does_not_answer_within_the_limit_refuses_the_start_through_the_fleet()
+    {
+        using var harness = ConnectedCoreDevice(neverAnswers: true);
+        harness.CoreDevice.Metadata.UpdateFromProtobuf(BenchStatus());
+        // The status resets the ceiling; restore it so the over-cap rate can be handed to Core.
+        harness.CoreDevice.Metadata.Capabilities = new DeviceCapabilities { MaxSamplingRate = BoardCeilingHz };
+        var device = WrapperAt(OverCapRateHz, harness.CoreDevice);
+        harness.Transport.ClearSent();
+
+        var stopwatch = Stopwatch.StartNew();
+        var start = LoggingFleet.Start([device], new Daqifi.Avalonia.Tests.RecordingAppLogger());
+        stopwatch.Stop();
+
+        Assert.True(
+            stopwatch.Elapsed < AbstractStreamingDevice.CapabilityRefreshTimeout + LimitSlack,
+            $"The start waited {stopwatch.Elapsed.TotalMilliseconds:0} ms for a read that never answers.");
+        Assert.True(start.EveryDeviceRefused);
+        Assert.IsType<DeviceBusyException>(Assert.Single(start.Refusals).Exception);
+        Assert.Contains("Try again when that operation ends.", start.RefusalSummary, StringComparison.Ordinal);
+        Assert.True(harness.CoreDevice.LastToken.IsCancellationRequested);
+        Assert.Equal(OverCapRateHz, device.StreamingFrequency);
+        Assert.False(device.IsStreaming);
+        Assert.DoesNotContain("SYSTem:StartStreamData", harness.Transport.SentText, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A refused SD logging start changes nothing on the device. The wrapper sends its own DIO
+    /// enable or disable command for SD logging; before the review on PR #580 that went out ahead
+    /// of the cap step, so a start refused as busy still changed the DIO state once the import
+    /// released the device.
+    /// </summary>
+    [Fact]
+    public void A_refused_SD_logging_start_sends_no_DIO_command()
+    {
+        using var harness = ConnectedCoreDevice(neverAnswers: true);
+        harness.CoreDevice.Metadata.UpdateFromProtobuf(BenchStatus());
+        harness.CoreDevice.Metadata.Capabilities = new DeviceCapabilities { MaxSamplingRate = BoardCeilingHz };
+        var device = WrapperAt(OverCapRateHz, harness.CoreDevice);
+        device.SwitchMode(DeviceMode.LogToDevice);
+        Assert.Equal(DeviceMode.LogToDevice, device.Mode);
+        harness.Transport.ClearSent();
+
+        var refusal = Record.Exception(device.StartSdCardLogging);
+
+        Assert.IsType<DeviceBusyException>(refusal);
+        lock (device.SentMessages) { Assert.Empty(device.SentMessages); }
+        Assert.DoesNotContain("DIO:PORt", harness.Transport.SentText, StringComparison.Ordinal);
+        Assert.False(device.IsLoggingToSdCard);
+    }
+
+    /// <summary>
+    /// The limit must outlast Core's own answer for a device that is free but silent — its
+    /// 3,000 ms first-reply wait after the consumer swap — so that device keeps the pre-#547
+    /// behaviour (start with a Warning) and is not refused as busy.
+    /// </summary>
+    [Fact]
+    public void The_limit_outlasts_Cores_own_wait_for_a_silent_device()
+    {
+        const int coresFirstReplyWaitMs = 3000; // DaqifiDevice.CapabilityDocumentResponseTimeoutMs, Core 1.9.1
+        Assert.True(
+            AbstractStreamingDevice.CapabilityRefreshTimeout >= TimeSpan.FromMilliseconds(coresFirstReplyWaitMs + 1500));
+    }
+
+    /// <summary>
+    /// The limit is a token, so the read itself can be stopped — Core observes it both while it
+    /// waits for the operation lock and during the exchange. A read handed
+    /// <see cref="CancellationToken.None"/> cannot be stopped by anything.
+    /// </summary>
+    [Fact]
+    public void The_capability_read_is_given_a_token_that_can_end_it()
+    {
+        var core = CoreDeviceRefreshingTo(MeasuredCurrentCapHz);
+        var device = WrapperAt(OverCapRateHz, core);
+
+        device.HoldRateForHandoff(core);
+
+        Assert.True(core.LastToken.CanBeCanceled);
+        Assert.False(core.LastToken.IsCancellationRequested);
+    }
+    #endregion
+
     #region Helpers
     /// <summary>Core's producer flushes on its own thread, so the write lags the call.</summary>
     private static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// How far past the limit a bounded start may finish: thread-pool scheduling and Core's
+    /// cancellation unwinding, with room for a loaded CI runner.
+    /// </summary>
+    private static readonly TimeSpan LimitSlack = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Ends a wait the limit should have ended long before, so a start without the limit fails on
+    /// a time assertion rather than hanging the test run.
+    /// </summary>
+    private static readonly TimeSpan UnansweredReadSafetyNet = TimeSpan.FromSeconds(10);
+
+    /// <summary>How long a refused start is watched for a command that should never be sent.</summary>
+    private static readonly TimeSpan RefusedStartQuietPeriod = TimeSpan.FromSeconds(1);
 
     /// <summary>
     /// The bench board's document reduced to the two fields these cases turn on. Built rather than
@@ -464,12 +633,14 @@ public class CurrentRateCapEnforcementTests
         return device;
     }
 
-    private static Harness ConnectedCoreDevice(int? cappingTo = null)
+    private static Harness ConnectedCoreDevice(int? cappingTo = null, bool useCoresOwnRead = false, bool neverAnswers = false)
     {
         var transport = new CapturingTransport();
         var core = new CapabilityRefreshingCoreDevice("core", transport)
         {
-            RefreshedDocument = cappingTo is { } capHz ? DocumentCapping(capHz) : null
+            RefreshedDocument = cappingTo is { } capHz ? DocumentCapping(capHz) : null,
+            UseCoresOwnRead = useCoresOwnRead,
+            NeverAnswers = neverAnswers
         };
         core.Connect();
         core.Metadata.Capabilities = new DeviceCapabilities { MaxSamplingRate = BoardCeilingHz };
@@ -518,12 +689,38 @@ public class CurrentRateCapEnforcementTests
         /// <summary>What the refresh throws instead of answering, if anything.</summary>
         public Exception? RefreshFailure { get; init; }
 
+        /// <summary>
+        /// Run Core's own read — operation lock, text exchange and all — instead of answering.
+        /// </summary>
+        public bool UseCoresOwnRead { get; init; }
+
+        /// <summary>
+        /// Answer nothing until the caller cancels: a device the read cannot get to. Gives up
+        /// after <see cref="UnansweredReadSafetyNet"/> so a caller that passes no token fails on
+        /// its time assertion instead of hanging the run.
+        /// </summary>
+        public bool NeverAnswers { get; init; }
+
         public int RefreshCount { get; private set; }
+
+        /// <summary>The token the last read was given.</summary>
+        public CancellationToken LastToken { get; private set; }
 
         public override Task<CapabilityDocument?> ReadCapabilityDocumentAsync(
             CancellationToken cancellationToken = default)
         {
             RefreshCount++;
+            LastToken = cancellationToken;
+
+            if (UseCoresOwnRead)
+            {
+                return base.ReadCapabilityDocumentAsync(cancellationToken);
+            }
+
+            if (NeverAnswers)
+            {
+                return WaitForCancellationAsync(cancellationToken);
+            }
 
             if (RefreshFailure != null)
             {
@@ -537,6 +734,12 @@ public class CurrentRateCapEnforcementTests
 
             return Task.FromResult(RefreshedDocument);
         }
+
+        private static async Task<CapabilityDocument?> WaitForCancellationAsync(CancellationToken cancellationToken)
+        {
+            await Task.Delay(UnansweredReadSafetyNet, cancellationToken);
+            return null;
+        }
     }
 
     /// <summary>
@@ -548,8 +751,15 @@ public class CurrentRateCapEnforcementTests
     {
         public override ConnectionType ConnectionType => ConnectionType.Usb;
 
+        /// <summary>As the USB serial device does: SD logging goes through the same Core device.</summary>
+        protected override DaqifiStreamingDevice? CoreDeviceForSd => CoreDevice;
+
+        /// <summary>What the wrapper itself sent (not Core), in order.</summary>
+        public List<string> SentMessages { get; } = [];
+
         protected override void SendMessage(IOutboundMessage<string> message)
         {
+            lock (SentMessages) { SentMessages.Add(message.Data); }
         }
 
         /// <summary>Stands in for what <c>Connect()</c> assigns after opening the transport.</summary>
