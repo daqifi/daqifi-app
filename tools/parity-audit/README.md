@@ -512,6 +512,31 @@ captures once and verifies against the one for the current host, failing on a ch
 screen, a missing one, and one the baseline does not list (`shasum -c` only checks the
 names it was given, so the extra-file direction is checked separately).
 
+Thirty-six of the forty screens were re-recorded 2026-11-14 (macOS 26.5, Apple silicon, .NET SDK
+10.0.302) for the visual-consistency change (#613, #618, #619). Three causes, one recording:
+`FluentTheme` now has a palette whose `Accent` is the brand `#119EDA`, so every stock toggle,
+radio, slider and progress bar moved off Fluent's `#0078D7` (#613); the top bar on both heads
+uses outline glyphs and capital labels, and every desktop and Device Logs screen draws that bar
+(#618); and the phone portrait bottom bar has icons and an active indicator (#619). The four
+unchanged screens are the `dialog-connect-*` captures: the connect dialog draws its own Accent
+pills and has no stock accent control, which is the measurement that the palette moved only
+what it was meant to. The pre-change capture reproduced the then-committed manifest on all
+forty, and five `--determinism` runs agreed on all forty after the change; the hashes are from
+run 1. Two earlier attempts on a loaded host (load average 6-15, a sibling perf benchmark
+running) failed on the known `desktop-min-7` 379/380 drawer race and saved nothing. After review,
+the primary dialog button's label went from white (3.03:1 on the brand blue) to the dark `Surface`
+token (6.33:1), and the four dialog screens that draw it (`dialog-export-configure`,
+`dialog-export-failed`, `dialog-firmware-uploading`, `dialog-firmware-close-refused`) were
+re-recorded once more, on a tree with `main` at `19f83df` merged in; the other thirty-six hashes
+did not move, and five `--determinism` runs agreed on all forty.
+
+The twelve screens that #585 (below) and the visual-consistency change (above) both re-recorded
+— `desktop-1`, `-2`, `-6`, `-7`, `-8`, `-9` and their `desktop-min-*` twins — were captured once
+more on the merged tree (`main` at `5cd8abd` merged into the visual-consistency branch), because
+neither side's hash describes a frame with both the clock-format time axis and the brand-blue,
+outline-icon chrome. A line merge of the two manifests would have been green on neither side.
+Five `--determinism` runs agreed on all forty; the hashes are from run 1.
+
 Twelve desktop screens were re-recorded 2026-11-14 (macOS 26.5, Apple silicon, .NET SDK
 10.0.302) for #585, which gives both plots an elapsed-time axis: the title reads
 `Elapsed time (m:ss)` instead of `Time (ms)`, and the empty frame spans `0:00` to `1:00` instead

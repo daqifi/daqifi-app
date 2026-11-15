@@ -325,7 +325,7 @@
                                                     VerticalAlignment="Center"
                                                     Command="{Binding $parent[UserControl].DataContext.OpenEditDrawerCommand}"
                                                     CommandParameter="{Binding}">
-                                                <i:Icon Value="mdi-cog" FontSize="14"
+                                                <i:Icon Value="mdi-cog-outline" FontSize="14"
                                                         Foreground="{DynamicResource TextTertiary}"/>
                                             </Button>
                                         </Grid>

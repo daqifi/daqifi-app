@@ -825,7 +825,7 @@
                                                             ToolTip.Tip="Session settings"
                                                             Command="{Binding $parent[UserControl].DataContext.OpenLoggingSessionSettingsCommand}"
                                                             CommandParameter="{Binding}">
-                                                        <i:Icon Value="mdi-cog" FontSize="13"
+                                                        <i:Icon Value="mdi-cog-outline" FontSize="13"
                                                                 Foreground="{DynamicResource TextTertiary}"/>
                                                     </Button>
                                                     <Button Theme="{StaticResource TileIconButton}"

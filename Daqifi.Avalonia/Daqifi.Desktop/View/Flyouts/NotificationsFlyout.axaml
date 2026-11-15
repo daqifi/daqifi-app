@@ -26,13 +26,18 @@
                        FontSize="18" FontWeight="Light"
                        Foreground="{DynamicResource TextPrimary}"
                        VerticalAlignment="Center"/>
-            <ToggleButton Grid.Column="1"
-                          i:Attached.Icon="mdi-close"
-                          Background="Transparent" BorderThickness="0"
-                          Foreground="{DynamicResource TextSecondary}"
-                          Cursor="Hand"
-                          ToolTip.Tip="Close"
-                          IsChecked="{Binding IsNotificationsOpen, Mode=TwoWay}"/>
+            <!-- A plain Button with a close command, not a ToggleButton bound to the open
+                 flag (#613): the flag is always true while this is on screen, so the toggle
+                 sat in its checked state and Fluent filled it with the accent colour. -->
+            <Button Grid.Column="1"
+                    Width="28" Height="28"
+                    Theme="{StaticResource RoundCloseButton}"
+                    Foreground="{DynamicResource TextSecondary}"
+                    ToolTip.Tip="Close"
+                    AutomationProperties.Name="Close"
+                    Command="{Binding CloseNotificationsCommand}">
+                <i:Icon Value="mdi-close" FontSize="16"/>
+            </Button>
         </Grid>
 
         <!--
@@ -78,7 +83,7 @@
                                         IsVisible="{Binding ActionText, Converter={x:Static ObjectConverters.IsNotNull}}">
                                 <Button Content="{Binding ActionText}"
                                         Command="{Binding Action}"
-                                        Classes="accent"
+                                        Theme="{StaticResource AccentPillButton}"
                                         Cursor="Hand"/>
                                 <Button Content="Dismiss"
                                         Command="{Binding Dismiss}"

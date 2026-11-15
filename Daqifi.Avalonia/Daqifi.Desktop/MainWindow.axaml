@@ -162,22 +162,8 @@
             </Setter>
         </ControlTheme>
 
-        <!-- Round hover-highlight close button (upstream inline Button template) -->
-        <ControlTheme x:Key="RoundCloseButton" TargetType="Button">
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Template">
-                <ControlTemplate>
-                    <Border x:Name="Bg" Background="Transparent" CornerRadius="14">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
-                                          Content="{TemplateBinding Content}"/>
-                    </Border>
-                </ControlTemplate>
-            </Setter>
-            <Style Selector="^:pointerover /template/ Border#Bg">
-                <Setter Property="Background" Value="#1FFFFFFF"/>
-            </Style>
-        </ControlTheme>
+        <!-- RoundCloseButton moved to Resources/Shell.axaml (#613) so the three
+             SplitView flyouts, which are separate UserControls, can use it too. -->
 
         <!-- Segmented toggle (upstream AppSettings.SegmentedToggle RadioButton template) -->
         <ControlTheme x:Key="SegmentedToggle" TargetType="RadioButton">
@@ -222,6 +208,15 @@
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
             <Setter Property="Padding" Value="10,6"/>
+        </Style>
+        <!-- Top-bar labels (#618): capitals in the caption style the rest of the shell
+             uses for its own labels (LOGGING OFF, IMPORT SD LOG, + ADD DEVICE), not
+             lower case. -->
+        <Style Selector="TextBlock.windowCommandLabel">
+            <Setter Property="Margin" Value="6,0,0,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
         <Style Selector="Button.windowCommand:pointerover, ToggleButton.windowCommand:pointerover">
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
@@ -268,16 +263,16 @@
                               IsChecked="{Binding IsAppSettingsOpen}"
                               ToolTip.Tip="Settings">
                     <StackPanel Orientation="Horizontal">
-                        <i:Icon Value="mdi-cog" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
-                        <TextBlock Margin="4 0 0 0" VerticalAlignment="Center" Text="settings"/>
+                        <i:Icon Value="mdi-cog-outline" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                        <TextBlock Classes="windowCommandLabel" Text="SETTINGS"/>
                     </StackPanel>
                 </ToggleButton>
                 <ToggleButton Classes="windowCommand"
                               IsChecked="{Binding IsDebugModeEnabled}"
                               ToolTip.Tip="Toggle Debug Mode">
                     <StackPanel Orientation="Horizontal">
-                        <i:Icon Value="mdi-bug" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
-                        <TextBlock Margin="4 0 0 0" VerticalAlignment="Center" Text="debug"/>
+                        <i:Icon Value="mdi-bug-outline" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                        <TextBlock Classes="windowCommandLabel" Text="DEBUG"/>
                     </StackPanel>
                 </ToggleButton>
                 <Button Classes="windowCommand"
@@ -286,16 +281,18 @@
                         IsVisible="{Binding IsDebugModeEnabled}">
                     <StackPanel Orientation="Horizontal">
                         <i:Icon Value="mdi-console" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
-                        <TextBlock Margin="4 0 0 0" VerticalAlignment="Center" Text="console"/>
+                        <TextBlock Classes="windowCommandLabel" Text="CONSOLE"/>
                     </StackPanel>
                 </Button>
-                <Button Classes="windowCommand" Command="{Binding OpenHelpCommand}">
+                <Button Classes="windowCommand" Command="{Binding OpenHelpCommand}"
+                        ToolTip.Tip="Help">
                     <StackPanel Orientation="Horizontal">
                         <i:Icon Value="mdi-help-circle-outline" FontSize="20" HorizontalAlignment="Center"/>
-                        <TextBlock Margin="4 0 0 0" VerticalAlignment="Center" Text="help"/>
+                        <TextBlock Classes="windowCommandLabel" Text="HELP"/>
                     </StackPanel>
                 </Button>
-                <Button Classes="windowCommand" Command="{Binding OpenNotificationsCommand}">
+                <Button Classes="windowCommand" Command="{Binding OpenNotificationsCommand}"
+                        ToolTip.Tip="Notifications">
                     <Grid>
                         <i:Icon Value="mdi-bell-outline" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
                         <Border Background="{DynamicResource StatusRed}"
