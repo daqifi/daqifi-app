@@ -523,13 +523,26 @@ public partial class ConnectionManager : ObservableObject
             // hydrates the metadata again before it returns. So the version, serial number and
             // channels are already known here, and a fixed wait only delayed the user.
             //
-            // The device can still be torn down between SubscribeDeviceEvents and this check when
-            // the loss handler runs on another thread than this continuation (a caller that is not
-            // on the UI thread). If it was, the connect did not leave a usable connection —
-            // publishing "Connected" here would put the shell back into a connected state for a
-            // device that is gone, and SetDeviceContext below would tag every later Sentry event
-            // with dead hardware. Treat it as an aborted connect. A drop after this point is
-            // the loss handler's to report, like any other drop of a connected device.
+            // Core can still report Lost between the !IsConnected check above and here, once the
+            // loss handler is attached. The handler only POSTS its teardown to the UI thread, and
+            // this continuation normally runs on that thread, so the teardown cannot have run yet:
+            // the device is still in ConnectedDevices while its transport is gone. So read the
+            // device's own state again, and if the transport is gone, run the same teardown now.
+            // The queued teardown then finds the device gone and does nothing, so the device is
+            // torn down once. A device that a firmware update is flashing is left to that update,
+            // as the loss handler does.
+            if (ConnectedDevices.Contains(device) && !device.IsConnected && !IsDeviceBeingUpdated(device))
+            {
+                TearDownDroppedDevice(device, $"{device.DeviceDisplayName} disconnected while it was connecting.");
+            }
+
+            // The loss handler can also have run already, when it runs on another thread than this
+            // continuation (a caller that is not on the UI thread). Either way, the connect did not
+            // leave a usable connection — publishing "Connected" here would put the shell back
+            // into a connected state for a device that is gone, and SetDeviceContext below would
+            // tag every later Sentry event with dead hardware. Treat it as an aborted connect. A
+            // drop after this point is the loss handler's to report, like any other drop of a
+            // connected device.
             //
             // Error rather than Disconnected because that is the status every other failure in this
             // method reports, and it is what keeps the connection dialog open

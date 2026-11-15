@@ -86,8 +86,35 @@ internal sealed class DroppableTestDevice : AbstractStreamingDevice
     /// </summary>
     private bool _pretendConnected;
 
-    public override bool IsConnected =>
-        PretendConnectSucceeds || PretendTransportDiesDuringConnect ? _pretendConnected : base.IsConnected;
+    public override bool IsConnected
+    {
+        get
+        {
+            // Core reports the loss at the first read after the manager has wired its loss
+            // handler: the window between SubscribeDeviceEvents and the end of Connect.
+            if (PretendLostOnceWired && _pretendConnected && HasConnectionLostSubscriber())
+            {
+                ReportCoreStatus(ConnectionStatus.Lost);
+            }
+
+            return PretendConnectSucceeds || PretendTransportDiesDuringConnect || PretendLostOnceWired
+                ? _pretendConnected
+                : base.IsConnected;
+        }
+    }
+
+    /// <summary>
+    /// Connects, then has Core report the transport <see cref="ConnectionStatus.Lost"/> as soon as
+    /// the manager has attached its loss handler and reads the device state again (#617 review).
+    /// The handler posts its teardown to the UI thread, so a test that queues that post sees the
+    /// device still listed while its transport is gone, which is the state the manager must catch.
+    /// </summary>
+    public bool PretendLostOnceWired { get; init; }
+
+    private bool HasConnectionLostSubscriber() =>
+        typeof(AbstractStreamingDevice)
+            .GetField(nameof(ConnectionLost), System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?
+            .GetValue(this) != null;
 
     /// <summary>
     /// When set, <see cref="Connect"/> publishes this serial number as it returns, reproducing the
@@ -129,7 +156,7 @@ internal sealed class DroppableTestDevice : AbstractStreamingDevice
             return true;
         }
 
-        if (!PretendConnectSucceeds)
+        if (!PretendConnectSucceeds && !PretendLostOnceWired)
         {
             return base.Connect();
         }

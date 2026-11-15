@@ -54,10 +54,14 @@ public class ConnectionManagerTeardownTests
     /// bookkeeping, the notification — is the production code path.
     /// </summary>
     private static ConnectionManager NewManager(FakeSubscriptions subscriptions) =>
+        NewManager(subscriptions, action => action());
+
+    /// <summary>The same manager, with its UI marshal supplied by the test.</summary>
+    private static ConnectionManager NewManager(FakeSubscriptions subscriptions, Action<Action> postToUiThread) =>
         new(new NoOpDeviceWatcher(),
             () => subscriptions.Subscribed,
             subscriptions.Unsubscribe,
-            action => action());
+            postToUiThread);
 
     /// <summary>
     /// A connected device whose channels are BOTH on the device and in the logger — the state a
@@ -132,6 +136,49 @@ public class ConnectionManagerTeardownTests
 
         Assert.DoesNotContain(device, manager.ConnectedDevices);
         Assert.Equal(DAQiFiConnectionStatus.Error, manager.ConnectionStatus);
+    }
+
+    /// <summary>
+    /// Core can report Lost after the loss handler is attached and before Connect returns. In the
+    /// app the handler only POSTS its teardown to the UI thread, which is the thread Connect's
+    /// continuation runs on, so that teardown waits behind the connect. Connect must read the
+    /// device's own state, tear the device down itself, and report an error, not Connected. The
+    /// queued teardown must then do nothing, so the device is torn down once.
+    /// </summary>
+    /// <remarks>
+    /// The UI marshal here only queues, like a UI thread that is busy with this connect. Without
+    /// the device-state check, Connect found the device still in ConnectedDevices and returned
+    /// Connected; the removal came only after the dialog had closed.
+    /// </remarks>
+    [Fact]
+    public async Task A_loss_reported_while_the_connect_finishes_fails_the_connect_and_tears_down_once()
+    {
+        var subs = new FakeSubscriptions();
+        var queued = new List<Action>();
+        var manager = NewManager(subs, queued.Add);
+        var device = new DroppableTestDevice("SN-LOST-WIRED") { PretendLostOnceWired = true };
+        var channel = new FakeChannel("AI0", "SN-LOST-WIRED");
+        device.DataChannels.Add(channel);
+        subs.Subscribe(channel);
+
+        var result = await manager.Connect(device);
+
+        Assert.False(result.IsConnected);
+        Assert.Equal(DAQiFiConnectionStatus.Error, manager.ConnectionStatus);
+        Assert.DoesNotContain(device, manager.ConnectedDevices);
+        Assert.Single(subs.Released);
+        Assert.Equal(1, device.DisconnectCalls);
+        Assert.Contains("SN-LOST-WIRED", manager.LastDisconnectReason);
+
+        // The loss handler's own teardown, posted while the connect ran, now reaches the UI thread.
+        Assert.NotEmpty(queued);
+        foreach (var action in queued.ToList())
+        {
+            action();
+        }
+
+        Assert.Single(subs.Released);
+        Assert.Equal(1, device.DisconnectCalls);
     }
 
     /// <summary>
