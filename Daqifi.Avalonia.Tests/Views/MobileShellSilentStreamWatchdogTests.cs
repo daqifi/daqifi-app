@@ -328,6 +328,42 @@ public sealed class MobileShellSilentStreamWatchdogTests : IDisposable
     }
 
     /// <summary>
+    /// Review on #604: silence is measured from when the last sample arrived, not from the poll
+    /// that first saw it. A sample arrives 1 s after the start, then no poll runs for 9 s. The poll
+    /// that finally runs must find 9 s of silence and trip, not restart the window at its own time.
+    /// </summary>
+    [Fact]
+    public void A_late_poll_measures_silence_from_when_the_last_sample_arrived()
+    {
+        StartStreaming();
+        var channel = ActiveAnalogChannels().First();
+
+        _clock.Advance(TimeSpan.FromSeconds(1));
+        channel.ActiveSample = new DataSample { Value = 1, TimestampTicks = 1 };
+        Poll(1, TimeSpan.FromSeconds(9));
+
+        Assert.Equal(1, _shell.TotalSamples);
+        Assert.False(_shell.IsStreaming, "A sample 9 s old kept the stream live because the poll that saw it ran late.");
+        Assert.StartsWith("Lost connection to", _shell.Status, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The other side of the same rule: a late poll behind a FRESH sample is not silence.
+    /// </summary>
+    [Fact]
+    public void A_late_poll_behind_a_fresh_sample_does_not_trip()
+    {
+        StartStreaming();
+        var channel = ActiveAnalogChannels().First();
+
+        _clock.Advance(TimeSpan.FromSeconds(9));
+        channel.ActiveSample = new DataSample { Value = 1, TimestampTicks = 1 };
+        Poll(1, TimeSpan.FromSeconds(1));
+
+        Assert.True(_shell.IsStreaming, $"A sample 1 s old was judged silent ({_shell.Status}).");
+    }
+
+    /// <summary>
     /// The same slow tick must not make a live stream look dead: samples are counted on the receive
     /// thread, so a poll that runs late still sees every sample that arrived since the last one.
     /// </summary>

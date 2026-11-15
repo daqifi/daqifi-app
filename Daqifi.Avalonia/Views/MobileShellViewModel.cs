@@ -60,6 +60,9 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     private long _silenceWindowStart;
     private long _lastSampleAt;
     private long _lastPollAt;
+    // When the newest sample ARRIVED, written by the sample handler on the receive thread. A poll
+    // that runs late must judge silence from this, not from its own time — see CheckForSilentStream.
+    private long _lastSampleArrivedAt;
 
     /// <summary>
     /// The clock the silent-stream watchdog measures silence with. A seam only so the tests can
@@ -613,6 +616,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         _samplesAtLastPoll = 0;
         _monitoredAtLastPoll = false;
         _silenceWindowStart = _lastSampleAt = _lastPollAt = WatchdogClock.GetTimestamp();
+        Interlocked.Exchange(ref _lastSampleArrivedAt, _lastSampleAt);
         BeginCountingSamples();
 
         // Everything that arms the device is inside one try, so a failure anywhere in it lands on
@@ -776,12 +780,16 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         lock (_countedChannels)
         {
             var generation = Interlocked.Increment(ref _countingGeneration);
+            var clock = WatchdogClock;
             _sampleHandler = (_, _) =>
             {
                 // Raised on the Core receive thread, once per channel per streaming frame —
-                // 1,600 times a second at 16 channels / 100 Hz — so this must stay a compare and
-                // an interlocked add. Anything touching bound state belongs on the render tick.
+                // 1,600 times a second at 16 channels / 100 Hz — so this must stay a compare, a
+                // timestamp and two interlocked writes. Anything touching bound state belongs on
+                // the render tick. The arrival time is written first, so a poll that sees the new
+                // count never pairs it with an older arrival.
                 if (Volatile.Read(ref _countingGeneration) != generation) { return; }
+                Interlocked.Exchange(ref _lastSampleArrivedAt, clock.GetTimestamp());
                 Interlocked.Increment(ref _totalSamples);
             };
 
@@ -932,12 +940,15 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     /// <param name="now">This poll's <see cref="WatchdogClock"/> timestamp.</param>
     private void CheckForSilentStream(int monitoredChannels, long now)
     {
+        // Silence is measured from when the last sample ARRIVED, not from the poll that first saw
+        // it. A poll that runs nine seconds late must still find nine seconds of silence behind a
+        // sample that arrived at the start of the gap, not restart the window at its own time.
         var total = TotalSamples;
         if (total != _samplesAtLastPoll)
         {
             _samplesAtLastPoll = total;
-            _silenceWindowStart = _lastSampleAt = now;
-            return;
+            _lastSampleAt = Interlocked.Read(ref _lastSampleArrivedAt);
+            _silenceWindowStart = Math.Max(_silenceWindowStart, _lastSampleAt);
         }
 
         var silentInWindow = WatchdogClock.GetElapsedTime(_silenceWindowStart, now);
