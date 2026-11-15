@@ -174,11 +174,9 @@ public interface IStreamingDevice : IDevice
     // @port: Daqifi.Desktop.Device.IStreamingDevice.StopStreaming
     void StopStreaming();
 
-    /// <summary>
-    /// Sends a command to get any initialization data from the streamingDevice that might be needed
-    /// </summary>
-    // @port: Daqifi.Desktop.Device.IStreamingDevice.InitializeDeviceState
-    void InitializeDeviceState();
+    // Upstream's InitializeDeviceState was never called through this interface; the device wires
+    // its protocol handler itself (AbstractStreamingDevice.InitializeProtocolHandler, #448).
+    // @port: Daqifi.Desktop.Device.IStreamingDevice.InitializeDeviceState (removed)
 
     /// <summary>
     /// Sends a command to activate a channel on the streamingDevice
