@@ -2,9 +2,11 @@ using System;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Controls.Platform;
 using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Threading;
 using Daqifi.Avalonia.Views.Mobile;
 using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Common.Loggers;
@@ -32,9 +34,11 @@ public partial class MobileMainView : UserControl
     private Control? _storagePage;
     private Control? _channelsPage;
     private Control? _profilesPage;
+    private TopLevel? _backSource;
     private Button[] _navButtons = Array.Empty<Button>();
     private Button[] _railButtons = Array.Empty<Button>();
     private IActivatableLifetime? _activatable;
+    private IInputPane? _inputPane;
 
     // Standalone, WPF-free notifications VM (like the mobile SettingsViewModel). Shared between the
     // top-bar bell badge and the Notifications overlay list (#11).
@@ -76,20 +80,63 @@ public partial class MobileMainView : UserControl
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnAttachedToVisualTree(e);
+        // The Android Back gesture (#588). Only a phone top level raises it.
+        _backSource = TopLevel.GetTopLevel(this);
+        if (_backSource is not null) { _backSource.BackRequested += OnBackRequested; }
         AbstractChannel.ScaleResultsRejected += OnScaleResultsRejected;
+        // The on-screen keyboard (#589). Only a phone top level has an input pane.
+        _inputPane = TopLevel.GetTopLevel(this)?.InputPane;
+        if (_inputPane is not null) { _inputPane.StateChanged += OnInputPaneStateChanged; }
         _activatable = Application.Current?.TryGetFeature<IActivatableLifetime>();
         if (_activatable is not null) { _activatable.Deactivated += OnAppDeactivated; }
     }
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
+        if (_backSource is not null) { _backSource.BackRequested -= OnBackRequested; }
+        _backSource = null;
         AbstractChannel.ScaleResultsRejected -= OnScaleResultsRejected;
+        if (_inputPane is not null) { _inputPane.StateChanged -= OnInputPaneStateChanged; }
+        _inputPane = null;
         if (_activatable is not null) { _activatable.Deactivated -= OnAppDeactivated; }
         _activatable = null;
         // A destroyed activity takes the shell with it; save the open edit as desktop does when its
         // pane detaches (#560).
         SaveProfileEdit();
         base.OnDetachedFromVisualTree(e);
+    }
+
+    /// <summary>
+    /// The on-screen keyboard opened, closed or changed its height (#589).
+    /// </summary>
+    /// <remarks>
+    /// On Android 15 and later the app is edge-to-edge, and the window does not resize for the
+    /// keyboard. Without this the keyboard covers the manual IP row and its Connect button, and the
+    /// user types the address blind. The content area is lifted by the part of it that the keyboard
+    /// covers, so each pane's scroll viewer shrinks to the visible part of the screen. Then the
+    /// focused text box is scrolled into view: it got the focus before the keyboard opened, when it
+    /// was still on screen, so the scroll viewer had nothing to do at that time. The bottom nav stays
+    /// under the keyboard, as in a native app.
+    /// </remarks>
+    private void OnInputPaneStateChanged(object? sender, InputPaneStateEventArgs e)
+    {
+        var top = TopLevel.GetTopLevel(this);
+        if (top is null) { return; }
+
+        // The slot's bottom edge, not the area's: the margin below moves the area's own bottom edge.
+        var slotBottom = ContentArea.TranslatePoint(
+            new Point(0, ContentArea.Bounds.Height + ContentArea.Margin.Bottom), top);
+        if (slotBottom is null) { return; }
+
+        var keyboard = e.NewState == InputPaneState.Open ? e.EndRect : default;
+        var overlap = KeyboardInset.Overlap(slotBottom.Value.Y, keyboard);
+        ContentArea.Margin = new Thickness(0, 0, 0, overlap);
+        if (overlap <= 0) { return; }
+
+        // After the layout pass that the new margin starts, so the scroll viewer has its new height.
+        Dispatcher.UIThread.Post(
+            () => (top.FocusManager?.GetFocusedElement() as Control)?.BringIntoView(),
+            DispatcherPriority.Background);
     }
 
     /// <summary>The app went to the background: HOME, the app switcher, a call (#560).</summary>
@@ -196,6 +243,39 @@ public partial class MobileMainView : UserControl
 
     private void OnCloseNotifications(object? sender, RoutedEventArgs e) =>
         NotificationsOverlay.IsVisible = false;
+
+    /// <summary>
+    /// The Android Back gesture or key (#588). Closes the top-most open item and marks the event
+    /// handled. With nothing open on Live Graph the event stays unhandled, and Android moves the app
+    /// to the background, as before.
+    /// </summary>
+    private void OnBackRequested(object? sender, RoutedEventArgs e)
+    {
+        if (CloseTopmost()) { e.Handled = true; }
+    }
+
+    /// <summary>
+    /// Closes ONE item, the top-most first, and returns <c>true</c> when it did: the settings or
+    /// notifications overlay (they cover the whole shell), then an item inside the visible pane
+    /// (<see cref="MobileBackNavigation"/>), then a secondary tab, which goes back to Live Graph.
+    /// The hidden panes are not touched: an item the user cannot see is not the top-most one.
+    /// </summary>
+    private bool CloseTopmost()
+    {
+        if (SettingsOverlay.IsVisible) { SettingsOverlay.IsVisible = false; return true; }
+        if (NotificationsOverlay.IsVisible) { NotificationsOverlay.IsVisible = false; return true; }
+        if (!SecondaryHost.IsVisible) { return false; }
+
+        var closedInPane = SecondaryHost.Content switch
+        {
+            Control { DataContext: ProfilesPaneViewModel profiles } => MobileBackNavigation.Close(profiles),
+            Control { DataContext: ChannelsPaneViewModel channels } => MobileBackNavigation.Close(channels),
+            Mobile.StorageMobileView { VisibleAppLogs: { } sessions } => MobileBackNavigation.Close(sessions),
+            _ => false,
+        };
+        if (!closedInPane) { ShowStream(); }
+        return true;
+    }
 
     /// <summary>Opens a notification's link (e.g. a firmware "learn more") via the platform launcher,
     /// mirroring the desktop flyout's link button. Only http/https schemes are launched (never file:,
