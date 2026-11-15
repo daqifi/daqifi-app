@@ -85,9 +85,15 @@ public class ConnectionManagerTeardownTests
     /// <summary>
     /// The one case that goes through <see cref="ConnectionManager.Connect"/> itself, so the
     /// wiring the other cases set up by hand is pinned to what the production connect path
-    /// actually does. Everything else uses the hand-wired helper to avoid paying Connect's
-    /// one-second post-connect settle nine more times.
+    /// actually does. Everything else uses the hand-wired helper, so that each case wires only
+    /// what it tests.
     /// </summary>
+    /// <remarks>
+    /// The drop comes at once after the connect returns. Before #617 a drop at this time landed
+    /// inside a fixed 1 s wait at the end of the connect. Now it is an ordinary drop of a
+    /// connected device, and the loss handler must still remove it, release its channels and
+    /// name it.
+    /// </remarks>
     [Fact]
     public async Task Connecting_a_device_wires_it_for_teardown()
     {
@@ -105,6 +111,7 @@ public class ConnectionManagerTeardownTests
 
         Assert.DoesNotContain(device, manager.ConnectedDevices);
         Assert.Single(subs.Released);
+        Assert.Contains("SN-CONNECTED", manager.LastDisconnectReason);
     }
 
     /// <summary>
@@ -128,48 +135,32 @@ public class ConnectionManagerTeardownTests
     }
 
     /// <summary>
-    /// A drop during <see cref="ConnectionManager.Connect"/>'s one-second post-connect settle must
-    /// abort the connect, not complete it. The window only became reachable with this PR: the loss
-    /// handler goes live before the settle, and it runs while <c>Connect</c>'s continuation is
-    /// suspended — so without the guard the continuation would publish <c>Connected</c> and set
-    /// Sentry's device context for hardware that had already been torn down.
+    /// Connect must return as soon as the device is ready, with no fixed wait after it (#617).
+    /// Upstream waited 1 s after <c>device.Connect()</c> so that the first status message could
+    /// fill in the firmware version and serial number. <c>device.Connect()</c> now waits for that
+    /// condition itself, so the fixed second only delayed every connect.
     /// </summary>
     /// <remarks>
-    /// The drop is fired from a background task that waits until the device is in
-    /// <c>ConnectedDevices</c> (which happens immediately before the subscription) and then pauses
-    /// 50 ms. That lands it roughly 50 ms into a 1000 ms window — comfortably after the wiring and
-    /// with a 20x margin before the settle ends. Both failure directions are red rather than green:
-    /// too early and no handler is attached so nothing tears down; too late and the device is still
-    /// in the list.
+    /// The double connects at once, so the connect does almost no work: on main it took 1000 ms
+    /// and more, all of it the fixed wait. The 500 ms limit is far above the real work and far
+    /// below the old wait, so a slow CI runner does not fail it and a fixed wait that comes back
+    /// does.
     /// </remarks>
     [Fact]
-    public async Task A_drop_while_the_connection_is_settling_aborts_the_connect()
+    public async Task Connect_returns_without_a_fixed_settle_after_the_device_is_ready()
     {
         var subs = new FakeSubscriptions();
         var manager = NewManager(subs);
-        var device = new DroppableTestDevice("SN-SETTLING") { PretendConnectSucceeds = true };
-        var channel = new FakeChannel("AI0", "SN-SETTLING");
-        device.DataChannels.Add(channel);
-        subs.Subscribe(channel);
+        var device = new DroppableTestDevice("SN-PROMPT") { PretendConnectSucceeds = true };
 
-        var drop = Task.Run(async () =>
-        {
-            while (!manager.ConnectedDevices.Contains(device))
-            {
-                await Task.Delay(5);
-            }
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var result = await manager.Connect(device);
+        stopwatch.Stop();
 
-            await Task.Delay(50);
-            device.ReportCoreStatus(ConnectionStatus.Lost);
-        });
-
-        await manager.Connect(device);
-        await drop;
-
-        Assert.DoesNotContain(device, manager.ConnectedDevices);
-        Assert.NotEqual(DAQiFiConnectionStatus.Connected, manager.ConnectionStatus);
-        Assert.Single(subs.Released);
-        Assert.Contains("SN-SETTLING", manager.LastDisconnectReason);
+        Assert.True(result.IsConnected);
+        Assert.Contains(device, manager.ConnectedDevices);
+        Assert.True(stopwatch.ElapsedMilliseconds < 500,
+            $"Connect took {stopwatch.ElapsedMilliseconds} ms for a device that connected at once.");
     }
 
     [Fact]
