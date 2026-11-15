@@ -251,7 +251,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             try
             {
                 using var finder = createFinder();
-                finder.DeviceDiscovered += (_, e) => OnDeviceFound(e.DeviceInfo);
+                finder.DeviceDiscovered += (_, e) => OnDeviceFound(e.DeviceInfo, cts);
                 // A sweep has a time limit (#591). It used to run until the user tapped Stop, so
                 // a scan on a network with no device never gave a result, and it kept the
                 // multicast lock (and kept broadcasting) for as long as nobody came back to stop
@@ -281,14 +281,18 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             {
                 PostToUiThread(() =>
                 {
+                    // Only if THIS sweep is still the current one: the user may have tapped Scan
+                    // again in the meantime, and ending that newer sweep would release a lock it
+                    // is still relying on. A sweep that was already stopped (by the user, a
+                    // connect or the app going to the background) has said why, and its fault
+                    // must not overwrite that (#591 review).
+                    if (!ReferenceEquals(_cts, cts)) { return; }
                     Status = $"Scan failed: {ex.Message}";
                     // The sweep is over and the scope already released by the time this runs,
                     // so the button must stop offering to stop it — otherwise the next tap
                     // lands on the stop branch above and the user has to tap Scan twice to
-                    // scan again (#359). Only if THIS sweep is still the current one: the
-                    // user may have tapped Scan again in the meantime, and ending that
-                    // newer sweep would release a lock it is still relying on.
-                    if (ReferenceEquals(_cts, cts)) { EndScanSweep(); }
+                    // scan again (#359).
+                    EndScanSweep();
                 });
             }
         }, token);
@@ -378,11 +382,17 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void OnDeviceFound(IDeviceInfo device)
+    /// <param name="device">The device that replied.</param>
+    /// <param name="sweep">
+    /// The sweep that heard it. A reply posted just before that sweep was stopped can run after
+    /// the stop; it must not change the list or the status that the stop wrote (#591 review).
+    /// </param>
+    private void OnDeviceFound(IDeviceInfo device, CancellationTokenSource sweep)
     {
         if (device.IPAddress == null) { return; }
         PostToUiThread(() =>
         {
+            if (!ReferenceEquals(_cts, sweep)) { return; }
             var key = device.IPAddress.ToString();
             if (Devices.Any(d => d.Key == key)) { return; }
             Devices.Add(new MobileDeviceItem(this, device, key));

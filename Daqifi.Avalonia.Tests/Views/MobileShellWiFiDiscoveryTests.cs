@@ -285,6 +285,64 @@ public sealed class MobileShellWiFiDiscoveryTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// Review on #607. A reply that the finder posted just before the app went to the background
+    /// runs after the stop. It must not add a row or replace the background-stop status.
+    /// </summary>
+    [Fact]
+    public void A_reply_posted_before_the_background_stop_does_not_overwrite_it()
+    {
+        var posted = new Queue<Action>();
+        _shell.PostToUiThread = action => { lock (posted) { posted.Enqueue(action); } };
+        var finder = new ScriptedFinder(_ => Board);
+        _shell.CreateWifiFinder = () => finder;
+
+        _shell.ScanCommand.Execute(null);
+        Assert.True(WaitUntil(() => { lock (posted) { return posted.Count > 0; } }), "The board's reply was never posted.");
+
+        _shell.StopScanForBackground();
+        RunPosted(posted);
+
+        Assert.Empty(_shell.Devices);
+        Assert.Equal("Scan stopped — the app went to the background. Tap Scan to search again.", _shell.Status);
+    }
+
+    /// <summary>
+    /// The fault path obeys the same rule: a sweep that the user already stopped must not replace
+    /// the stop's status with "Scan failed".
+    /// </summary>
+    [Fact]
+    public void A_fault_from_a_sweep_that_was_already_stopped_does_not_overwrite_the_status()
+    {
+        var posted = new Queue<Action>();
+        _shell.PostToUiThread = action => { lock (posted) { posted.Enqueue(action); } };
+        var finder = new ScriptedFinder(_ => null) { Fault = new InvalidOperationException("no socket") };
+        _shell.CreateWifiFinder = () => finder;
+
+        _shell.ScanCommand.Execute(null);
+        Assert.True(WaitUntil(() => { lock (posted) { return posted.Count > 0; } }), "The fault was never posted.");
+
+        _shell.ScanCommand.Execute(null);   // the user taps Stop
+        RunPosted(posted);
+
+        Assert.False(_shell.IsScanning);
+        Assert.Equal("Scan stopped — no devices found.", _shell.Status);
+    }
+
+    private static void RunPosted(Queue<Action> posted)
+    {
+        while (true)
+        {
+            Action next;
+            lock (posted)
+            {
+                if (posted.Count == 0) { return; }
+                next = posted.Dequeue();
+            }
+            next();
+        }
+    }
+
     /// <summary>Going to the background with no sweep running leaves the status alone.</summary>
     [Fact]
     public void The_app_going_to_the_background_without_a_sweep_changes_nothing()
