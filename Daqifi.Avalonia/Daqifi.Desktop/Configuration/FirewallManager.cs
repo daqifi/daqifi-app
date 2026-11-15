@@ -32,8 +32,8 @@ public static class FirewallConfiguration
     {
         try
         {
-            // The single source of truth for "is this process elevated" (AppDataPaths.IsElevated,
-            // surfaced as App.IsElevated). The one caller already gates on the same value, so this
+            // The single source of truth for "is this process elevated" (AppDataPaths.IsElevated).
+            // The one caller already gates on the same value, so this
             // is a precondition re-check, not a second opinion — there used to be a second
             // implementation here (WindowsPrincipalAdminChecker) with byte-identical logic.
             if (!AppDataPaths.IsElevated)

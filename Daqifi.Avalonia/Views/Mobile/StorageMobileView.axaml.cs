@@ -37,6 +37,14 @@ public partial class StorageMobileView : UserControl
         }
     }
 
+    /// <summary>
+    /// The APP LOGS view model while that half is the visible one; otherwise <c>null</c>. The shell's
+    /// Back handling (#588) closes the session plot or a confirm overlay through it, and must not
+    /// close one that the DEVICE LOGS half hides.
+    /// </summary>
+    internal LoggedSessionsMobileViewModel? VisibleAppLogs =>
+        AppLogsHost.IsVisible ? AppLogsHost.DataContext as LoggedSessionsMobileViewModel : null;
+
     private void OnAppLogs(object? sender, RoutedEventArgs e)
     {
         AppLogsHost.IsVisible = true;

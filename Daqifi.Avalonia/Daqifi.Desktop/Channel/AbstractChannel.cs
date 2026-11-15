@@ -419,7 +419,17 @@ public abstract partial class AbstractChannel : ObservableObject, IChannel
             {
                 NotifyChannelUpdated(this, _activeSample);
             }
-            OnPropertyChanged();
+
+            // No PropertyChanged here (#620). This setter runs on the device reader thread once per
+            // sample, and Avalonia marshals every PropertyChanged that a background thread raises
+            // to the UI thread BEFORE its bindings filter by name. The Live Graph legend binds this
+            // channel object, so each sample put one empty job on the UI thread: about 16,900 a
+            // second at 16 channels x 1 kHz, even with the graph off screen. No binding or handler
+            // reads ActiveSample by name. The readers that show it poll at display cadence instead:
+            // the Channels pane tiles on their 100 ms ValueRefresh timer, and the phone in
+            // MobileShellViewModel.PollActiveSamples. Loggers take each sample through
+            // NotifyChannelUpdated, and the phone watchdog through SampleReceived.
+            // @port-divergence: upstream raises PropertyChanged for ActiveSample on every sample.
         }
     }
 
@@ -546,8 +556,9 @@ public abstract partial class AbstractChannel : ObservableObject, IChannel
                 "so far this session.");
         }
 
-        // One notification per bad sample, in place of the ActiveSample notification a good sample
-        // raises, so the bound label costs no more per sample than the live value already did.
+        // One notification per bad sample, so the drawer's label always shows the true count. Raised
+        // on the reader thread, each one is a UI job, but only while the expression rejects
+        // samples; a good sample raises no notification at all (#620).
         // RejectedScaleResultCount is not bound anywhere, so it is not raised here.
         OnPropertyChanged(nameof(RejectedScaleResultsMessage));
 
