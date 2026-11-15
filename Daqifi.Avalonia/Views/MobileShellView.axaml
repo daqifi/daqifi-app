@@ -111,11 +111,14 @@
 				           HorizontalAlignment="Center" />
 			</StackPanel>
 
+			<!-- Scan only while disconnected. While connected the device list is hidden, so a scan
+			     found devices that nobody could see or tap (#598); the device bar below takes
+			     this slot instead. -->
 			<Button DockPanel.Dock="Top"
 			        Classes="scanToggle"
 			        Classes.scanning="{Binding IsScanning}"
 			        Command="{Binding ScanCommand}"
-			        IsVisible="{Binding !IsStreaming}"
+			        IsVisible="{Binding !IsConnected}"
 			        HorizontalAlignment="Stretch"
 			        HorizontalContentAlignment="Center"
 			        Margin="0,20,0,10" Padding="0,14"
@@ -127,6 +130,40 @@
 					<TextBlock Text="Stop scanning" IsVisible="{Binding IsScanning}" />
 				</Panel>
 			</Button>
+
+			<!-- Connected device bar (#598): which board this phone holds, and the control that lets
+			     it go. The Nyquist accepts one TCP client, so without DISCONNECT the phone kept the
+			     board from the desktop app and every other phone until the app process ended. Same
+			     slot and top margin as the scan button it replaces, so the screen does not jump, and
+			     shown while streaming too: DISCONNECT stops the stream first. The red pill is the
+			     DISCONNECT the desktop device drawer shows (DangerPillButton). -->
+			<Border DockPanel.Dock="Top"
+			        IsVisible="{Binding IsConnected}"
+			        Margin="0,20,0,10" Padding="16,10,10,10"
+			        Background="{DynamicResource SurfaceRaised}"
+			        BorderBrush="{DynamicResource BorderDim}" BorderThickness="1"
+			        CornerRadius="12">
+				<Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+					<Ellipse Grid.Column="0" Width="10" Height="10" VerticalAlignment="Center"
+					         Fill="{DynamicResource StatusGreen}" />
+					<StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+						<TextBlock Text="{Binding ConnectedDeviceName}" Classes="mono"
+						           FontSize="{DynamicResource FontSizeSubtitle}" FontWeight="SemiBold"
+						           Foreground="{DynamicResource TextPrimary}"
+						           TextTrimming="CharacterEllipsis" />
+						<TextBlock Text="{Binding ConnectedDeviceDetail}"
+						           FontSize="{DynamicResource FontSizeCaption}"
+						           Foreground="{DynamicResource TextTertiary}"
+						           TextTrimming="CharacterEllipsis" />
+					</StackPanel>
+					<Button Grid.Column="2" Theme="{StaticResource DangerPillButton}"
+					        Content="DISCONNECT"
+					        AutomationProperties.Name="Disconnect"
+					        Command="{Binding DisconnectCommand}"
+					        MinHeight="44" Padding="18,0" VerticalAlignment="Center"
+					        FontSize="{DynamicResource FontSizeSmall}" />
+				</Grid>
+			</Border>
 
 			<!-- Stream toggle appears once a device is connected -->
 			<Button DockPanel.Dock="Top"

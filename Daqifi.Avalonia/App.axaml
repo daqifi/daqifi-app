@@ -13,7 +13,21 @@
          "Avalonia Application" (#108). Harmless on the other heads, where the visible name
          comes from the manifest / plist instead. -->
     <Application.Styles>
-        <FluentTheme />
+        <!-- Brand accent (#613). Without a palette, FluentTheme takes SystemAccentColor
+             from the OS (Fluent's #0078D7 when the OS reports none), so toggles, radios,
+             sliders, progress bars and checked toggle buttons followed the user's
+             System Settings accent while every hand-written template used the DAQiFi
+             blue below. Only Accent is set: the other palette colours keep the Fluent
+             defaults, and Fluent derives SystemAccentColorLight1..3 / Dark1..3 (the
+             hover and pressed shades) from it. Same value as the Accent token in
+             Resources/DesignTokens.axaml; Light is set too so a future light variant
+             does not regress to the OS colour. AccentPaletteTests pins it. -->
+        <FluentTheme>
+            <FluentTheme.Palettes>
+                <ColorPaletteResources x:Key="Dark" Accent="#119EDA"/>
+                <ColorPaletteResources x:Key="Light" Accent="#119EDA"/>
+            </FluentTheme.Palettes>
+        </FluentTheme>
         <!-- Avalonia's DataGrid ships its theme in its own package (DebugWindow) -->
         <StyleInclude Source="avares://Avalonia.Controls.DataGrid/Themes/Fluent.xaml"/>
         <!-- OxyPlot control templates: PlotView renders into its template's PART_Panel,

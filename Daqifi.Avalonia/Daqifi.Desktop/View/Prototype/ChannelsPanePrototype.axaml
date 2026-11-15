@@ -132,7 +132,7 @@
                     <Border x:Name="Bg"
                             Background="Transparent"
                             CornerRadius="11">
-                        <i:Icon Value="mdi-cog"
+                        <i:Icon Value="mdi-cog-outline"
                                 FontSize="11"
                                 Foreground="{DynamicResource TextTertiary}"
                                 HorizontalAlignment="Center"

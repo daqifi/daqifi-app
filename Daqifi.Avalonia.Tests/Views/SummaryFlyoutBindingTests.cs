@@ -232,22 +232,39 @@ public class SummaryFlyoutBindingTests
     /// and both modes here are load-bearing.
     ///
     /// <para>
-    /// The close button writes <c>IsLogSummaryOpen</c> back, so it must be <c>TwoWay</c> — as
-    /// <c>OneWay</c> it would compile, render, and never close the flyout. The status switch is the
-    /// opposite: it reports <c>Enabled</c> <c>OneWay</c> and does its work through
+    /// The status switch reports <c>Enabled</c> <c>OneWay</c> and does its work through
     /// <c>ToggleEnabledCommand</c>, because a <c>TwoWay</c> <c>IsChecked</c> beside that command would
     /// both write the property and run the toggle that inverts it.
     /// </para>
     /// </summary>
     [Theory]
-    [InlineData("ToggleButton", "IsChecked", "{Binding IsLogSummaryOpen, Mode=TwoWay}")]
     [InlineData("ToggleSwitch", "IsChecked", "{Binding SummaryLogger.Enabled, Mode=OneWay}")]
     [InlineData("ToggleSwitch", "Command", "{Binding SummaryLogger.ToggleEnabledCommand}")]
-    [InlineData("Button", "Command", "{Binding SummaryLogger.ResetCommand}")]
     [InlineData("NumericUpDown", "Value", "{Binding SummaryLogger.SampleSize}")]
     public void The_bindings_feed_the_attributes_they_are_supposed_to(
         string elementName, string attribute, string binding) =>
         Assert.Equal(binding, TheOnly(elementName).Attribute(attribute)?.Value);
+
+    /// <summary>
+    /// The pane's two buttons, told apart by what they do. The close button used to be a
+    /// <c>ToggleButton</c> bound <c>TwoWay</c> to <c>IsLogSummaryOpen</c>; that flag is always true
+    /// while the pane is on screen, so the toggle sat checked and Fluent filled it with the accent
+    /// colour (#613). It is a plain <c>Button</c> on a close command now, and a returning
+    /// <c>ToggleButton</c> would bring the filled square back.
+    /// </summary>
+    [Theory]
+    [InlineData("Reset", "{Binding SummaryLogger.ResetCommand}")]
+    [InlineData(null, "{Binding CloseLogSummaryCommand}")]
+    public void Each_button_runs_its_own_command(string? content, string binding)
+    {
+        var button = Assert.Single(Root().Descendants(),
+            element => element.Name.LocalName == "Button" && element.Attribute("Command")?.Value == binding);
+        Assert.Equal(content, button.Attribute("Content")?.Value);
+    }
+
+    [Fact]
+    public void The_pane_has_no_toggle_button() =>
+        Assert.DoesNotContain(Root().Descendants(), element => element.Name.LocalName == "ToggleButton");
 
     /// <summary>
     /// The headline: how many bindings this view actually has, counted by parsing rather than by

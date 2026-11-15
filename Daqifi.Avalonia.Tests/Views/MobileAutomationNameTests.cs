@@ -66,7 +66,6 @@ public class MobileAutomationNameTests
         "Daqifi.Avalonia/Views/MobileShellView.axaml",
         "Daqifi.Avalonia/Views/Mobile/ChannelsMobileView.axaml",
         "Daqifi.Avalonia/Views/Mobile/DeviceLogsMobileView.axaml",
-        "Daqifi.Avalonia/Views/Mobile/DevicesMobileView.axaml",
         "Daqifi.Avalonia/Views/Mobile/LoggedSessionsMobileView.axaml",
         "Daqifi.Avalonia/Views/Mobile/ProfilesMobileView.axaml",
         "Daqifi.Avalonia/Views/Mobile/StorageMobileView.axaml",
