@@ -63,12 +63,15 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     [ObservableProperty]
     private bool _isLoggedDataBusy;
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsAnyDrawerOpen))]
     private bool _isNotificationsOpen;
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsAnyDrawerOpen))]
     private bool _isLogSummaryOpen;
     [ObservableProperty]
     private bool _isLoggingSessionSettingsOpen;
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsAnyDrawerOpen))]
     private bool _isLiveGraphSettingsOpen;
     [ObservableProperty]
     private bool _networkSettingsApplied;
@@ -121,6 +124,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.HasFriendlyNameError
     public bool HasFriendlyNameError => !string.IsNullOrEmpty(FriendlyNameError);
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsAnyDrawerOpen))]
     private bool _isAppSettingsOpen;
 
     // In-pane confirm overlay (delete confirmations, etc.). The reusable ConfirmOverlayViewModel
@@ -1296,8 +1300,16 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
     /// <summary>
     /// True while one of the four right-side panels (#615) is open: Settings, Notifications,
-    /// Plot Settings or Log Summary. They share MainWindow's one SplitView pane.
+    /// Plot Settings or Log Summary. They share MainWindow's one SplitView pane, and this is what
+    /// opens it.
     /// </summary>
+    /// <remarks>
+    /// One computed value, not a MultiBinding over the four flags, because a switch from one panel
+    /// to another sets the new flag and then clears the old one inside the same change. A
+    /// MultiBinding hears the old flag go false before it hears the new one go true, so for a
+    /// moment it reported "all closed" and the pane started to close. This getter reads all four
+    /// fields when it is asked, so it is true at every step of a switch.
+    /// </remarks>
     public bool IsAnyDrawerOpen =>
         IsAppSettingsOpen || IsNotificationsOpen || IsLiveGraphSettingsOpen || IsLogSummaryOpen;
 
@@ -1307,6 +1319,21 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// with what is on screen. Unlike <see cref="CloseFlyouts"/> it leaves the Logged Data session
     /// drawer alone: that one is not in this pane.
     /// </summary>
+    /// <summary>
+    /// Escape from anywhere in the window (#615): closes the open right-side panel and reports
+    /// whether there was one, so the key is only consumed when it did something.
+    /// </summary>
+    public bool DismissDrawer()
+    {
+        if (!IsAnyDrawerOpen)
+        {
+            return false;
+        }
+
+        CloseDrawers();
+        return true;
+    }
+
     public void CloseDrawers()
     {
         IsAppSettingsOpen = false;
@@ -1322,10 +1349,17 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     {
         if (value)
         {
-            IsNotificationsOpen = false;
-            IsLiveGraphSettingsOpen = false;
-            IsLogSummaryOpen = false;
+            CloseDrawersExcept(nameof(IsAppSettingsOpen));
         }
+    }
+
+    /// <summary>Clears every right-side panel flag but <paramref name="keep"/>.</summary>
+    private void CloseDrawersExcept(string keep)
+    {
+        if (keep != nameof(IsAppSettingsOpen)) IsAppSettingsOpen = false;
+        if (keep != nameof(IsNotificationsOpen)) IsNotificationsOpen = false;
+        if (keep != nameof(IsLiveGraphSettingsOpen)) IsLiveGraphSettingsOpen = false;
+        if (keep != nameof(IsLogSummaryOpen)) IsLogSummaryOpen = false;
     }
 
     [RelayCommand]
@@ -1638,9 +1672,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.OpenLiveGraphSettings
     private void OpenLiveGraphSettings()
     {
-        CloseFlyouts();
-        IsAppSettingsOpen = false;
+        // Open first, then close the rest (#615): the pane must not see "no panel open" mid-switch.
         IsLiveGraphSettingsOpen = true;
+        IsLoggingSessionSettingsOpen = false;
+        CloseDrawersExcept(nameof(IsLiveGraphSettingsOpen));
     }
 
     /// <summary>
@@ -1671,9 +1706,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.OpenLogSummary
     private void OpenLogSummary()
     {
-        CloseFlyouts();
-        IsAppSettingsOpen = false;
+        // Open first, then close the rest (#615): the pane must not see "no panel open" mid-switch.
         IsLogSummaryOpen = true;
+        IsLoggingSessionSettingsOpen = false;
+        CloseDrawersExcept(nameof(IsLogSummaryOpen));
     }
 
     [RelayCommand]
@@ -2278,11 +2314,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.OpenNotifications
     private void OpenNotifications()
     {
-        // One right-side panel at a time (#615): they share one pane now.
-        IsAppSettingsOpen = false;
-        IsLiveGraphSettingsOpen = false;
-        IsLogSummaryOpen = false;
+        // One right-side panel at a time (#615): they share one pane now. Open first, then close
+        // the rest, so the pane never sees "no panel open" mid-switch.
         IsNotificationsOpen = true;
+        CloseDrawersExcept(nameof(IsNotificationsOpen));
     }
 
     #endregion

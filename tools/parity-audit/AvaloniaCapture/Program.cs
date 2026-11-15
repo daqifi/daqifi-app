@@ -450,7 +450,7 @@ internal static class AvaloniaCapture
         // Let the CLOSE finish before the next drawer opens. Set() pumps a fixed number of
         // times, which is enough to get the new content on screen but nowhere near enough to
         // finish an animation — and the last three drawers here are not three panels, they are
-        // ONE SplitView (MainWindow.axaml binds IsPaneOpen to BoolOr of the three VM flags), so
+        // ONE SplitView (MainWindow.axaml binds IsPaneOpen to IsAnyDrawerOpen over the VM flags), so
         // whatever state a half-finished close left the pane in is the state the next open
         // starts from, and the error accumulates across the sweep.
         //

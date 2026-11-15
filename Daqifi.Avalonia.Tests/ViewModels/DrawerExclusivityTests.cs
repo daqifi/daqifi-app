@@ -72,6 +72,110 @@ public class DrawerExclusivityTests
     }
 
     /// <summary>
+    /// The review case: Notifications open, then SETTINGS. The pane opens on
+    /// <see cref="DaqifiViewModel.IsAnyDrawerOpen"/>, so it must never read false while one panel
+    /// replaces another. The old MultiBinding heard Notifications close before Settings open, the
+    /// pane began to close, and the dismiss handler then closed Settings too. Every value the pane
+    /// would receive during the switch is recorded here, in the order the binding gets them.
+    /// </summary>
+    [Theory]
+    [InlineData("Notifications", "Settings")]
+    [InlineData("Settings", "Notifications")]
+    [InlineData("PlotSettings", "Settings")]
+    [InlineData("Settings", "LogSummary")]
+    [InlineData("Notifications", "PlotSettings")]
+    public void A_panel_switch_never_reports_all_closed(string from, string to)
+    {
+        var vm = NewViewModel();
+        OpenPanel(vm, from);
+        var seen = new List<bool>();
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(DaqifiViewModel.IsAnyDrawerOpen))
+            {
+                seen.Add(vm.IsAnyDrawerOpen);
+            }
+        };
+
+        OpenPanel(vm, to);
+
+        Assert.NotEmpty(seen);
+        Assert.All(seen, Assert.True);
+        Assert.Equal([to], Open(vm));
+    }
+
+    /// <summary>
+    /// Each of the four flags drives the pane on its own: setting it raises
+    /// <see cref="DaqifiViewModel.IsAnyDrawerOpen"/> and makes it true, and clearing it makes it false
+    /// again. A flag missing from the notifications would leave the pane shut for that panel.
+    /// </summary>
+    [Theory]
+    [InlineData("Settings")]
+    [InlineData("Notifications")]
+    [InlineData("PlotSettings")]
+    [InlineData("LogSummary")]
+    public void Each_panel_flag_opens_and_closes_the_pane(string panel)
+    {
+        var vm = NewViewModel();
+        var raised = 0;
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(DaqifiViewModel.IsAnyDrawerOpen))
+            {
+                raised++;
+            }
+        };
+
+        SetFlag(vm, panel, true);
+        Assert.True(vm.IsAnyDrawerOpen);
+        SetFlag(vm, panel, false);
+
+        Assert.False(vm.IsAnyDrawerOpen);
+        Assert.True(raised >= 2, $"{panel}: IsAnyDrawerOpen raised {raised} time(s), expected 2.");
+    }
+
+    /// <summary>
+    /// Escape from outside the pane (the review case: focus still on the SETTINGS button).
+    /// MainWindow.OnKeyDown calls <see cref="DaqifiViewModel.DismissDrawer"/>; it closes the open
+    /// panel and reports true, so the key is consumed, and reports false with nothing open, so
+    /// Escape still reaches whatever else wants it.
+    /// </summary>
+    [Fact]
+    public void DismissDrawer_closes_the_open_panel_and_says_whether_it_did()
+    {
+        var vm = NewViewModel();
+        Assert.False(vm.DismissDrawer());
+
+        vm.IsAppSettingsOpen = true;
+
+        Assert.True(vm.DismissDrawer());
+        Assert.Empty(Open(vm));
+        Assert.False(vm.DismissDrawer());
+    }
+
+    private static void OpenPanel(DaqifiViewModel vm, string panel)
+    {
+        switch (panel)
+        {
+            case "Settings": vm.IsAppSettingsOpen = true; break; // the top-bar toggle is two-way
+            case "Notifications": vm.OpenNotificationsCommand.Execute(null); break;
+            case "PlotSettings": vm.OpenLiveGraphSettingsCommand.Execute(null); break;
+            default: vm.OpenLogSummaryCommand.Execute(null); break;
+        }
+    }
+
+    private static void SetFlag(DaqifiViewModel vm, string panel, bool value)
+    {
+        switch (panel)
+        {
+            case "Settings": vm.IsAppSettingsOpen = value; break;
+            case "Notifications": vm.IsNotificationsOpen = value; break;
+            case "PlotSettings": vm.IsLiveGraphSettingsOpen = value; break;
+            default: vm.IsLogSummaryOpen = value; break;
+        }
+    }
+
+    /// <summary>
     /// The scrim and Escape path: MainWindow cancels the pane's own close while
     /// <see cref="DaqifiViewModel.IsAnyDrawerOpen"/> is true and calls CloseDrawers instead, so the
     /// flags and the screen agree. The Logged Data session drawer is not in this pane and stays open.

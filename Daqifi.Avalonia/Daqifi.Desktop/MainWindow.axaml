@@ -70,7 +70,6 @@
 
     <Window.Resources>
 
-        <converters:BoolOrConverter x:Key="BoolOr"/>
 
         <!--
             Navigation rail — uses canonical design tokens from
@@ -305,7 +304,9 @@
             200 ms ease-out slide (the Fluent SplitView width transition, 100 ms to close), one
             scrim (UseLightDismissOverlayMode, tinted to the settings drawer's old 63 % black)
             and one hairline along the left edge. A click on the scrim, or Escape, closes the
-            open panel; OnPaneClosing in the code-behind turns that into the view-model flag.
+            open panel; OnPaneClosing in the code-behind turns that into the view-model flag, and
+            OnKeyDown takes Escape when focus is outside the pane (the top-bar button that opened
+            it, for example), where the SplitView never sees the key.
         -->
         <SplitView x:Name="DrawerHost"
                    Grid.Row="1"
@@ -318,13 +319,9 @@
             <SplitView.Resources>
                 <SolidColorBrush x:Key="SplitViewLightDismissOverlayBackground" Color="#A0000000"/>
             </SplitView.Resources>
+            <!-- One computed flag, not a MultiBinding over the four: see IsAnyDrawerOpen. -->
             <SplitView.IsPaneOpen>
-                <MultiBinding Converter="{StaticResource BoolOr}" Mode="OneWay">
-                    <Binding Path="IsAppSettingsOpen"/>
-                    <Binding Path="IsNotificationsOpen"/>
-                    <Binding Path="IsLiveGraphSettingsOpen"/>
-                    <Binding Path="IsLogSummaryOpen"/>
-                </MultiBinding>
+                <Binding Path="IsAnyDrawerOpen" Mode="OneWay"/>
             </SplitView.IsPaneOpen>
 
             <SplitView.Pane>
