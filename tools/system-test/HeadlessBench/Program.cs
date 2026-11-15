@@ -682,8 +682,7 @@ internal static class HeadlessBench
         }
 
         // CONN-DISC — through DaqifiViewModel.DisconnectDeviceCommand, the command the Devices pane
-        // binds (DevicesPanePrototype.axaml, DevicesMobileView.axaml, and DevicesPaneViewModel.
-        // DisconnectSelected). ConnectionManager.Instance.Disconnect is only ONE of the four things
+        // binds (DevicesPanePrototype.axaml and DevicesPaneViewModel.DisconnectSelected). ConnectionManager.Instance.Disconnect is only ONE of the four things
         // that command does — it also unsubscribes every active channel from LoggingManager, removes
         // the firmware notification and clears SelectedDevice — and this rig used to call the
         // manager directly, so those three went untested. Note which assertion below actually
