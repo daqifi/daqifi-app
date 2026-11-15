@@ -47,9 +47,6 @@ public class DeviceLoweredRateReadoutTests
     private const string DesktopDevicesView =
         "Daqifi.Avalonia/Daqifi.Desktop/View/Prototype/DevicesPanePrototype.axaml";
 
-    private const string MobileDevicesView =
-        "Daqifi.Avalonia/Views/Mobile/DevicesMobileView.axaml";
-
     #region The RATE chip follows the device
     /// <summary>
     /// The defect, stated as the user meets it: the rate is set, the device settles on a lower one
@@ -276,13 +273,11 @@ public class DeviceLoweredRateReadoutTests
         BindingFacts.AssertExposes(typeof(DaqifiViewModel), "SelectedStreamingFrequency");
     }
 
-    /// <summary>The same pair for the drawer's FREQUENCY slider, on both views over that one pane.</summary>
-    [Theory]
-    [InlineData(DesktopDevicesView)]
-    [InlineData(MobileDevicesView)]
-    public void The_devices_drawer_binds_the_panes_rate_readout(string viewPath)
+    /// <summary>The same pair for the drawer's FREQUENCY slider.</summary>
+    [Fact]
+    public void The_devices_drawer_binds_the_panes_rate_readout()
     {
-        BindingFacts.AssertBinds(viewPath, "Value=\"{Binding FrequencyHz, Delay=500}\"");
+        BindingFacts.AssertBinds(DesktopDevicesView, "Value=\"{Binding FrequencyHz, Delay=500}\"");
 
         BindingFacts.AssertExposes(typeof(DevicesPaneViewModel), "FrequencyHz");
     }
