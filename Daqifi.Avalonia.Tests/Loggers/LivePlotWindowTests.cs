@@ -35,12 +35,14 @@ public class LivePlotWindowTests
         for (; sample < Window; sample++)
         {
             plotter.Log(Sample(sample));
+            plotter.DrainPendingSamples();
         }
 
         var points = plotter.LoggedPoints.Values.Single();
         for (; sample < Window + 3 * Batch + 17; sample++)
         {
             plotter.Log(Sample(sample));
+            plotter.DrainPendingSamples();
             Assert.InRange(points.Count, Window, Window + Batch - 1);
         }
 
@@ -56,6 +58,7 @@ public class LivePlotWindowTests
         for (; sample < Window; sample++)
         {
             plotter.Log(Sample(sample));
+            plotter.DrainPendingSamples();
         }
 
         var points = plotter.LoggedPoints.Values.Single();
@@ -65,6 +68,7 @@ public class LivePlotWindowTests
         for (var i = 0; i < extra; i++, sample++)
         {
             plotter.Log(Sample(sample));
+            plotter.DrainPendingSamples();
             if (points[0].X != oldest)
             {
                 moves++;
