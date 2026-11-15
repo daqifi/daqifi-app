@@ -156,27 +156,59 @@ public sealed class StorageExportWriterTests : IDisposable
         Assert.Equal(ExportByPath(session), file.Bytes);
     }
 
-    /// <summary>Export all: each session becomes its own file in a content-URI folder, and the name
-    /// returned is the one the provider chose.</summary>
+    /// <summary>Export all: each session becomes its own complete file in a content-URI folder, and a
+    /// file already in the folder keeps its name and its bytes — the export takes the next free name
+    /// instead of creating over it (CreateFileAsync truncates).</summary>
     [Fact]
-    public async Task Export_all_creates_one_complete_file_per_session_in_a_content_uri_folder()
+    public async Task Export_all_creates_one_complete_file_per_session_and_never_over_an_existing_one()
     {
         var first = SeedSession("Run", "AI0", 1.25);
         var second = SeedSession("Run", "AI1", 7.5);
-        var folder = new MemoryStorageFolder("Documents") { RenameDuplicates = true };
-        folder.Seed("Run.csv", PriorContent); // the provider will call the new one "Run (1).csv"
+        var folder = new MemoryStorageFolder("Documents");
+        folder.Seed("Run.csv", PriorContent);
         var namer = new ExportFileNamer();
         var writer = Writer();
 
         var a = await writer.WriteNewAsync(folder, namer.NextCsvName(first.Name, first.ID), ExportTo(first));
         var b = await writer.WriteNewAsync(folder, namer.NextCsvName(second.Name, second.ID), ExportTo(second));
 
-        Assert.Equal("Run (1).csv", a);
-        Assert.Equal("Run (2).csv", b);
-        Assert.Equal(ExportByPath(first), folder.Files["Run (1).csv"].Bytes);
-        Assert.Equal(ExportByPath(second), folder.Files["Run (2).csv"].Bytes);
+        Assert.Equal("Run (2).csv", a); // "Run.csv" is taken
+        Assert.Equal("Run (3).csv", b); // the namer said "Run (2).csv", which the first one now holds
+        Assert.Equal(ExportByPath(first), folder.Files["Run (2).csv"].Bytes);
+        Assert.Equal(ExportByPath(second), folder.Files["Run (3).csv"].Bytes);
         Assert.Equal(PriorContent, folder.Files["Run.csv"].Text);
+        Assert.Equal(0, folder.Truncations);
         AssertNoStagingLeft();
+    }
+
+    /// <summary>The review case: a name collision followed by a failed copy. The previous export must
+    /// survive byte for byte, and only the file this export created is removed.</summary>
+    [Fact]
+    public async Task Export_all_keeps_an_existing_file_when_the_copy_into_its_namesake_fails()
+    {
+        var session = SeedSession("Run", "AI0", 1.25);
+        var folder = new MemoryStorageFolder("Documents") { FailNewFilesAfterBytes = 10 };
+        folder.Seed("Run.csv", PriorContent);
+
+        var name = await Writer().WriteNewAsync(folder, "Run.csv", ExportTo(session));
+
+        Assert.Null(name);
+        Assert.Equal(PriorContent, folder.Files["Run.csv"].Text);
+        Assert.False(folder.Files["Run.csv"].Deleted);
+        Assert.True(folder.Files["Run (2).csv"].Deleted);
+        Assert.Equal(0, folder.Truncations);
+        AssertNoStagingLeft();
+    }
+
+    /// <summary>A folder (not a file) with the export's name is taken too.</summary>
+    [Fact]
+    public async Task Export_all_steps_around_a_subfolder_with_the_same_name()
+    {
+        var session = SeedSession("Run", "AI0", 1.25);
+        var folder = new MemoryStorageFolder("Documents");
+        folder.SeedSubfolder("Run.csv");
+
+        Assert.Equal("Run (2).csv", await Writer().WriteNewAsync(folder, "Run.csv", ExportTo(session)));
     }
 
     /// <summary>Export all: a session that fails creates nothing in the folder.</summary>
@@ -396,36 +428,47 @@ public sealed class StorageExportWriterTests : IDisposable
         }
     }
 
-    /// <summary>An in-memory folder like an Android document tree.</summary>
+    /// <summary>An in-memory folder like an Android document tree. CreateFileAsync behaves as
+    /// Avalonia's providers do for a name that exists: it truncates that file and returns it.</summary>
     private sealed class MemoryStorageFolder(string name) : StorageExportWriter.IExportFolder
     {
+        private readonly HashSet<string> _subfolders = new();
+
         internal Dictionary<string, MemoryStorageFile> Files { get; } = new();
 
-        /// <summary>A provider that picks "name (1).csv" for a name that is taken, instead of
-        /// replacing the file.</summary>
-        internal bool RenameDuplicates { get; init; }
-
         internal bool RefuseCreate { get; init; }
+
+        /// <summary>Makes every file this folder creates fail its copy after this many bytes.</summary>
+        internal int? FailNewFilesAfterBytes { get; init; }
+
+        /// <summary>How many times CreateFileAsync truncated an existing file — must stay 0.</summary>
+        internal int Truncations { get; private set; }
 
         public string Name { get; } = name;
 
         internal void Seed(string fileName, string content) => Files[fileName] = MemoryStorageFile.Existing(fileName, content);
 
-        public Task<StorageExportWriter.IExportFile?> CreateFileAsync(string fileName)
-        {
-            if (RefuseCreate) { return Task.FromResult<StorageExportWriter.IExportFile?>(null); }
+        internal void SeedSubfolder(string folderName) => _subfolders.Add(folderName);
 
-            var actual = fileName;
-            if (RenameDuplicates)
+        public Task<bool> ContainsAsync(string itemName) =>
+            Task.FromResult(Files.ContainsKey(itemName) || _subfolders.Contains(itemName));
+
+        public async Task<StorageExportWriter.IExportFile?> CreateFileAsync(string fileName)
+        {
+            if (RefuseCreate) { return null; }
+            if (_subfolders.Contains(fileName)) { throw new IOException("a folder has that name"); }
+
+            if (Files.TryGetValue(fileName, out var existing))
             {
-                var stem = Path.GetFileNameWithoutExtension(fileName);
-                var ext = Path.GetExtension(fileName);
-                for (var n = 1; Files.ContainsKey(actual); n++) { actual = $"{stem} ({n}){ext}"; }
+                Truncations++;
+                await using (await existing.OpenWriteAsync()) { }
+                return existing;
             }
 
-            var file = MemoryStorageFile.PickerCreated(actual);
-            Files[actual] = file;
-            return Task.FromResult<StorageExportWriter.IExportFile?>(file);
+            var file = MemoryStorageFile.PickerCreated(fileName);
+            file.FailAfterBytes = FailNewFilesAfterBytes;
+            Files[fileName] = file;
+            return file;
         }
     }
 }

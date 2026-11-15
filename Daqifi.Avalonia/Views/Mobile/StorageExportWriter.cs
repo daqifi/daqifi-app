@@ -84,12 +84,19 @@ internal sealed class StorageExportWriter
     }
 
     /// <summary>
-    /// Exports into a new file called <paramref name="fileName"/> in a folder that the folder picker
-    /// returned. The file is created only after the CSV is complete, so a failed export creates
-    /// nothing in the folder.
+    /// Exports into a NEW file in a folder that the folder picker returned, called
+    /// <paramref name="fileName"/> or, when that name is taken, <c>name (2).csv</c> and so on. The file
+    /// is created only after the CSV is complete, so a failed export creates nothing in the folder.
     /// </summary>
-    /// <returns>The name of the file written — which the provider can change, for example to
-    /// <c>name (1).csv</c> — or null when the export failed.</returns>
+    /// <remarks>
+    /// Never over an existing file. <see cref="IStorageFolder.CreateFileAsync"/> truncates a file of
+    /// that name (the desktop and iOS providers, and Android's too), so creating over it would
+    /// destroy a previous export before this one had written a byte, and the cleanup after a failed
+    /// copy would then delete it. The path exporter this replaced only ever replaced a file once the
+    /// new CSV was complete; picking a free name keeps every existing file safe instead.
+    /// </remarks>
+    /// <returns>The name of the file written — which the provider can still change — or null when
+    /// the export failed.</returns>
     internal Task<string?> WriteNewAsync(IStorageFolder folder, string fileName, Func<string, bool> exportToPath) =>
         WriteNewAsync(new StorageItemFolder(folder), fileName, exportToPath);
 
@@ -107,6 +114,14 @@ internal sealed class StorageExportWriter
             IExportFile? file;
             try
             {
+                var freeName = await FreeNameAsync(folder, fileName).ConfigureAwait(false);
+                if (freeName is null)
+                {
+                    _logger.Error($"Export: no free name like '{fileName}' in '{folder.Name}'");
+                    return null;
+                }
+
+                fileName = freeName;
                 file = await folder.CreateFileAsync(fileName).ConfigureAwait(false);
             }
             catch (Exception ex)
@@ -127,6 +142,43 @@ internal sealed class StorageExportWriter
         {
             DeleteStaging(staging);
         }
+    }
+
+    /// <summary>Upper bound on the " (n)" suffixes tried, so a folder that claims every name exists
+    /// fails the export instead of looping forever.</summary>
+    private const int MaxNameAttempts = 1000;
+
+    /// <summary><paramref name="fileName"/> if nothing in the folder has that name, else the first
+    /// free <c>stem (n).ext</c> from n = 2 (the suffix <c>ExportFileNamer</c> uses), or null.</summary>
+    private static async Task<string?> FreeNameAsync(IExportFolder folder, string fileName)
+    {
+        if (!await folder.ContainsAsync(fileName).ConfigureAwait(false))
+        {
+            return fileName;
+        }
+
+        var stem = Path.GetFileNameWithoutExtension(fileName);
+        var extension = Path.GetExtension(fileName);
+        var first = 2;
+        // A name the namer already suffixed ("Run (2)") continues the count — "Run (3)", not
+        // "Run (2) (2)".
+        var suffixed = System.Text.RegularExpressions.Regex.Match(stem, @"^(.*) \((\d{1,4})\)$");
+        if (suffixed.Success)
+        {
+            stem = suffixed.Groups[1].Value;
+            first = int.Parse(suffixed.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture) + 1;
+        }
+
+        for (var n = first; n < first + MaxNameAttempts; n++)
+        {
+            var candidate = $"{stem} ({n}){extension}";
+            if (!await folder.ContainsAsync(candidate).ConfigureAwait(false))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 
     private string NewStagingPath() =>
@@ -255,6 +307,11 @@ internal sealed class StorageExportWriter
     {
         string Name { get; }
 
+        /// <summary>True when the folder already holds a file or a folder called <paramref name="name"/>.</summary>
+        Task<bool> ContainsAsync(string name);
+
+        /// <summary>Creates the file, truncating one of the same name: call it only with a name that
+        /// <see cref="ContainsAsync"/> reported free.</summary>
         Task<IExportFile?> CreateFileAsync(string name);
     }
 
@@ -274,6 +331,10 @@ internal sealed class StorageExportWriter
     private sealed class StorageItemFolder(IStorageFolder folder) : IExportFolder
     {
         public string Name => folder.Name;
+
+        public async Task<bool> ContainsAsync(string name) =>
+            await folder.GetFileAsync(name).ConfigureAwait(false) is not null
+            || await folder.GetFolderAsync(name).ConfigureAwait(false) is not null;
 
         public async Task<IExportFile?> CreateFileAsync(string name) =>
             await folder.CreateFileAsync(name).ConfigureAwait(false) is { } file ? new StorageItemFile(file) : null;
