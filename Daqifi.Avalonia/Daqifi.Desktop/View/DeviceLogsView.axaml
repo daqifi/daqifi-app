@@ -226,7 +226,7 @@
                        VerticalAlignment="Center"
                        Margin="0,0,12,0"/>
 
-            <ComboBox Grid.Column="1"
+            <ComboBox AutomationProperties.Name="Device" Grid.Column="1"
                       Theme="{StaticResource DarkComboBox}"
                       ItemsSource="{Binding ConnectedDevices}"
                       SelectedItem="{Binding SelectedDevice}"

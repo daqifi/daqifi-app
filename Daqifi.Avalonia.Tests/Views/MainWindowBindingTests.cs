@@ -251,7 +251,8 @@ public class MainWindowBindingTests
         var tabs = Root().Descendants()
             .Single(element => element.Name.LocalName == "TabControl")
             .Elements()
-            .Where(element => element.Name.LocalName == "TabItem")
+            // InvokableTabItem since #630: a TabItem whose peer an accessibility press selects.
+            .Where(element => element.Name.LocalName is "TabItem" or "InvokableTabItem")
             .ToList();
 
         Assert.Equal(5, tabs.Count);

@@ -236,6 +236,7 @@
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <ToggleButton Classes="windowCommand"
                               IsChecked="{Binding IsAppSettingsOpen}"
+                              AutomationProperties.Name="Settings"
                               ToolTip.Tip="Settings">
                     <StackPanel Orientation="Horizontal">
                         <i:Icon Value="mdi-cog-outline" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
@@ -244,6 +245,7 @@
                 </ToggleButton>
                 <ToggleButton Classes="windowCommand"
                               IsChecked="{Binding IsDebugModeEnabled}"
+                              AutomationProperties.Name="Debug mode"
                               ToolTip.Tip="Toggle Debug Mode">
                     <StackPanel Orientation="Horizontal">
                         <i:Icon Value="mdi-bug-outline" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
@@ -252,6 +254,7 @@
                 </ToggleButton>
                 <Button Classes="windowCommand"
                         Command="{Binding OpenDebugWindowCommand}"
+                        AutomationProperties.Name="Debug console"
                         ToolTip.Tip="Open Debug Console"
                         IsVisible="{Binding IsDebugModeEnabled}">
                     <StackPanel Orientation="Horizontal">
@@ -260,6 +263,7 @@
                     </StackPanel>
                 </Button>
                 <Button Classes="windowCommand" Command="{Binding OpenHelpCommand}"
+                        AutomationProperties.Name="Help"
                         ToolTip.Tip="Help">
                     <StackPanel Orientation="Horizontal">
                         <i:Icon Value="mdi-help-circle-outline" FontSize="20" HorizontalAlignment="Center"/>
@@ -267,6 +271,7 @@
                     </StackPanel>
                 </Button>
                 <Button Classes="windowCommand" Command="{Binding OpenNotificationsCommand}"
+                        AutomationProperties.Name="{Binding NotificationsButtonName}"
                         ToolTip.Tip="Notifications">
                     <Grid>
                         <i:Icon Value="mdi-bell-outline" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
@@ -413,13 +418,13 @@
                             SelectedIndex="{Binding SelectedIndex}">
 
                     <!-- Live Graph -->
-                    <TabItem>
-                        <TabItem.Header>
+                    <local:InvokableTabItem AutomationProperties.Name="Live Graph">
+                        <local:InvokableTabItem.Header>
                             <StackPanel Width="76" Margin="0,14,0,14">
                                 <i:Icon Value="mdi-chart-timeline-variant" FontSize="24" HorizontalAlignment="Center"/>
                                 <TextBlock Text="Live Graph" Classes="navTabHeaderLabel"/>
                             </StackPanel>
-                        </TabItem.Header>
+                        </local:InvokableTabItem.Header>
                         <ContentControl Content="{Binding}">
                             <ContentControl.ContentTemplate>
                                 <DataTemplate>
@@ -427,16 +432,16 @@
                                 </DataTemplate>
                             </ContentControl.ContentTemplate>
                         </ContentControl>
-                    </TabItem>
+                    </local:InvokableTabItem>
 
                     <!-- Logged Data -->
-                    <TabItem>
-                        <TabItem.Header>
+                    <local:InvokableTabItem AutomationProperties.Name="Logged Data">
+                        <local:InvokableTabItem.Header>
                             <StackPanel Width="76" Margin="0,14,0,14">
                                 <i:Icon Value="mdi-database-outline" FontSize="24" HorizontalAlignment="Center"/>
                                 <TextBlock Text="Logged Data" Classes="navTabHeaderLabel"/>
                             </StackPanel>
-                        </TabItem.Header>
+                        </local:InvokableTabItem.Header>
                         <ContentControl Content="{Binding}">
                             <ContentControl.ContentTemplate>
                                 <DataTemplate>
@@ -444,16 +449,16 @@
                                 </DataTemplate>
                             </ContentControl.ContentTemplate>
                         </ContentControl>
-                    </TabItem>
+                    </local:InvokableTabItem>
 
                     <!-- Channels -->
-                    <TabItem>
-                        <TabItem.Header>
+                    <local:InvokableTabItem AutomationProperties.Name="Channels">
+                        <local:InvokableTabItem.Header>
                             <StackPanel Width="76" Margin="0,14,0,14">
                                 <i:Icon Value="mdi-hub-outline" FontSize="24" HorizontalAlignment="Center"/>
                                 <TextBlock Text="Channels" Classes="navTabHeaderLabel"/>
                             </StackPanel>
-                        </TabItem.Header>
+                        </local:InvokableTabItem.Header>
                         <ContentControl Content="{Binding}">
                             <ContentControl.ContentTemplate>
                                 <DataTemplate>
@@ -461,16 +466,16 @@
                                 </DataTemplate>
                             </ContentControl.ContentTemplate>
                         </ContentControl>
-                    </TabItem>
+                    </local:InvokableTabItem>
 
                     <!-- Devices -->
-                    <TabItem>
-                        <TabItem.Header>
+                    <local:InvokableTabItem AutomationProperties.Name="Devices">
+                        <local:InvokableTabItem.Header>
                             <StackPanel Width="76" Margin="0,14,0,14">
                                 <i:Icon Value="mdi-chip" FontSize="24" HorizontalAlignment="Center"/>
                                 <TextBlock Text="Devices" Classes="navTabHeaderLabel"/>
                             </StackPanel>
-                        </TabItem.Header>
+                        </local:InvokableTabItem.Header>
                         <ContentControl Content="{Binding}">
                             <ContentControl.ContentTemplate>
                                 <DataTemplate>
@@ -478,16 +483,16 @@
                                 </DataTemplate>
                             </ContentControl.ContentTemplate>
                         </ContentControl>
-                    </TabItem>
+                    </local:InvokableTabItem>
 
                     <!--profile-->
-                    <TabItem>
-                        <TabItem.Header>
+                    <local:InvokableTabItem AutomationProperties.Name="Profiles">
+                        <local:InvokableTabItem.Header>
                             <StackPanel Width="76" Margin="0,14,0,14">
                                 <i:Icon Value="mdi-tune-variant" FontSize="24" HorizontalAlignment="Center"/>
                                 <TextBlock Text="Profiles" Classes="navTabHeaderLabel"/>
                             </StackPanel>
-                        </TabItem.Header>
+                        </local:InvokableTabItem.Header>
                         <ContentControl Content="{Binding}">
                             <ContentControl.ContentTemplate>
                                 <DataTemplate>
@@ -495,7 +500,7 @@
                                 </DataTemplate>
                             </ContentControl.ContentTemplate>
                         </ContentControl>
-                    </TabItem>
+                    </local:InvokableTabItem>
 
                 </TabControl>
 

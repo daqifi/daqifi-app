@@ -501,6 +501,30 @@ test — for zero screens and zero run time. If the app ever grows a real light 
 assert is what to replace with light captures, and the ten screens above are the ones that
 will move.
 
+## Accessible names and tab selection (#630)
+
+The harness also checks the desktop app the way VoiceOver reads it. Neither check writes a
+pixel, and both run after the frame of the screen is saved, so no baseline moves because of
+them.
+
+1. **Accessible names.** After each of `desktop-1` to `desktop-9` is captured, the harness walks
+   the visual tree of the window. It reads the runtime name of each visible interactive control
+   (button, toggle, switch, tab, list row, slider, combo box, text box) from that control's own
+   automation peer. The run fails on a control with no name, and on a name with no letter in
+   it (the notifications button was named "0", the text of its badge). The minimum-size
+   screens show the same controls, so they are not checked again.
+2. **Tab selection.** After the five tab captures at the full size, the harness invokes the
+   automation peer of each main tab, from the last to the first, and requires that the tab
+   opens. On macOS the press action of VoiceOver (VO-Space) becomes an invoke. A plain
+   `TabItem` peer is not an invoke provider, so the press did nothing (Avalonia 12.1.6,
+   `accessibilityPerformPress` in `native/Avalonia.Native/src/OSX/automation.mm`). The main
+   tabs are `InvokableTabItem`s for this reason.
+
+The capture runs without a device, so the checks see only the controls of the empty app.
+`Daqifi.Avalonia.Tests/Views/DesktopAutomationNameTests.cs` applies the same naming rule to the
+markup, which also covers the controls that appear only with data (channel tiles, session rows,
+device tiles).
+
 ## Baselines
 
 `baselines/<os>-<arch>.sha256` records the SHA-256 of every Avalonia screen the harness
