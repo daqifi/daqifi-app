@@ -42,19 +42,37 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     // (both extend AbstractStreamingDevice, which carries the whole streaming API).
     private AbstractStreamingDevice? _connected;
 
-    // Watchdog state — see CheckForSilentStream. Counted in render-timer polls (50 ms each)
-    // rather than elapsed time, so the threshold tracks how often this code actually runs.
-    private const int SilentPollsBeforeStreamDeclaredDead = 160;   // ~8 s
-    private int _silentPolls;
+    // Watchdog state — see CheckForSilentStream. Measured in elapsed time on WatchdogClock, not
+    // in render-timer polls: the poll rate is not fixed (#601).
+    private static readonly TimeSpan SilenceBeforeStreamDeclaredDead = TimeSpan.FromSeconds(8);
     // TotalSamples as of the END of the previous poll. The watchdog asks whether a sample
-    // arrived BETWEEN two polls (50 ms), which is only true if the reference point is the
-    // previous poll. Comparing against a value read at the top of the SAME poll asks whether
-    // one arrived during the few microseconds the poll body takes — almost never, so the
-    // watchdog would tear a perfectly healthy connection down within seconds.
+    // arrived BETWEEN two polls, which is only true if the reference point is the previous
+    // poll. Comparing against a value read at the top of the SAME poll asks whether one arrived
+    // during the few microseconds the poll body takes — almost never, so the watchdog would
+    // tear a perfectly healthy connection down within seconds.
     private long _samplesAtLastPoll;
     // Whether the previous poll found any active analog channel. A channel coming back after a
     // stretch with none enabled starts a fresh window — see PollActiveSamples.
     private bool _monitoredAtLastPoll;
+    // WatchdogClock timestamps: where the current silence window started (the stream start, the
+    // last sample, or the last poll before a channel came back), when the last sample arrived
+    // (never moved by a channel coming back — see CheckForSilentStream), and the previous poll.
+    private long _silenceWindowStart;
+    private long _lastSampleAt;
+    private long _lastPollAt;
+    // When the newest sample ARRIVED, written by the sample handler on the receive thread. A poll
+    // that runs late must judge silence from this, not from its own time — see CheckForSilentStream.
+    private long _lastSampleArrivedAt;
+
+    /// <summary>
+    /// The clock the silent-stream watchdog measures silence with. A seam only so the tests can
+    /// drive time; nothing in the app assigns it.
+    /// </summary>
+    internal TimeProvider WatchdogClock = TimeProvider.System;
+
+    // The watchdog's backstop, for a render timer that stops polling — see OnWatchdogBackstop.
+    private static readonly TimeSpan WatchdogBackstopInterval = TimeSpan.FromSeconds(1);
+    private ITimer? _watchdogBackstop;
 
     public ObservableCollection<MobileDeviceItem> Devices { get; } = [];
 
@@ -596,8 +614,9 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         StopCountingSamples();
         Interlocked.Exchange(ref _totalSamples, 0);
         _samplesAtLastPoll = 0;
-        _silentPolls = 0;
         _monitoredAtLastPoll = false;
+        _silenceWindowStart = _lastSampleAt = _lastPollAt = WatchdogClock.GetTimestamp();
+        Interlocked.Exchange(ref _lastSampleArrivedAt, _lastSampleAt);
         BeginCountingSamples();
 
         // Everything that arms the device is inside one try, so a failure anywhere in it lands on
@@ -730,15 +749,18 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         //
         // One piece of the old gate is kept: silence banked while nothing was enabled is explained
         // silence, and must not count toward declaring the transport dead. So when a channel comes
-        // back after a stretch with none active, it starts a fresh window of its own. Without this,
-        // a channel re-enabled late in the window dropped the connection on the next poll, before
-        // the device could send a single sample for it.
+        // back after a stretch with none active, it starts a fresh window of its own, measured from
+        // the last poll that found nothing active. Without this, a channel re-enabled late in the
+        // window dropped the connection on the next poll, before the device could send a single
+        // sample for it. The fresh window does not move the ceiling — see CheckForSilentStream.
+        var now = WatchdogClock.GetTimestamp();
         if (monitored > 0 && !_monitoredAtLastPoll)
         {
-            _silentPolls = 0;
+            _silenceWindowStart = _lastPollAt;
         }
         _monitoredAtLastPoll = monitored > 0;
-        CheckForSilentStream(monitored);
+        _lastPollAt = now;
+        CheckForSilentStream(monitored, now);
     }
 
     /// <summary>
@@ -758,15 +780,46 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         lock (_countedChannels)
         {
             var generation = Interlocked.Increment(ref _countingGeneration);
+            var clock = WatchdogClock;
             _sampleHandler = (_, _) =>
             {
                 // Raised on the Core receive thread, once per channel per streaming frame —
-                // 1,600 times a second at 16 channels / 100 Hz — so this must stay a compare and
-                // an interlocked add. Anything touching bound state belongs on the render tick.
+                // 1,600 times a second at 16 channels / 100 Hz — so this must stay a compare, a
+                // timestamp and two interlocked writes. Anything touching bound state belongs on
+                // the render tick. The arrival time is written first, so a poll that sees the new
+                // count never pairs it with an older arrival.
                 if (Volatile.Read(ref _countingGeneration) != generation) { return; }
+                Interlocked.Exchange(ref _lastSampleArrivedAt, clock.GetTimestamp());
                 Interlocked.Increment(ref _totalSamples);
             };
+
+            // The watchdog's backstop lives exactly as long as the count it judges: every path
+            // that ends a stream already stops the count.
+            _watchdogBackstop?.Dispose();
+            _watchdogBackstop = WatchdogClock.CreateTimer(
+                _ => PostToUiThread(OnWatchdogBackstop), null,
+                WatchdogBackstopInterval, WatchdogBackstopInterval);
         }
+    }
+
+    /// <summary>
+    /// Runs the watchdog's poll when the render timer has not run it for
+    /// <see cref="WatchdogBackstopInterval"/> (#601).
+    /// </summary>
+    /// <remarks>
+    /// The render timer is the view's, and the watchdog used to run only when it ticked. If it
+    /// stops — starved, throttled, or the view no longer driving it — the stream was never judged,
+    /// and the screen claimed a live stream that delivered nothing. This timer is the view-model's
+    /// own. It does nothing while the render timer polls normally, and it posts to the UI thread
+    /// like the rest of the shell's state changes, so the poll it runs is the same poll on the same
+    /// thread.
+    /// </remarks>
+    private void OnWatchdogBackstop()
+    {
+        if (!IsStreaming) { return; }
+        var sinceLastPoll = WatchdogClock.GetElapsedTime(_lastPollAt);
+        if (sinceLastPoll < WatchdogBackstopInterval) { return; }
+        PollActiveSamples();
     }
 
     /// <summary>
@@ -795,8 +848,9 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// Disarms counting and detaches every sample subscription. Called on every path that ends a
-    /// stream, so a stopped or lost stream cannot keep advancing the count.
+    /// Disarms counting, detaches every sample subscription and stops the watchdog's backstop.
+    /// Called on every path that ends a stream, so a stopped or lost stream cannot keep advancing
+    /// the count.
     /// </summary>
     private void StopCountingSamples()
     {
@@ -805,6 +859,8 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             // Advance first: this is what makes any callback still in flight a no-op, including
             // the ones the detach below cannot reach.
             Interlocked.Increment(ref _countingGeneration);
+            _watchdogBackstop?.Dispose();
+            _watchdogBackstop = null;
             var handler = _sampleHandler;
             _sampleHandler = null;
             if (handler != null)
@@ -819,7 +875,8 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// Declares the stream dead after a run of polls across which no sample arrived.
+    /// Declares the stream dead once no sample has arrived for
+    /// <see cref="SilenceBeforeStreamDeclaredDead"/>.
     /// </summary>
     /// <remarks>
     /// Defence in depth behind the device-level signal, for the case Core cannot see. A TCP socket
@@ -829,15 +886,33 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     /// frozen plot indefinitely (#99).
     /// <para>
     /// Silence is unambiguous here because the device streams continuously once started: the lowest
-    /// selectable rate still delivers samples far more often than this threshold. The poll runs on
-    /// the 50 ms render timer, so the window below is about eight seconds — comfortably longer than
-    /// any legitimate gap (a Wi-Fi hiccup, a GC pause, the app being briefly descheduled), and short
-    /// enough that a user is not left staring at a dead plot.
+    /// selectable rate still delivers samples far more often than this threshold. Eight seconds is
+    /// comfortably longer than any legitimate gap (a Wi-Fi hiccup, a GC pause, the app being briefly
+    /// descheduled), and short enough that a user is not left staring at a dead plot.
     /// </para>
     /// <para>
-    /// Counting polls rather than wall-clock time is deliberate. The threshold should track how
-    /// often this code actually runs, not how much time passes — a wall-clock deadline would fire
-    /// after any window in which the UI was not being driven, whether or not data was flowing.
+    /// Silence is measured in elapsed time, not in polls (#601). This used to count render-timer
+    /// polls — 160 of them, "about eight seconds" at the 50 ms tick — on the reasoning that a
+    /// wall-clock deadline would fire after a window in which the UI was not driven, whether or not
+    /// data was flowing. That reasoning ended with #120: <see cref="TotalSamples"/> is counted on the
+    /// receive thread, so it advances whether or not a poll runs, and a poll that runs late still
+    /// sees every sample that arrived meanwhile. The poll count was a hole: a dispatcher timer does
+    /// not make up the ticks it misses, so whenever the UI thread is busy or the timer is throttled,
+    /// 160 polls take longer than eight seconds, by the same factor.
+    /// </para>
+    /// <para>
+    /// The render timer is also not the only thing that runs the poll any more. If it stops calling
+    /// <see cref="PollActiveSamples"/>, nothing judged the stream at all — and a stream that delivered
+    /// nothing for 45 s was seen to keep reading "Streaming 16 channel(s)" (#601). A backstop timer
+    /// owned by this view-model runs the poll itself whenever the render timer has not run it for
+    /// <see cref="WatchdogBackstopInterval"/>. See <see cref="OnWatchdogBackstop"/>.
+    /// </para>
+    /// <para>
+    /// A channel that comes back after a stretch with none active opens a fresh window (see
+    /// <see cref="PollActiveSamples"/>). That alone let a channel set that changes at least once per
+    /// window hold the watchdog open forever, with not one sample. So there is also a ceiling:
+    /// twice the window since the last sample, which no channel change moves.
+    /// </para>
     /// <para>
     /// The render timer <b>does</b> keep firing while the app is backgrounded — measured, ticks
     /// 1.000 s apart with no gap across a 45 s background window (#113). So this watchdog is armed
@@ -862,25 +937,34 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     /// </para>
     /// </remarks>
     /// <param name="monitoredChannels">Active analog input channels seen by this poll.</param>
-    private void CheckForSilentStream(int monitoredChannels)
+    /// <param name="now">This poll's <see cref="WatchdogClock"/> timestamp.</param>
+    private void CheckForSilentStream(int monitoredChannels, long now)
     {
+        // Silence is measured from when the last sample ARRIVED, not from the poll that first saw
+        // it. A poll that runs nine seconds late must still find nine seconds of silence behind a
+        // sample that arrived at the start of the gap, not restart the window at its own time.
         var total = TotalSamples;
         if (total != _samplesAtLastPoll)
         {
             _samplesAtLastPoll = total;
-            _silentPolls = 0;
+            _lastSampleAt = Interlocked.Read(ref _lastSampleArrivedAt);
+            _silenceWindowStart = Math.Max(_silenceWindowStart, _lastSampleAt);
+        }
+
+        var silentInWindow = WatchdogClock.GetElapsedTime(_silenceWindowStart, now);
+        var silentSinceLastSample = WatchdogClock.GetElapsedTime(_lastSampleAt, now);
+        if (silentInWindow < SilenceBeforeStreamDeclaredDead
+            && silentSinceLastSample < SilenceBeforeStreamDeclaredDead * 2)
+        {
             return;
         }
 
-        _silentPolls++;
-        if (_silentPolls < SilentPollsBeforeStreamDeclaredDead) { return; }
-
-        _silentPolls = 0;
+        var silentSeconds = (int)silentSinceLastSample.TotalSeconds;
         if (monitoredChannels == 0)
         {
             AppLogger.Instance.Warning(
-                $"No samples arrived for {SilentPollsBeforeStreamDeclaredDead} consecutive polls while " +
-                "streaming, and no analog channel is enabled any more; stopping the stream.");
+                $"No samples arrived for {silentSeconds} s while streaming, and no analog channel " +
+                "is enabled any more; stopping the stream.");
             StopStream();
             Status = "Streaming stopped — no channels are enabled on the device. " +
                      "Pick channels and start again.";
@@ -888,8 +972,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         }
 
         AppLogger.Instance.Warning(
-            $"No samples arrived for {SilentPollsBeforeStreamDeclaredDead} consecutive polls while " +
-            "streaming; treating the connection as dead.");
+            $"No samples arrived for {silentSeconds} s while streaming; treating the connection as dead.");
 
         // Drop the connection, not just the stream. A device that has been told to stream at
         // 10 Hz or more and delivers nothing for eight seconds is not usefully connected, and the
@@ -905,7 +988,6 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         catch { /* best-effort */ }
         StopCountingSamples();
         IsStreaming = false;
-        _silentPolls = 0;
         _samplesAtLastPoll = TotalSamples;
         if (IsConnected) { Status = "Streaming stopped."; }
     }
@@ -948,7 +1030,6 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     {
         StopCountingSamples();
         IsStreaming = false;
-        _silentPolls = 0;
         _samplesAtLastPoll = TotalSamples;
         AppLogger.Instance.AddBreadcrumb(
             "streaming", "Stream lost — device stopped sending data", BreadcrumbLevel.Warning);
@@ -972,7 +1053,6 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         StopCountingSamples();
         IsStreaming = false;
         IsConnected = false;
-        _silentPolls = 0;
         _samplesAtLastPoll = TotalSamples;
         _connected = null;
 
