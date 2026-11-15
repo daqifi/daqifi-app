@@ -1422,16 +1422,23 @@ internal static class HeadlessBench
         // and cover only the first minutes of the session.
         var spanHours = drawn.Select(p => p.X).DefaultIfEmpty(0).Max() / 3_600_000.0;
         var expectedHours = TenHourSeconds / 3600.0;
+        // Issue #585: the labels the time axis draws. A ten-hour session read 0, 2e+06 ... 3.6e+07
+        // under "Time (ms)"; any label with an exponent fails the row.
+        var timeLabels = TimeLabels(db.PlotModel);
+        var scientific = timeLabels.Any(l => l.Contains('e', StringComparison.OrdinalIgnoreCase));
 
         Step(1, "LOGGED-PLOT", "limits",
              db.IsSessionOpen && db.HasSessionData && drawn.Count > 0
                  && Math.Abs(spanHours - expectedHours) < 0.1
-                 && db.CurrentSessionSampleCount == TenHourSampleCount,
+                 && db.CurrentSessionSampleCount == TenHourSampleCount
+                 && timeLabels.Count > 0 && !scientific,
              $"{TenHourSampleCount} samples at {TenHourRateHz} Hz loaded in {sw.Elapsed.TotalSeconds:F1} s; " +
              $"IsSessionOpen={db.IsSessionOpen} HasSessionData={db.HasSessionData}; " +
              $"{db.PlotModel.Series.Count} series drawing {drawn.Count} downsampled point(s) " +
              $"(minimap {minimap}) spanning {spanHours:F2} h of the seeded {expectedHours:F2} h; " +
              $"time axis {AxisRange(db.PlotModel)}; " +
+             $"titled '{db.PlotModel.Axes.FirstOrDefault(a => a.Position == AxisPosition.Bottom)?.ActualTitle}' " +
+             $"with labels [{string.Join(", ", timeLabels)}]{(scientific ? " IN SCIENTIFIC NOTATION" : "")}; " +
              $"header reads '{db.CurrentSessionSampleCountDisplay}' ({db.CurrentSessionSampleCount}); " +
              $"{db.LegendItems.Count} legend item(s)",
              Capture(main, "t1-loggedplot-10h"), sw.Elapsed.TotalSeconds);
@@ -1453,6 +1460,24 @@ internal static class HeadlessBench
         return axis is null
             ? "absent"
             : $"{axis.ActualMinimum / 3_600_000.0:F2}..{axis.ActualMaximum / 3_600_000.0:F2} h";
+    }
+
+    /// <summary>The tick labels the plot's time axis draws for its visible range, as the axis itself
+    /// formats them — the text a user reads under the plot. Empty when the axis has not been laid out
+    /// by a render yet (no tick step), which fails the row rather than throwing.</summary>
+    private static List<string> TimeLabels(PlotModel model)
+    {
+        var axis = model.Axes.FirstOrDefault(a => a.Position == AxisPosition.Bottom);
+        if (axis is null || !(axis.ActualMajorStep > 0))
+        {
+            return [];
+        }
+
+        axis.GetTickValues(out var majorLabelValues, out _, out _);
+        return majorLabelValues
+            .Where(v => v >= axis.ActualMinimum && v <= axis.ActualMaximum)
+            .Select(axis.FormatValue)
+            .ToList();
     }
 
     /// <summary>
