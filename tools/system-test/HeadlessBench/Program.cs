@@ -805,35 +805,18 @@ internal static class HeadlessBench
             // is a field the user edits blind, so it is asserted rather than assumed.
             var seeded = shell.PendingFriendlyName;
 
-            // The tile's FriendlyName is a passthrough getter, so reading it after the save would
-            // only be reading the device again. What the Devices pane actually needs is the
-            // NOTIFICATION — DeviceTileViewModel.OnDevicePropertyChanged re-raising FriendlyName —
-            // because without it the tile's text keeps showing the old name until something else
-            // happens to refresh it. Watch for it rather than re-reading the value.
-            var tile = devicesPane.Devices.FirstOrDefault(t => ReferenceEquals(t.Device, device));
-            var tileTold = false;
-            void OnTileChanged(object? _, PropertyChangedEventArgs e)
-            {
-                if (string.IsNullOrEmpty(e.PropertyName) || e.PropertyName == nameof(DeviceTileViewModel.FriendlyName))
-                {
-                    tileTold = true;
-                }
-            }
-
+            // No Devices tile shows the friendly name (#448 removed the tile's unread FriendlyName
+            // relay), so the device, its display name and the drawer's NAME box are what to check.
             wroteNvm = true;
-            string? saveError;
-            if (tile is not null) { tile.PropertyChanged += OnTileChanged; }
-            try { saveError = ApplyFriendlyName(shell, testName); }
-            finally { if (tile is not null) { tile.PropertyChanged -= OnTileChanged; } }
+            var saveError = ApplyFriendlyName(shell, testName);
 
             Step(2, "DEV-NAME", "works",
                  saveError is null && seeded == originalName && device.FriendlyName == testName
                      && device.DeviceDisplayName == testName && shell.PendingFriendlyName == testName
-                     && shell.FriendlyNameApplied && tile?.FriendlyName == testName && tileTold,
+                     && shell.FriendlyNameApplied,
                  $"drawer opened seeded with NAME='{seeded}' (device said '{originalName}'); saved '{testName}' -> " +
                  $"FriendlyName='{device.FriendlyName}' DeviceDisplayName='{device.DeviceDisplayName}'; " +
-                 $"box re-seeded to '{shell.PendingFriendlyName}' with the 'Name saved' tick showing={shell.FriendlyNameApplied}; " +
-                 $"tile FriendlyName='{tile?.FriendlyName ?? "no tile"}' and it change-notified={tileTold}" +
+                 $"box re-seeded to '{shell.PendingFriendlyName}' with the 'Name saved' tick showing={shell.FriendlyNameApplied}" +
                  (saveError is null ? "" : $"; the drawer reported '{saveError}'"),
                  Capture(main, "t2-12-device-named"));
 
@@ -1229,7 +1212,7 @@ internal static class HeadlessBench
 
         var sw = Stopwatch.StartNew();
         var factory = new SeedContextFactory(DesktopApp.DatabasePath);
-        Directory.CreateDirectory(DesktopApp.DaqifiDataDirectory);
+        Directory.CreateDirectory(Daqifi.Desktop.Common.AppDataPaths.DataDirectory);
         if (DatabaseMigrator.PrepareMigration(factory, DesktopApp.DatabasePath))
         {
             DatabaseMigrator.ApplyMigrations(factory, DesktopApp.DatabasePath);

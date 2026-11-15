@@ -250,8 +250,6 @@ internal sealed class ScriptedDevice : IStreamingDevice
 
     public void StopStreaming() { }
 
-    public void InitializeDeviceState() { }
-
     public void AddChannel(IChannel channel) { }
 
     public void RemoveChannel(IChannel channel) { }
