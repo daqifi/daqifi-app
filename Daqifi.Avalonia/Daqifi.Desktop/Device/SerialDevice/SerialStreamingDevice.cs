@@ -308,43 +308,6 @@ public class SerialStreamingDevice : AbstractStreamingDevice, ILanChipInfoProvid
         }
     }
 
-    // @port: Daqifi.Desktop.Device.SerialDevice.SerialStreamingDevice.EnableLanUpdateMode
-    public bool EnableLanUpdateMode()
-    {
-        AppLogger.Information($"Preparing {PortName} for WiFi firmware mode.");
-        if (CoreDevice == null || !CoreDevice.IsConnected)
-        {
-            AppLogger.Warning($"Cannot prepare {PortName} for WiFi firmware mode: core device is not connected.");
-            return false;
-        }
-
-        // Power on the WiFi module and set the FW-update-requested flag.
-        // APPLY (SYSTem:COMMunicate:LAN:APPLY) is intentionally NOT sent here.
-        // The APPLY that triggers bridge-mode initialisation is sent later — via the raw serial
-        // bridge-activation callback Core invokes — at the moment the flash tool shows
-        // its "Power cycle WINC" prompt.  Sending APPLY here (before the flash tool starts)
-        // introduces a race: the WiFi deinit/reinit cycle can take several seconds, and the
-        // bridge may not be ready by the time the flash tool's programming phase begins.
-        // Sending it at the prompt gives the firmware a guaranteed ~2 s window to initialise
-        // the bridge before the tool issues its first serial query.
-        Thread.Sleep(2000);
-        AppLogger.Information("Sending LAN FW update prep command: SYSTem:POWer:STATe 1");
-        CoreDevice.Send(ScpiMessageProducer.TurnDeviceOn);
-        Thread.Sleep(1000);
-        AppLogger.Information("Sending LAN FW update prep command: SYSTem:COMMUnicate:LAN:FWUpdate");
-        CoreDevice.Send(ScpiMessageProducer.SetLanFirmwareUpdateMode);
-        return true;
-    }
-
-    // @port: Daqifi.Desktop.Device.SerialDevice.SerialStreamingDevice.ResetLanAfterUpdate
-    public void ResetLanAfterUpdate()
-    {
-        CoreDevice?.Send(ScpiMessageProducer.SetUsbTransparencyMode(0));
-        CoreDevice?.Send(ScpiMessageProducer.EnableNetworkLan);
-        CoreDevice?.Send(ScpiMessageProducer.ApplyNetworkLan);
-        CoreDevice?.Send(ScpiMessageProducer.SaveNetworkLan);
-    }
-
     /// <summary>
     /// Queries the WiFi module chip information by delegating to the underlying Core device.
     /// </summary>
