@@ -294,9 +294,12 @@ public class OutdatedFirmwareNotificationTests : IDisposable
     }
 
     /// <summary>
-    /// The local decision gives the same answer as Core 1.9.1's <c>CheckForUpdateAsync</c>
-    /// (<c>!hasCurrent || latest.Version &gt; deviceVersion</c>), including for a version that does
-    /// not parse and for pre-releases, which <c>FirmwareVersion</c> ranks below their release.
+    /// The local decision gives the same answer as Core 1.10.0's
+    /// <c>FirmwareUpdateCheckResult.Status</c>: <c>true</c> for <c>UpdateAvailable</c>, <c>false</c>
+    /// for <c>UpToDate</c> and <c>DeviceNewerThanLatest</c>, and <c>null</c> for
+    /// <c>DeviceVersionUnknown</c> — a version that does not parse (issue #583). Pre-releases rank
+    /// below their release. Core 1.10.0 also parses a fourth build-number part and a hyphenated
+    /// pre-release label, so those are compared rather than unknown.
     /// </summary>
     [Theory]
     [InlineData("3.8.0", true)]
@@ -304,14 +307,67 @@ public class OutdatedFirmwareNotificationTests : IDisposable
     [InlineData("v3.9.0", false)]
     [InlineData("3.10.0", false)]
     [InlineData("3.9.0rc1", true)]
+    [InlineData("3.9.0-rc1", true)]
     [InlineData("3.9.0b2", true)]
     [InlineData("3.10.0b1", false)]
-    [InlineData("", true)]
-    [InlineData("garbage", true)]
-    [InlineData("99999999999.0.0", true)]
-    public void The_local_decision_matches_Core(string installed, bool olderThan390)
+    [InlineData("3.8.0.1", true)]
+    [InlineData("3.9.0.1", false)]
+    [InlineData("", null)]
+    [InlineData("garbage", null)]
+    [InlineData("99999999999.0.0", null)]
+    public void The_local_decision_matches_Core(string installed, bool? olderThan390)
     {
-        Assert.Equal(olderThan390, FirmwareUpdateCoordinator.IsOlderThan(installed, Release(3, 9, 0)));
+        Assert.Equal(olderThan390, FirmwareUpdateCoordinator.CompareWithRelease(installed, Release(3, 9, 0)));
+    }
+
+    /// <summary>
+    /// The same decision as Core's own <c>FirmwareUpdateCheckResult.Status</c> for every input above,
+    /// read from Core rather than restated, so a later Core that changes its rule fails here.
+    /// </summary>
+    [Theory]
+    [InlineData("3.8.0")]
+    [InlineData("3.9.0")]
+    [InlineData("3.10.0")]
+    [InlineData("3.9.0rc1")]
+    [InlineData("3.8.0.1")]
+    [InlineData("")]
+    [InlineData("garbage")]
+    public void The_local_decision_is_Cores_status(string installed)
+    {
+        var release = Release(3, 9, 0);
+        var core = new FirmwareUpdateCheckResult
+        {
+            UpdateAvailable = false,
+            DeviceVersion = FirmwareVersion.TryParse(installed, out var parsed) ? parsed : null,
+            LatestRelease = release
+        }.Status;
+
+        bool? expected = core switch
+        {
+            FirmwareUpdateStatus.UpdateAvailable => true,
+            FirmwareUpdateStatus.DeviceVersionUnknown => null,
+            _ => false
+        };
+        Assert.Equal(expected, FirmwareUpdateCoordinator.CompareWithRelease(installed, release));
+    }
+
+    /// <summary>
+    /// A device whose version cannot be read gets no notification and no recorded result, and an
+    /// earlier notification for it goes (issue #583). The drawer then shows the installed version
+    /// only: it does not say "up to date" for a version it could not compare.
+    /// </summary>
+    [Fact]
+    public async Task A_device_whose_version_cannot_be_read_is_offered_no_update()
+    {
+        var unknown = Nq1("9090539562006014104", "garbage");
+        _host.SetConnectedDevices(unknown);
+        _downloads.ReleaseSeenByCheck = Release(3, 9, 0);
+
+        await CreateCoordinator().RefreshFirmwareUpdatesAsync();
+
+        Assert.Empty(_host.Comparisons);
+        Assert.Empty(_host.Notifications);
+        Assert.False(unknown.IsFirmwareOutdated);
     }
 
     /// <summary>
