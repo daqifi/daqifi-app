@@ -898,6 +898,21 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     private int _recordingGeneration;
 
     /// <summary>
+    /// Raised on the UI thread when the recorder confirms that a stopped recording's samples are
+    /// committed to SQLite (review of PR #609).
+    /// </summary>
+    /// <remarks>
+    /// The user can open Logged Data while the banner still says "Saving the recording…", and that
+    /// visit reads its APP LOGS snapshot before the commit. The banner is on Live Graph, so nothing
+    /// told the open list to re-read: it showed no new recording until a manual Refresh or another
+    /// visit. <see cref="Mobile.StorageMobileView"/> listens while it is attached and re-reads the
+    /// list in place, without closing a session viewer the user opened meanwhile. Static because the
+    /// shell and the Storage pane are siblings that do not know each other; a committed session is an
+    /// app-wide fact. Subscribers must unsubscribe, as with <c>AbstractChannel.ScaleResultsRejected</c>.
+    /// </remarks>
+    internal static event Action? RecordingCommitted;
+
+    /// <summary>
     /// Completes when the last stopped recording's outcome is on screen. Internal for tests.
     /// </summary>
     internal Task RecordingSaveTask { get; private set; } = Task.CompletedTask;
@@ -913,6 +928,9 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         {
             try
             {
+                // Before the generation check: a newer stream owns the banner, but this session is
+                // in SQLite all the same, and an APP LOGS list read before the commit must show it.
+                if (result.IsSaved) { RecordingCommitted?.Invoke(); }
                 // A newer stream has started (or ended) since: its banner wins.
                 if (generation != _recordingGeneration) { return; }
                 ShowRecordingResult(result);

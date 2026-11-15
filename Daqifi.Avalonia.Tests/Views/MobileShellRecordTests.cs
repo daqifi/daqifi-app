@@ -1,9 +1,11 @@
 using System.Reflection;
 using Daqifi.Avalonia.Tests.Device;
 using Daqifi.Avalonia.Views;
+using Daqifi.Avalonia.Views.Mobile;
 using Daqifi.Core.Communication.Messages;
 using Daqifi.Core.Device;
 using Daqifi.Desktop.Channel;
+using Daqifi.Desktop.Logger;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using CoreStreamingDevice = Daqifi.Core.Device.DaqifiStreamingDevice;
@@ -185,6 +187,100 @@ public sealed class MobileShellRecordTests : IDisposable
         Assert.False(_shell.IsSavingRecording);
     }
 
+    /// <summary>
+    /// Review of PR #609: the user stops a recording and opens Logged Data while the banner says
+    /// "Saving the recording…". That visit reads its APP LOGS snapshot before the writer commits, so
+    /// the list did not show the recording until a manual Refresh or another visit. When the save is
+    /// confirmed the list must re-read in place, and a session viewer that the user opened meanwhile
+    /// must stay open. Wired here exactly as <c>StorageMobileView</c> wires it.
+    /// </summary>
+    [Fact]
+    public async Task APP_LOGS_opened_before_the_commit_shows_the_recording_once_it_is_saved()
+    {
+        var database = new CommittedSessions(new LoggingSession(6, "Session_6"));
+        var appLogs = await OpenAppLogsAsync(database);
+        Action refresh = appLogs.RefreshSessions;
+        MobileShellViewModel.RecordingCommitted += refresh;
+        try
+        {
+            _shell.RecordStream = true;
+            StartStream();
+            _shell.StreamToggleCommand.Execute(null);
+            Assert.True(_shell.IsSavingRecording, "Arrangement: the save must still be pending.");
+
+            // The user enters APP LOGS before the writer commits: the visit's snapshot omits it.
+            await appLogs.ReloadCommand.ExecuteAsync(null);
+            Assert.Equal(["Session_6"], appLogs.Sessions.Select(s => s.Name));
+            // ...and opens the older session's viewer while the save is still pending.
+            appLogs.IsViewerOpen = true;
+
+            database.Commit(new LoggingSession(7, "Session_7"));
+            _recorder.Complete(new RecordingResult("Session_7", 1_600, null));
+            await _shell.RecordingSaveTask.WaitAsync(SendTimeout);
+
+            await WaitUntilListedAsync(appLogs, "Session_7");
+            Assert.True(appLogs.IsViewerOpen, "The refresh closed the session viewer the user had open.");
+        }
+        finally
+        {
+            MobileShellViewModel.RecordingCommitted -= refresh;
+        }
+    }
+
+    /// <summary>
+    /// The same review, at its narrowest: the commit lands while the visit's own load is still
+    /// running, and that load read its snapshot before the commit. The refresh must not be dropped
+    /// because the list is busy; it runs once the load ends.
+    /// </summary>
+    [Fact]
+    public async Task A_commit_during_the_visits_load_still_reaches_the_list()
+    {
+        var database = new CommittedSessions();
+        var appLogs = await OpenAppLogsAsync(database);
+        Action refresh = appLogs.RefreshSessions;
+        MobileShellViewModel.RecordingCommitted += refresh;
+        try
+        {
+            _shell.RecordStream = true;
+            StartStream();
+            _shell.StreamToggleCommand.Execute(null);
+
+            // The visit's load reads the pre-commit snapshot, then is held until after the commit.
+            using var release = new SemaphoreSlim(0);
+            database.HoldNextRead(release);
+            var visit = appLogs.ReloadCommand.ExecuteAsync(null);
+            Assert.True(database.WaitForHeldRead(SendTimeout), "Arrangement: the visit's load never ran.");
+
+            database.Commit(new LoggingSession(7, "Session_7"));
+            _recorder.Complete(new RecordingResult("Session_7", 1_600, null));
+            await _shell.RecordingSaveTask.WaitAsync(SendTimeout);
+
+            release.Release();
+            await visit.WaitAsync(SendTimeout);
+            await WaitUntilListedAsync(appLogs, "Session_7");
+        }
+        finally
+        {
+            MobileShellViewModel.RecordingCommitted -= refresh;
+        }
+    }
+
+    /// <summary>
+    /// The production half of the wiring the two tests above make by hand. Read off the source:
+    /// <c>StorageMobileView</c> builds a view model over the real database, which this project
+    /// cannot construct. It must re-read in place (<c>RefreshSessions</c>), not through
+    /// <c>Refresh()</c>, which closes an open session viewer.
+    /// </summary>
+    [Fact]
+    public void The_Storage_pane_re_reads_APP_LOGS_when_a_recording_is_committed()
+    {
+        var host = BindingFacts.CodeOnly(BindingFacts.Source("Daqifi.Avalonia/Views/Mobile/StorageMobileView.axaml.cs"));
+
+        Assert.Contains("MobileShellViewModel.RecordingCommitted += OnRecordingCommitted;", host, StringComparison.Ordinal);
+        Assert.Contains("MobileShellViewModel.RecordingCommitted -= OnRecordingCommitted;", host, StringComparison.Ordinal);
+        Assert.Contains("vm.RefreshSessions();", host, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void A_recording_that_cannot_start_streams_nothing()
     {
@@ -283,6 +379,81 @@ public sealed class MobileShellRecordTests : IDisposable
             _transport.WaitForSentText("SYSTem:StartStreamData", SendTimeout),
             "Arrangement: the device was never told to stream.");
         _transport.ClearSent();
+    }
+
+    /// <summary>
+    /// The real APP LOGS view model over a stand-in for SQLite, with the ctor's first load finished.
+    /// The UI invoker runs inline: no dispatcher runs in this project.
+    /// </summary>
+    private static async Task<LoggedSessionsMobileViewModel> OpenAppLogsAsync(CommittedSessions database)
+    {
+        var appLogs = new LoggedSessionsMobileViewModel(
+            database.Read,
+            action => { action(); return Task.CompletedTask; });
+        var deadline = DateTime.UtcNow + SendTimeout;
+        while (!appLogs.Loaded || appLogs.IsBusy)
+        {
+            Assert.True(DateTime.UtcNow < deadline, "Arrangement: the first APP LOGS load never finished.");
+            await Task.Delay(10);
+        }
+        Assert.False(appLogs.LoadFailed, appLogs.StatusMessage);
+        return appLogs;
+    }
+
+    /// <summary>The refresh is fire-and-forget, so poll for its result rather than await it.</summary>
+    private static async Task WaitUntilListedAsync(LoggedSessionsMobileViewModel appLogs, string session)
+    {
+        var deadline = DateTime.UtcNow + SendTimeout;
+        while (!appLogs.Sessions.ToList().Any(s => s.Name == session) || appLogs.IsBusy)
+        {
+            Assert.True(
+                DateTime.UtcNow < deadline,
+                $"APP LOGS never listed {session} after the save was confirmed; it lists: "
+                + string.Join(", ", appLogs.Sessions.ToList().Select(s => s.Name)) + ".");
+            await Task.Delay(10);
+        }
+    }
+
+    /// <summary>
+    /// Stands in for the session rows in SQLite: a read returns only what was committed when it ran.
+    /// </summary>
+    private sealed class CommittedSessions(params LoggingSession[] initial)
+    {
+        private readonly object _sync = new();
+        private readonly List<LoggingSession> _committed = [.. initial];
+        private readonly ManualResetEventSlim _readHeld = new();
+        private SemaphoreSlim? _hold;
+
+        public void Commit(LoggingSession session)
+        {
+            lock (_sync) { _committed.Add(session); }
+        }
+
+        /// <summary>The next read takes its snapshot, then waits for <paramref name="release"/>.</summary>
+        public void HoldNextRead(SemaphoreSlim release)
+        {
+            lock (_sync) { _hold = release; }
+        }
+
+        public bool WaitForHeldRead(TimeSpan timeout) => _readHeld.Wait(timeout);
+
+        public IReadOnlyList<LoggingSession> Read()
+        {
+            SemaphoreSlim? hold;
+            List<LoggingSession> snapshot;
+            lock (_sync)
+            {
+                snapshot = [.. _committed];
+                hold = _hold;
+                _hold = null;
+            }
+            if (hold is not null)
+            {
+                _readHeld.Set();
+                hold.Wait(SendTimeout);
+            }
+            return snapshot;
+        }
     }
 
     private sealed class FakeRecorder(CapturingTransport transport) : IMobileStreamRecorder

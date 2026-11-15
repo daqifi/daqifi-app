@@ -118,8 +118,31 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
     /// single-timestamp value-spread helper (which takes the factory directly).</summary>
     private IDbContextFactory<LoggingContext>? _factory;
 
+    /// <summary>Reads the committed session list. A pure SELECT; see <see cref="LoadSessionsAsync"/>.</summary>
+    private readonly Func<IReadOnlyList<LoggingSession>> _loadSnapshot;
+
+    /// <summary>Runs the bound-collection mutation on the UI thread; completes once it has run.</summary>
+    private readonly Func<Action, Task> _invokeOnUiAsync;
+
     public LoggedSessionsMobileViewModel()
+        : this(
+            static () => LoggingManager.Instance.GetLoggingSessionsSnapshot(),
+            static action => Dispatcher.UIThread.InvokeAsync(action).GetTask())
     {
+    }
+
+    /// <summary>
+    /// Test seam (review of PR #609). The unit tests have no Avalonia lifetime, so
+    /// <c>LoggingManager.Instance</c> throws and <c>Dispatcher.UIThread.InvokeAsync</c> never runs
+    /// its action. The tests pass a snapshot source and an inline UI invoker instead; everything
+    /// else is the real code.
+    /// </summary>
+    internal LoggedSessionsMobileViewModel(
+        Func<IReadOnlyList<LoggingSession>> loadSnapshot,
+        Func<Action, Task> invokeOnUiAsync)
+    {
+        _loadSnapshot = loadSnapshot;
+        _invokeOnUiAsync = invokeOnUiAsync;
         // Fire-and-forget: Reload hydrates off the UI thread and handles its own
         // errors, so there is nothing to await at construction.
         _ = Reload();
@@ -137,6 +160,50 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
         CloseViewer();
         ConfirmOverlay.Cancel();
 
+        await LoadSessionsAsync();
+    }
+
+    /// <summary>
+    /// Re-reads the list in place because a phone recording has just been committed to SQLite
+    /// (review of PR #609). <see cref="StorageMobileView"/> calls it when the shell raises
+    /// <see cref="MobileShellViewModel.RecordingCommitted"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The user can stop a recording and open Logged Data while the Live Graph banner still says
+    /// "Saving the recording…". That visit's snapshot is read before the writer commits, and APP
+    /// LOGS lists only a session with a committed sample, so the list showed no new recording until
+    /// a manual Refresh or another visit, even after the banner said it was saved.
+    /// </para>
+    /// <para>
+    /// Unlike <see cref="Reload"/>, this does not close a session viewer or a confirm that the user
+    /// opened meanwhile: nobody re-entered the list, so there is nothing left over to dismiss. Only
+    /// the list underneath changes. And it is not dropped while a load, an export or a delete holds
+    /// <see cref="IsBusy"/>: a load in flight may have read its snapshot before the commit, so the
+    /// re-read runs as soon as the busy operation ends (<see cref="OnIsBusyChanged"/>).
+    /// </para>
+    /// </remarks>
+    internal void RefreshSessions()
+    {
+        if (IsBusy) { _refreshPending = true; return; }
+        _ = LoadSessionsAsync();
+    }
+
+    private bool _refreshPending;
+
+    partial void OnIsBusyChanged(bool value)
+    {
+        if (value || !_refreshPending) { return; }
+        _refreshPending = false;
+        _ = LoadSessionsAsync();
+    }
+
+    /// <summary>
+    /// The one load path. <see cref="Reload"/> (every visit and the Refresh tap) and
+    /// <see cref="RefreshSessions"/> (a committed recording) both read the list here.
+    /// </summary>
+    private async Task LoadSessionsAsync()
+    {
         if (IsBusy) { return; }
         IsBusy = true;
         try
@@ -149,12 +216,12 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
             // by the Samples.Any filter until it has data), so a refresh can't destroy it.
             // It returns a fresh list without touching the shared singleton collection, and
             // the EF Core query runs on a background thread so opening Storage never blocks.
-            var loaded = await Task.Run(() => LoggingManager.Instance.GetLoggingSessionsSnapshot());
+            var loaded = await Task.Run(_loadSnapshot);
             // Marshal the ObservableCollection mutation onto the UI thread explicitly:
             // the await above does not guarantee resuming on the UI thread (e.g. the
             // fire-and-forget ctor path may have no captured context), and Sessions is
             // bound to the UI.
-            await Dispatcher.UIThread.InvokeAsync(() =>
+            await _invokeOnUiAsync(() =>
             {
                 Sessions.Clear();
                 foreach (var session in loaded)
