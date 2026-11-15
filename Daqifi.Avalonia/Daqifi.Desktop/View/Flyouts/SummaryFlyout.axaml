@@ -99,6 +99,7 @@
                          count by one was never the way this value gets changed; arrow keys still
                          spin it, since AllowSpin is untouched. -->
                     <NumericUpDown Grid.Row="1" Grid.Column="1"
+                                   AutomationProperties.Name="Refresh every (messages)"
                                    Value="{Binding SummaryLogger.SampleSize}"
                                    Minimum="1" Increment="1"
                                    ShowButtonSpinner="False"
@@ -107,6 +108,7 @@
 
                     <TextBlock Grid.Row="2" Grid.Column="0" Classes="cellHeader" Text="Status"/>
                     <ToggleSwitch Grid.Row="2" Grid.Column="1"
+                                  AutomationProperties.Name="Summary logging"
                                   Command="{Binding SummaryLogger.ToggleEnabledCommand}"
                                   IsChecked="{Binding SummaryLogger.Enabled, Mode=OneWay}"
                                   Classes="drawerToggle"

@@ -2,6 +2,8 @@ using System.Globalization;
 using System.Reflection;
 using Avalonia;
 using Avalonia.Automation;
+using Avalonia.Automation.Peers;
+using Avalonia.Automation.Provider;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Controls.Primitives;
@@ -417,6 +419,8 @@ internal static class AvaloniaCapture
             }
             Capture(name, main, paneAtRest);
         }
+
+        if (IsAccessibilityAudited($"{prefix}-1-{tabs[0]}")) { RequireTabsSelectableByInvoke(main, vm); }
 
         if (!Set(vm, "SelectedIndex", 0))
         {
@@ -1800,12 +1804,162 @@ internal static class AvaloniaCapture
             var size = written.Length.ToString("N0", CultureInfo.InvariantCulture);
             _captured.Add(name);
             Console.WriteLine($"[OK]   {name}: {size} bytes, settled in {rounds} round(s)");
+            if (IsAccessibilityAudited(name)) { AuditAccessibleNames(name, w); }
         }
         catch (Exception ex)
         {
             _failed = true;
             Console.WriteLine($"[FAIL] {name}: {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    // ---- Accessible names (#630) ----
+
+    /// <summary>
+    /// The screens whose controls must all have an accessible name: the five desktop panes and the
+    /// four drawers, at the full window size. The minimum-size sweep shows the same controls, so
+    /// auditing it again would only repeat every finding.
+    /// </summary>
+    private static bool IsAccessibilityAudited(string screenName) =>
+        screenName.StartsWith("desktop-", StringComparison.Ordinal)
+        && !screenName.StartsWith("desktop-min-", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Walks the visual tree of the screen that was just captured and fails the run on any
+    /// interactive control that a screen reader cannot name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This reads the RUNTIME name, the one the macOS accessibility API and VoiceOver get: the
+    /// control's own automation peer, through <c>AutomationPeer.GetName()</c>. A markup test cannot
+    /// see that value. A name that Avalonia derives from the content is accepted, so a button with
+    /// the text "Export" needs no attribute. What fails is no name at all (an icon-only button, a
+    /// tab whose label is in its Header, a switch with no content) and a name with no letter in it:
+    /// the notifications button was named "0", the text of its unread badge (#630).
+    /// </para>
+    /// <para>
+    /// Only controls that a user can act on are examined, and only when they are effectively
+    /// visible. Template parts (a scroll bar's arrows, a combo box's drop-down toggle) are left out:
+    /// their owner carries the name. A control taken out of the accessibility tree
+    /// (<c>AccessibilityView="Raw"</c>) is also left out.
+    /// </para>
+    /// <para>
+    /// It runs after the frame is saved, so it cannot change a byte of any capture.
+    /// </para>
+    /// </remarks>
+    private static void AuditAccessibleNames(string screenName, Window w)
+    {
+        var findings = new List<string>();
+        var examined = 0;
+        foreach (var control in w.GetVisualDescendants().OfType<Control>())
+        {
+            if (!IsActionable(control) || control.TemplatedParent is not null || !control.IsEffectivelyVisible)
+            {
+                continue;
+            }
+
+            var peer = ControlAutomationPeer.CreatePeerForElement(control);
+            if (!peer.IsControlElement())
+            {
+                continue;
+            }
+
+            examined++;
+            var name = peer.GetName();
+            if (string.IsNullOrWhiteSpace(name) || !name.Any(char.IsLetter))
+            {
+                findings.Add($"{DescribeForAudit(control)} is named {(string.IsNullOrEmpty(name) ? "nothing" : $"'{name}'")}");
+            }
+        }
+
+        if (findings.Count > 0)
+        {
+            _failed = true;
+            Console.WriteLine($"[FAIL] {screenName}: {findings.Count} of {examined} interactive " +
+                              "control(s) have no accessible name, so VoiceOver reads only their " +
+                              "role (#630). Set AutomationProperties.Name to the label or tooltip " +
+                              "a sighted user reads:");
+            foreach (var finding in findings)
+            {
+                Console.WriteLine($"[FAIL]   {finding}");
+            }
+        }
+        else
+        {
+            Console.WriteLine($"[OK]   {screenName}: all {examined} interactive controls have an accessible name");
+        }
+    }
+
+    /// <summary>
+    /// Selects each main tab through its automation peer's invoke, the path VoiceOver's press action
+    /// (VO-Space) takes on macOS, and fails the run when the tab does not open (#630).
+    /// </summary>
+    /// <remarks>
+    /// Avalonia's macOS node maps the press action to an invoke, expand/collapse or toggle provider
+    /// only. A plain <c>TabItem</c> peer is none of these, so the press did nothing. The check goes
+    /// from the last tab to the first, so every step is a real change of tab, and it leaves the
+    /// first tab selected, as the drawer sweep after it expects. It runs after the five tab captures,
+    /// which have already realized every pane, so it changes no frame that is saved.
+    /// </remarks>
+    private static void RequireTabsSelectableByInvoke(Window main, object vm)
+    {
+        var tabControl = main.GetVisualDescendants().OfType<TabControl>().FirstOrDefault();
+        var items = tabControl?.Items.OfType<TabItem>().ToArray() ?? [];
+        if (items.Length == 0)
+        {
+            _failed = true;
+            Console.WriteLine("[FAIL] tab invoke: no TabControl with tabs in MainWindow");
+            return;
+        }
+
+        var failures = new List<string>();
+        for (var i = items.Length - 1; i >= 0; i--)
+        {
+            var peer = ControlAutomationPeer.CreatePeerForElement(items[i]);
+            var label = peer.GetName() ?? $"tab {i}";
+            if (peer.GetProvider<IInvokeProvider>() is not { } invoke)
+            {
+                failures.Add($"'{label}' has no invoke provider, so a press does nothing");
+                continue;
+            }
+
+            invoke.Invoke();
+            Pump();
+            var selected = vm.GetType().GetProperty("SelectedIndex")?.GetValue(vm);
+            if (tabControl!.SelectedIndex != i || selected is not int index || index != i)
+            {
+                failures.Add($"'{label}': invoke left SelectedIndex at {tabControl.SelectedIndex} (view-model {selected}), not {i}");
+            }
+        }
+
+        if (failures.Count > 0)
+        {
+            _failed = true;
+            Console.WriteLine("[FAIL] tab invoke: a VoiceOver press cannot open every main tab (#630):");
+            foreach (var failure in failures) { Console.WriteLine($"[FAIL]   {failure}"); }
+        }
+        else
+        {
+            Console.WriteLine($"[OK]   tab invoke: all {items.Length} main tabs open through their automation peer's invoke");
+        }
+    }
+
+    /// <summary>
+    /// The controls a user acts on. <c>Button</c> covers <c>ToggleButton</c>, <c>RadioButton</c>,
+    /// <c>CheckBox</c>, <c>ToggleSwitch</c> and <c>RepeatButton</c>, which all derive from it;
+    /// <c>ListBoxItem</c> covers <c>ComboBoxItem</c>.
+    /// </summary>
+    private static bool IsActionable(Control control) =>
+        control is Button or TabItem or ListBoxItem or MenuItem or ComboBox or Slider or TextBox or NumericUpDown;
+
+    /// <summary>The control's type, its AutomationId or x:Name when it has one, and its tooltip.</summary>
+    private static string DescribeForAudit(Control control)
+    {
+        var id = AutomationProperties.GetAutomationId(control);
+        var label = !string.IsNullOrEmpty(id) ? $" #{id}" : !string.IsNullOrEmpty(control.Name) ? $" x:Name={control.Name}" : "";
+        var tip = ToolTip.GetTip(control) is string text ? $" (tooltip '{text}')" : "";
+        var host = control.FindAncestorOfType<UserControl>()?.GetType().Name ?? control.FindAncestorOfType<Window>()?.GetType().Name;
+        return $"{control.GetType().Name}{label}{tip} in {host}";
     }
 
     // Turn "a screen is missing" from a silent shrink into a failed run. Reports BOTH

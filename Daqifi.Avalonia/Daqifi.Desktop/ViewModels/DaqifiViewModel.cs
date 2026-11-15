@@ -549,7 +549,19 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     }
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(NotificationsButtonName))]
     private int _notificationCount;
+
+    /// <summary>
+    /// The accessible name of the top bar's bell button (#630). The button shows only an icon and
+    /// the unread badge, so the name Avalonia derived from its content was the badge text: VoiceOver
+    /// read the button as "0".
+    /// </summary>
+    public string NotificationsButtonName => NotificationsButtonNameFor(NotificationCount);
+
+    /// <summary>"Notifications", and the unread count when there is one.</summary>
+    internal static string NotificationsButtonNameFor(int unread) =>
+        unread > 0 ? $"Notifications, {unread} unread" : "Notifications";
 
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.SelectedIndex
     public int SelectedIndex

@@ -316,7 +316,7 @@
                                             </StackPanel>
 
                                             <!-- Gear button (opens drawer in edit mode) -->
-                                            <Button Grid.Column="1"
+                                            <Button AutomationProperties.Name="Profile settings" Grid.Column="1"
                                                     Width="28" Height="28"
                                                     Theme="{StaticResource RoundIconButton}"
                                                     Cursor="Hand"
@@ -459,7 +459,7 @@
               ColumnDefinitions="*,380">
 
             <!-- Scrim -->
-            <Button Grid.Column="0"
+            <Button AutomationProperties.AccessibilityView="Raw" Grid.Column="0"
                     Theme="{StaticResource TransparentButtonStyle}"
                     Command="{Binding CloseDrawerCommand}">
                 <Rectangle Fill="#A0000000"/>
@@ -506,7 +506,7 @@
                             </Panel>
                         </StackPanel>
 
-                        <Button Grid.Column="2"
+                        <Button AutomationProperties.Name="Close" Grid.Column="2"
                                 Width="28" Height="28"
                                 Theme="{StaticResource RoundIconButton}"
                                 Foreground="{DynamicResource TextSecondary}"
@@ -592,7 +592,7 @@
                                                                    Classes="sectionLabel"
                                                                    FontSize="9"
                                                                    Margin="0,0,10,0"/>
-                                                        <Slider Grid.Column="1"
+                                                        <Slider AutomationProperties.Name="Sampling frequency" Grid.Column="1"
                                                                 Classes="dark"
                                                                 Minimum="1" Maximum="{Binding MaxSamplingFrequency}"
                                                                 IsSnapToTickEnabled="True"
@@ -776,7 +776,7 @@
                                            Classes="sectionLabel"
                                            Margin="0,16,0,10"/>
                                 <Grid ColumnDefinitions="*,Auto">
-                                    <Slider Grid.Column="0"
+                                    <Slider AutomationProperties.Name="Sampling frequency" Grid.Column="0"
                                             Classes="dark"
                                             Minimum="1" Maximum="1000"
                                             IsSnapToTickEnabled="True"
@@ -814,7 +814,7 @@
         <Grid IsVisible="{Binding ConfirmOverlay.IsOpen, FallbackValue=False}"
               ZIndex="20">
             <!-- Scrim. Click = cancel (same pattern as the drawer). -->
-            <Button Theme="{StaticResource TransparentButtonStyle}"
+            <Button AutomationProperties.AccessibilityView="Raw" Theme="{StaticResource TransparentButtonStyle}"
                     Command="{Binding ConfirmOverlay.NegativeCommand}">
                 <Rectangle Fill="#A0000000"/>
             </Button>

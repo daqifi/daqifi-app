@@ -50,24 +50,28 @@
                 <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,10">
                     <TextBlock Grid.Column="0" Text="Major X-Axis" Classes="drawerRowLabel"/>
                     <ToggleSwitch Grid.Column="1" Classes="drawerToggle"
+                                  AutomationProperties.Name="Major X-axis grid lines"
                                   IsChecked="{Binding Plotter.ShowingMajorXAxisGrid, Mode=TwoWay}"/>
                 </Grid>
 
                 <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,10">
                     <TextBlock Grid.Column="0" Text="Minor X-Axis" Classes="drawerRowLabel"/>
                     <ToggleSwitch Grid.Column="1" Classes="drawerToggle"
+                                  AutomationProperties.Name="Minor X-axis grid lines"
                                   IsChecked="{Binding Plotter.ShowingMinorXAxisGrid, Mode=TwoWay}"/>
                 </Grid>
 
                 <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,10">
                     <TextBlock Grid.Column="0" Text="Major Y-Axis" Classes="drawerRowLabel"/>
                     <ToggleSwitch Grid.Column="1" Classes="drawerToggle"
+                                  AutomationProperties.Name="Major Y-axis grid lines"
                                   IsChecked="{Binding Plotter.ShowingMajorYAxisGrid, Mode=TwoWay}"/>
                 </Grid>
 
                 <Grid ColumnDefinitions="*,Auto">
                     <TextBlock Grid.Column="0" Text="Minor Y-Axis" Classes="drawerRowLabel"/>
                     <ToggleSwitch Grid.Column="1" Classes="drawerToggle"
+                                  AutomationProperties.Name="Minor Y-axis grid lines"
                                   IsChecked="{Binding Plotter.ShowingMinorYAxisGrid, Mode=TwoWay}"/>
                 </Grid>
             </StackPanel>
@@ -80,6 +84,7 @@
 
                 <Grid ColumnDefinitions="*,Auto">
                     <Slider Grid.Column="0"
+                            AutomationProperties.Name="Graph precision"
                             VerticalAlignment="Center"
                             Minimum="0" Maximum="10"
                             TickFrequency="1"
