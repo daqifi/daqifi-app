@@ -27,6 +27,11 @@ public sealed class DeviceTileViewModel : ObservableObject, IDisposable
     // @port: Daqifi.Desktop.ViewModels.DeviceTileViewModel.Device
     public IStreamingDevice Device { get; }
 
+    // Upstream's FriendlyName and IsWifiFirmwareOutdated relays were removed: no view binds them
+    // and no code reads them. The drawer binds Shell.SelectedDevice.IsWifiFirmwareOutdated (#448).
+    // @port: Daqifi.Desktop.ViewModels.DeviceTileViewModel.FriendlyName (removed, unread)
+    // @port: Daqifi.Desktop.ViewModels.DeviceTileViewModel.IsWifiFirmwareOutdated (removed, unread)
+
     /// <summary>Primary display name — the device's part number.</summary>
     // @port: Daqifi.Desktop.ViewModels.DeviceTileViewModel.Name
     public string Name => Device.DevicePartNumber;
@@ -34,10 +39,6 @@ public sealed class DeviceTileViewModel : ObservableObject, IDisposable
     /// <summary>Serial number as shown on the tile.</summary>
     // @port: Daqifi.Desktop.ViewModels.DeviceTileViewModel.SerialNumber
     public string SerialNumber => Device.DeviceSerialNo;
-
-    /// <summary>User-defined friendly name, or empty when none is set on the device.</summary>
-    // @port: Daqifi.Desktop.ViewModels.DeviceTileViewModel.FriendlyName
-    public string FriendlyName => Device.FriendlyName;
 
     /// <summary>Firmware version as shown on the tile.</summary>
     // @port: Daqifi.Desktop.ViewModels.DeviceTileViewModel.Version
@@ -82,10 +83,6 @@ public sealed class DeviceTileViewModel : ObservableObject, IDisposable
     /// </summary>
     // @port: Daqifi.Desktop.ViewModels.DeviceTileViewModel.ShowWifiVersion
     public bool ShowWifiVersion => IsUsb && Device.HasWincWifiModule;
-
-    /// <summary>Whether the device's WiFi module firmware needs to be flashed.</summary>
-    // @port: Daqifi.Desktop.ViewModels.DeviceTileViewModel.IsWifiFirmwareOutdated
-    public bool IsWifiFirmwareOutdated => Device.IsWifiFirmwareOutdated;
 
     /// <summary>Whether the device is currently connected.</summary>
     // @port: Daqifi.Desktop.ViewModels.DeviceTileViewModel.IsConnected
@@ -159,9 +156,6 @@ public sealed class DeviceTileViewModel : ObservableObject, IDisposable
             case nameof(IStreamingDevice.DeviceType):
                 OnPropertyChanged(nameof(DeviceTypeDisplay));
                 break;
-            case nameof(IStreamingDevice.IsWifiFirmwareOutdated):
-                OnPropertyChanged(nameof(IsWifiFirmwareOutdated));
-                break;
             case nameof(IStreamingDevice.WifiFirmwareVersion):
                 OnPropertyChanged(nameof(WifiVersion));
                 break;
@@ -170,9 +164,6 @@ public sealed class DeviceTileViewModel : ObservableObject, IDisposable
                 break;
             case nameof(IStreamingDevice.DeviceSerialNo):
                 OnPropertyChanged(nameof(SerialNumber));
-                break;
-            case nameof(IStreamingDevice.FriendlyName):
-                OnPropertyChanged(nameof(FriendlyName));
                 break;
             case nameof(IStreamingDevice.DeviceVersion):
                 OnPropertyChanged(nameof(Version));

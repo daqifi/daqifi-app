@@ -671,6 +671,8 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.Connect
     public virtual bool Connect()
     {
+        LastConnectError = null;
+
         // Ensure any previous connection state is cleaned up first
         CleanupConnection();
 
@@ -691,7 +693,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
 
             SubscribeCoreDeviceEvents(coreDevice);
 
-            InitializeDeviceState();
+            InitializeProtocolHandler();
 
             // Blocking on Core's async initialization is safe because Connect() is invoked
             // from Task.Run by ConnectionManager (see remarks).
@@ -727,11 +729,23 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         }
         catch (Exception ex)
         {
+            LastConnectError = ex;
             LogConnectFailure(ex);
             CleanupConnection();
             return false;
         }
     }
+
+    /// <summary>
+    /// Why the last <see cref="Connect"/> failed: the exception it caught, or <c>null</c> when it
+    /// succeeded, has not run, or failed without an exception.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Connect"/> returns only <c>false</c>, and the reason went only to the log. The
+    /// phone has no screen that shows the log, so it could not tell the user why (#593).
+    /// </remarks>
+    // @port-divergence: upstream Connect() keeps the reason in the log only.
+    public Exception? LastConnectError { get; private set; }
 
     /// <summary>
     /// Disconnects from the device: stops streaming, unsubscribes Core events, clears
@@ -1149,8 +1163,13 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// Uses Core's ProtobufProtocolHandler to route streaming protobuf messages while Core
     /// itself owns status parsing and channel population.
     /// </summary>
+    /// <remarks>
+    /// Protected so a test double can wire the real handler without a transport. Upstream's
+    /// public <c>InitializeDeviceState</c> only forwarded here and was folded in (issue #448).
+    /// </remarks>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.InitializeProtocolHandler
-    private void InitializeProtocolHandler()
+    // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.InitializeDeviceState
+    protected void InitializeProtocolHandler()
     {
         _protocolHandler = new ProtobufProtocolHandler(
             statusMessageHandler: OnStatusMessageReceived,
@@ -2558,13 +2577,6 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     }
 
     #endregion
-
-    // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.InitializeDeviceState
-    public void InitializeDeviceState()
-    {
-        // Initialize protocol handler for automatic message routing
-        InitializeProtocolHandler();
-    }
 
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.UpdateNetworkConfiguration
     public async Task UpdateNetworkConfiguration()

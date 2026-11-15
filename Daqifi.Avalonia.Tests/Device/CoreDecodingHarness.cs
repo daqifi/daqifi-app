@@ -183,7 +183,7 @@ internal sealed class CoreDecodingHarness : IDisposable
         {
             CoreDevice = core;
             SubscribeCoreDeviceEvents(core);
-            InitializeDeviceState();
+            InitializeProtocolHandler();
             SyncFromCoreDevice(core);
         }
 

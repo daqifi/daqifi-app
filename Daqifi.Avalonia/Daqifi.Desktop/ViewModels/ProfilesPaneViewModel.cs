@@ -381,7 +381,8 @@ public partial class ProfilesPaneViewModel : ObservableObject
         // Case 2: a different profile is active — ask the user to switch.
         if (anyActive != null)
         {
-            var confirmed = await ShowConfirm(
+            // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.ShowConfirm (a forwarder, inlined here: #448)
+            var confirmed = await ConfirmOverlay.ShowAsync(
                 "Switch profile?",
                 $"'{anyActive.Name}' is currently active. Switch to '{profile.Name}'?",
                 affirmativeLabel: "SWITCH");
@@ -552,16 +553,6 @@ public partial class ProfilesPaneViewModel : ObservableObject
     /// <summary>Whether a profile entry switches on any channel at all.</summary>
     // Downstream-only: no upstream counterpart.
     private static bool NamesChannels(ProfileDevice pd) => pd.Channels.Any(c => c.IsChannelActive);
-    #endregion
-
-    #region Confirm Overlay
-    /// <summary>
-    /// Displays the in-pane dark confirm overlay and returns true if the user chose the affirmative
-    /// button. Thin forwarder to <see cref="ConfirmOverlay"/> (issue #592).
-    /// </summary>
-    // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.ShowConfirm
-    private Task<bool> ShowConfirm(string title, string message, string affirmativeLabel = "OK")
-        => ConfirmOverlay.ShowAsync(title, message, affirmativeLabel);
     #endregion
 
     #region Profile CRUD

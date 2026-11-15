@@ -377,7 +377,7 @@ public partial class FirmwareDialogViewModel : ObservableObject
     // @port: Daqifi.Desktop.ViewModels.FirmwareDialogViewModel.GetFirmwareDownloadDirectory
     private static string GetFirmwareDownloadDirectory()
     {
-        var firmwareDirectory = Path.Combine(App.DaqifiDataDirectory, "Firmware", "PIC32");
+        var firmwareDirectory = Path.Combine(Common.AppDataPaths.DataDirectory, "Firmware", "PIC32");
         Directory.CreateDirectory(firmwareDirectory);
         return firmwareDirectory;
     }
