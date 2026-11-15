@@ -145,6 +145,28 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     }
 
     /// <summary>
+    /// The longest time <see cref="HoldRateToCurrentConfigurationCap"/> waits for the capability
+    /// read before it refuses the start with <see cref="DeviceBusyException"/> (#547).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An uncontended read takes approximately 1.1 s over USB on Core 1.9.1 (bench Nq1: 1,075 ms,
+    /// 1,126 ms and 1,127 ms), nearly all of it the consumer swap of a text exchange
+    /// (daqifi-core#900). A longer wait is almost always the operation lock: an SD card download
+    /// holds it for all of its duration, which can be minutes.
+    /// </para>
+    /// <para>
+    /// Five seconds, not less, because a time-out <i>refuses</i> the start. The limit must outlast
+    /// Core's own handling of a device that is free but does not answer: the consumer swap
+    /// (≈0.8 s) plus Core's 3,000 ms wait for the first reply, after which Core returns
+    /// <c>null</c> and the start continues with a Warning, as it did before #547. A shorter limit
+    /// would end that read first and refuse a start that works today. The margin also covers a
+    /// slower WiFi exchange.
+    /// </para>
+    /// </remarks>
+    internal static readonly TimeSpan CapabilityRefreshTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
     /// Holds the rate about to be handed to <paramref name="coreDevice"/> under the cap the device
     /// will accept for the channel set enabled <i>right now</i>, re-reading its capability document
     /// first so that cap describes this configuration and not the one that existed at connect.
@@ -185,7 +207,8 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// <b>When the refresh brings nothing back.</b> Core answers <c>null</c> — it does not throw —
     /// for an unanswered query, an unparseable reply or a schema this parser does not know, and
     /// throws only for a device that is no longer connected or a cancelled read. Both outcomes are
-    /// treated the same here and neither stops the start. Refusing to record over a failed read
+    /// treated the same here and neither stops the start, except a read cancelled by the time limit
+    /// below, which refuses it. Refusing to record over a failed read
     /// would newly block sessions that work today: the document is documented enrichment ("a device
     /// that cannot supply one is fully usable"), and the great majority of sessions run far below
     /// any cap. So the last figure the device stated is applied, the fact that it is not fresh is
@@ -193,6 +216,20 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// explanation waiting in the log rather than none at all. This is exactly where the code stood
     /// before this method existed, so nothing regresses; it is simply the one case the cap cannot
     /// cover.
+    /// </para>
+    /// <para>
+    /// <b>The read has a time limit (#547).</b> This runs on the thread that starts the session,
+    /// and on the desktop and mobile heads that is the UI thread: the LOGGING toggle's setter.
+    /// The read is a text exchange, so it must first get Core's operation lock, and an SD card
+    /// download holds that lock for all of its duration. Without a limit, a start during an SD
+    /// import froze the window until the download ended. So the read gets
+    /// <see cref="CapabilityRefreshTimeout"/>. A read that does not finish in that time is
+    /// cancelled and the start is <b>refused</b> with <see cref="DeviceBusyException"/>. It is not
+    /// handled like the failed reads above, because here the device is not unable to describe
+    /// itself, only busy: the last cap it stated is usually the inert connect-time zero, so a start
+    /// sent now would carry the chosen rate unchecked, wait behind the download, and be refused by
+    /// the firmware if the channel set cannot sustain it. The user would see LOGGING on and no
+    /// samples. A refusal keeps the toggle off and says to try again when the operation ends.
     /// </para>
     /// <para>
     /// Must be called after the rate has been assigned to <paramref name="coreDevice"/> (Core
@@ -212,14 +249,25 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         // legacy firmware and swallow the one warning that explains the refusal it is heading for.
         var deviceDescribesItself = coreDevice.Supports(DeviceFeature.CapabilityDocument);
         var readAnswered = false;
+        using var refreshTimeout = new CancellationTokenSource(CapabilityRefreshTimeout);
 
         try
         {
             // Blocking here is the choice the surrounding handoff already makes — StartSdCardLogging
             // does the same with StartSdCardLoggingAsync — and Task.Run keeps Core's continuations
-            // off the caller's synchronization context.
+            // off the caller's synchronization context. The token is what bounds the block: Core
+            // observes it while it waits for the operation lock and during the exchange (#547).
+            var refreshToken = refreshTimeout.Token;
             readAnswered =
-                Task.Run(() => coreDevice.ReadCapabilityDocumentAsync()).GetAwaiter().GetResult() != null;
+                Task.Run(() => coreDevice.ReadCapabilityDocumentAsync(refreshToken)).GetAwaiter().GetResult() != null;
+        }
+        catch (OperationCanceledException ex) when (refreshTimeout.IsCancellationRequested)
+        {
+            // Refused, not started against the last stated cap: that cap is usually the inert
+            // connect-time zero, and a start queued behind the download at an unsustainable rate
+            // is refused by the firmware after the download, leaving LOGGING on with no samples.
+            // The caller reports the refusal and logs it; see DeviceBusyException.
+            throw new DeviceBusyException(CapabilityRefreshTimeout, ex);
         }
         catch (Exception ex)
         {
@@ -654,6 +702,8 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.Connect
     public virtual bool Connect()
     {
+        LastConnectError = null;
+
         // Ensure any previous connection state is cleaned up first
         CleanupConnection();
 
@@ -676,7 +726,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             coreDevice.MessageReceived += OnCoreMessageReceived;
             coreDevice.StatusChanged += OnCoreStatusChanged;
 
-            InitializeDeviceState();
+            InitializeProtocolHandler();
 
             // Blocking on Core's async initialization is safe because Connect() is invoked
             // from Task.Run by ConnectionManager (see remarks).
@@ -712,11 +762,23 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         }
         catch (Exception ex)
         {
+            LastConnectError = ex;
             LogConnectFailure(ex);
             CleanupConnection();
             return false;
         }
     }
+
+    /// <summary>
+    /// Why the last <see cref="Connect"/> failed: the exception it caught, or <c>null</c> when it
+    /// succeeded, has not run, or failed without an exception.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Connect"/> returns only <c>false</c>, and the reason went only to the log. The
+    /// phone has no screen that shows the log, so it could not tell the user why (#593).
+    /// </remarks>
+    // @port-divergence: upstream Connect() keeps the reason in the log only.
+    public Exception? LastConnectError { get; private set; }
 
     /// <summary>
     /// Disconnects from the device: stops streaming, unsubscribes Core events, clears
@@ -1118,8 +1180,13 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// Uses Core's ProtobufProtocolHandler to route streaming protobuf messages while Core
     /// itself owns status parsing and channel population.
     /// </summary>
+    /// <remarks>
+    /// Protected so a test double can wire the real handler without a transport. Upstream's
+    /// public <c>InitializeDeviceState</c> only forwarded here and was folded in (issue #448).
+    /// </remarks>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.InitializeProtocolHandler
-    private void InitializeProtocolHandler()
+    // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.InitializeDeviceState
+    protected void InitializeProtocolHandler()
     {
         _protocolHandler = new ProtobufProtocolHandler(
             statusMessageHandler: OnStatusMessageReceived,
@@ -1602,11 +1669,6 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
                 }
             }
 
-            // Core doesn't handle DIO enable yet, so desktop still sends this directly
-            SendMessage(hasDigitalChannels
-                ? ScpiMessageProducer.EnableDioPorts()
-                : ScpiMessageProducer.DisableDioPorts());
-
             var coreDevice = GetConnectedCoreDevice(CoreDeviceForSd);
             // Against the ceiling in force now, not the one in force when the rate was chosen.
             ClampRateToAdvertisedCeiling();
@@ -1614,6 +1676,14 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             // ...and then under what this channel set can actually sustain, which the ceiling
             // above says nothing about. A start over that cap is refused, not clamped (#272).
             HoldRateToCurrentConfigurationCap(coreDevice);
+
+            // Core doesn't handle DIO enable yet, so desktop still sends this directly. After the
+            // cap step, not before: that step can refuse the start (#547), and a refused start
+            // must not change the device. The firmware's current cap counts analog channels
+            // only, so the DIO state does not change the cap read above.
+            SendMessage(hasDigitalChannels
+                ? ScpiMessageProducer.EnableDioPorts()
+                : ScpiMessageProducer.DisableDioPorts());
 
             // The Core package resumes StartSdCardLoggingAsync continuations on the caller's
             // synchronization context. Running it on the thread pool prevents UI deadlocks.
@@ -1626,8 +1696,10 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             OnPropertyChanged(nameof(IsLoggingToSdCard));
             OnPropertyChanged(nameof(IsStreaming));
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not DeviceBusyException)
         {
+            // A busy device is an ordinary condition, not a defect: the caller reports and logs
+            // it as a Warning, so it does not reach Sentry (#547).
             AppLogger.Error(ex, $"Failed to enable SD card logging for device {DeviceSerialNo}");
             throw;
         }
@@ -1846,24 +1918,6 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     {
         if (IsStreaming) return;
 
-        // Prevent computer sleep when starting streaming. The P/Invoke
-        // targets kernel32.dll — a DllNotFoundException on mobile — so it
-        // is Windows-guarded; other heads skip the block entirely and log
-        // nothing. Mobile sleep-prevention (a wake lock) is a future
-        // divergence, not required to stream.
-        if (OperatingSystem.IsWindows())
-        {
-            var previousState = NativeMethods.SetThreadExecutionState(NativeMethods.EsContinuous | NativeMethods.EsSystemRequired);
-            if (previousState == 0) // Check for failure (returns 0 on failure)
-            {
-                AppLogger.Warning("Failed to set computer from sleeping while streaming.");
-            }
-            else
-            {
-                AppLogger.Information("Preventing computer sleep during streaming.");
-            }
-        }
-
         if (Mode != DeviceMode.StreamToApp)
         {
             throw new InvalidOperationException("Cannot initialize streaming while in LogToDevice mode");
@@ -1914,6 +1968,25 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         coreStreamingDevice.StartStreaming();
         IsStreaming = coreStreamingDevice.IsStreaming;
         AppLogger.AddBreadcrumb("streaming", $"Streaming started at {StreamingFrequency} Hz");
+
+        // Prevent computer sleep once streaming has started, not before: StopStreaming clears the
+        // requirement only for a device that is streaming, so a start refused above (wrong mode,
+        // or a busy device, #547) must not set it. The P/Invoke targets kernel32.dll — a
+        // DllNotFoundException on mobile — so it is Windows-guarded; other heads skip the block
+        // entirely and log nothing. Mobile sleep-prevention (a wake lock) is a future divergence,
+        // not required to stream.
+        if (IsStreaming && OperatingSystem.IsWindows())
+        {
+            var previousState = NativeMethods.SetThreadExecutionState(NativeMethods.EsContinuous | NativeMethods.EsSystemRequired);
+            if (previousState == 0) // Check for failure (returns 0 on failure)
+            {
+                AppLogger.Warning("Failed to set computer from sleeping while streaming.");
+            }
+            else
+            {
+                AppLogger.Information("Preventing computer sleep during streaming.");
+            }
+        }
     }
 
     /// <summary>
@@ -2640,13 +2713,6 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     }
 
     #endregion
-
-    // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.InitializeDeviceState
-    public void InitializeDeviceState()
-    {
-        // Initialize protocol handler for automatic message routing
-        InitializeProtocolHandler();
-    }
 
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.UpdateNetworkConfiguration
     public async Task UpdateNetworkConfiguration()
