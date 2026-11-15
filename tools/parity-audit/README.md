@@ -512,6 +512,16 @@ captures once and verifies against the one for the current host, failing on a ch
 screen, a missing one, and one the baseline does not list (`shasum -c` only checks the
 names it was given, so the extra-file direction is checked separately).
 
+The eight drawer screens (`desktop-6` to `-9` and `desktop-min-6` to `-9`) were re-recorded
+again 2026-11-14 for #615, on top of the #613/#618/#619 recording below: the settings drawer
+moved into the SplitView pane beside the three flyouts, all four share one `DrawerHeader`, one
+section style and one light-dismiss scrim. `desktop-6-settings-drawer` is now the fourth user of
+the `PART_PaneRoot` end-state check, because the settings drawer slides like the others. The
+other thirty-two hashes are unchanged against the #624 capture, and five `--determinism` runs
+agreed on all forty after the change. The eight were captured again after #585's time axis
+reached #624, on the merged tree, since every one of them shows the Live Graph plot behind its
+panel.
+
 Thirty-six of the forty screens were re-recorded 2026-11-14 (macOS 26.5, Apple silicon, .NET SDK
 10.0.302) for the visual-consistency change (#613, #618, #619). Three causes, one recording:
 `FluentTheme` now has a palette whose `Accent` is the brand `#119EDA`, so every stock toggle,

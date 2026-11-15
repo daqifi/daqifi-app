@@ -246,20 +246,25 @@ public class SummaryFlyoutBindingTests
         Assert.Equal(binding, TheOnly(elementName).Attribute(attribute)?.Value);
 
     /// <summary>
-    /// The pane's two buttons, told apart by what they do. The close button used to be a
-    /// <c>ToggleButton</c> bound <c>TwoWay</c> to <c>IsLogSummaryOpen</c>; that flag is always true
-    /// while the pane is on screen, so the toggle sat checked and Fluent filled it with the accent
-    /// colour (#613). It is a plain <c>Button</c> on a close command now, and a returning
+    /// The close path. It used to be a <c>ToggleButton</c> bound <c>TwoWay</c> to
+    /// <c>IsLogSummaryOpen</c>; that flag is always true while the pane is on screen, so the toggle
+    /// sat checked and Fluent filled it with the accent colour (#613). Since #615 the shared
+    /// <c>DrawerHeader</c> draws the close button and runs this command, and a returning
     /// <c>ToggleButton</c> would bring the filled square back.
     /// </summary>
-    [Theory]
-    [InlineData("Reset", "{Binding SummaryLogger.ResetCommand}")]
-    [InlineData(null, "{Binding CloseLogSummaryCommand}")]
-    public void Each_button_runs_its_own_command(string? content, string binding)
+    [Fact]
+    public void The_header_closes_through_its_own_command()
     {
-        var button = Assert.Single(Root().Descendants(),
-            element => element.Name.LocalName == "Button" && element.Attribute("Command")?.Value == binding);
-        Assert.Equal(content, button.Attribute("Content")?.Value);
+        var header = Assert.Single(Root().Descendants(), element => element.Name.LocalName == "DrawerHeader");
+        Assert.Equal("{Binding CloseLogSummaryCommand}", header.Attribute("CloseCommand")?.Value);
+    }
+
+    [Fact]
+    public void Reset_runs_the_reset_command()
+    {
+        var button = Assert.Single(Root().Descendants(), element => element.Name.LocalName == "Button");
+        Assert.Equal("Reset", button.Attribute("Content")?.Value);
+        Assert.Equal("{Binding SummaryLogger.ResetCommand}", button.Attribute("Command")?.Value);
     }
 
     [Fact]

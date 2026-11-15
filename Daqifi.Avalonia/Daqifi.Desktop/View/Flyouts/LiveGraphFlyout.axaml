@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:i="https://github.com/projektanker/icons.avalonia"
              xmlns:vm="using:Daqifi.Desktop.ViewModels"
+             xmlns:local="using:Daqifi.Desktop.View.Flyouts"
              x:DataType="vm:DaqifiViewModel"
              x:CompileBindings="True"
              Background="{DynamicResource SurfaceRaised}"
@@ -18,85 +19,62 @@
         SplitView pane, which inherits the window's DaqifiViewModel. One scope, no templates.
     -->
 
+    <!--
+        Section, row and switch styles are the app-wide drawer classes in
+        Resources/Components.axaml (#615): this pane used to define its own drawerSectionLabel
+        at 10px TextTertiary while Log Summary, beside it in the same SplitView pane, used a
+        12px TextSecondary one. MahApps ToggleSwitch → Avalonia ToggleSwitch (IsOn → IsChecked);
+        the On/Off text stays, as a secondary 11px label (drawerToggle).
+    -->
     <UserControl.Styles>
-        <Style Selector="TextBlock.drawerSectionLabel">
-            <Setter Property="FontSize" Value="10"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextTertiary}"/>
-            <Setter Property="Margin" Value="0,0,0,10"/>
-        </Style>
-        <Style Selector="TextBlock.drawerRowLabel">
-            <Setter Property="FontSize" Value="11"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
-            <Setter Property="VerticalAlignment" Value="Center"/>
-        </Style>
-        <!-- MahApps ToggleSwitch → Avalonia ToggleSwitch (IsOn → IsChecked) -->
-        <Style Selector="ToggleSwitch.flyoutToggle">
-            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+        <Style Selector="ToggleSwitch.drawerToggle">
             <Setter Property="OffContent" Value="Off"/>
             <Setter Property="OnContent" Value="On"/>
         </Style>
     </UserControl.Styles>
 
-    <Grid RowDefinitions="Auto,Auto,Auto,Auto" Margin="0,8,0,0">
+    <Grid RowDefinitions="Auto,Auto,Auto,Auto">
 
-        <!-- Header (MahApps Flyout rendered Header + close chrome) -->
-        <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="20,4,12,8">
-            <TextBlock Grid.Column="0" Text="Plot Settings"
-                       FontSize="18" FontWeight="Light"
-                       Foreground="{DynamicResource TextPrimary}"
-                       VerticalAlignment="Center"/>
-            <!-- A plain Button with a close command, not a ToggleButton bound to the open
-                 flag (#613): the flag is always true while this is on screen, so the toggle
-                 sat in its checked state and Fluent filled it with the accent colour. -->
-            <Button Grid.Column="1"
-                    Width="28" Height="28"
-                    Theme="{StaticResource RoundCloseButton}"
-                    Foreground="{DynamicResource TextSecondary}"
-                    ToolTip.Tip="Close"
-                    AutomationProperties.Name="Close"
-                    Command="{Binding CloseLiveGraphSettingsCommand}">
-                <i:Icon Value="mdi-close" FontSize="16"/>
-            </Button>
-        </Grid>
+        <!-- The shared panel header (#615); its look is the DrawerHeader theme in
+             Resources/Shell.axaml, the same one the settings drawer uses. -->
+        <local:DrawerHeader Grid.Row="0"
+                            Overline="LIVE GRAPH"
+                            Title="Plot Settings"
+                            CloseCommand="{Binding CloseLiveGraphSettingsCommand}"/>
 
         <!-- ── Grid visibility ── -->
-        <Border Grid.Row="1"
-                BorderBrush="{DynamicResource BorderDim}"
-                BorderThickness="0,0,0,1"
-                Padding="20,16,20,16">
+        <Border Grid.Row="1" Classes="drawerSection">
             <StackPanel>
                 <TextBlock Text="GRID LINES" Classes="drawerSectionLabel"/>
 
                 <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,10">
                     <TextBlock Grid.Column="0" Text="Major X-Axis" Classes="drawerRowLabel"/>
-                    <ToggleSwitch Grid.Column="1" Classes="flyoutToggle"
+                    <ToggleSwitch Grid.Column="1" Classes="drawerToggle"
                                   IsChecked="{Binding Plotter.ShowingMajorXAxisGrid, Mode=TwoWay}"/>
                 </Grid>
 
                 <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,10">
                     <TextBlock Grid.Column="0" Text="Minor X-Axis" Classes="drawerRowLabel"/>
-                    <ToggleSwitch Grid.Column="1" Classes="flyoutToggle"
+                    <ToggleSwitch Grid.Column="1" Classes="drawerToggle"
                                   IsChecked="{Binding Plotter.ShowingMinorXAxisGrid, Mode=TwoWay}"/>
                 </Grid>
 
                 <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,10">
                     <TextBlock Grid.Column="0" Text="Major Y-Axis" Classes="drawerRowLabel"/>
-                    <ToggleSwitch Grid.Column="1" Classes="flyoutToggle"
+                    <ToggleSwitch Grid.Column="1" Classes="drawerToggle"
                                   IsChecked="{Binding Plotter.ShowingMajorYAxisGrid, Mode=TwoWay}"/>
                 </Grid>
 
                 <Grid ColumnDefinitions="*,Auto">
                     <TextBlock Grid.Column="0" Text="Minor Y-Axis" Classes="drawerRowLabel"/>
-                    <ToggleSwitch Grid.Column="1" Classes="flyoutToggle"
+                    <ToggleSwitch Grid.Column="1" Classes="drawerToggle"
                                   IsChecked="{Binding Plotter.ShowingMinorYAxisGrid, Mode=TwoWay}"/>
                 </Grid>
             </StackPanel>
         </Border>
 
         <!-- ── Graph precision ── -->
-        <Border Grid.Row="2"
-                Padding="20,16,20,16">
+        <Border Grid.Row="2" Classes="drawerSection" BorderThickness="0">
             <StackPanel>
                 <TextBlock Text="PRECISION" Classes="drawerSectionLabel"/>
 

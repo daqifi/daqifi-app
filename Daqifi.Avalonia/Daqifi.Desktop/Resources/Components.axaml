@@ -91,6 +91,35 @@
         <Setter Property="Margin" Value="8,0,0,0"/>
     </Style>
 
+    <!--
+        Right-side panel body (#615). The settings drawer and the three SplitView flyouts
+        (Notifications, Plot Settings, Log Summary) use these, so their sections read the same:
+        a full-bleed section with a hairline along its bottom edge, a small grey caps label,
+        grey row labels, and the on/off text of a switch as a secondary label rather than white
+        body text. 24px horizontal padding matches the DrawerHeader title column above.
+    -->
+    <Style Selector="Border.drawerSection">
+        <Setter Property="BorderBrush" Value="{DynamicResource BorderDim}"/>
+        <Setter Property="BorderThickness" Value="0,0,0,1"/>
+        <Setter Property="Padding" Value="24,16"/>
+    </Style>
+    <Style Selector="TextBlock.drawerSectionLabel">
+        <Setter Property="FontSize" Value="11"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+        <Setter Property="Margin" Value="0,0,0,12"/>
+    </Style>
+    <Style Selector="TextBlock.drawerRowLabel">
+        <Setter Property="FontSize" Value="11"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+    <Style Selector="ToggleSwitch.drawerToggle">
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+        <Setter Property="FontSize" Value="11"/>
+    </Style>
+
     <!-- Monospace data / session / serial names (desktop uses mono for these). -->
     <Style Selector="TextBlock.mono">
         <Setter Property="FontFamily" Value="{DynamicResource MonoFontFamily}"/>
