@@ -22,12 +22,26 @@
 		<!-- Precompile every assembly a desktop publish ships (ReadyToRun, #614). Without it the
 		     JIT compiles about 20,500 methods of the app, Avalonia, EF Core, OxyPlot and NLog
 		     before the first frame, which was about 77 % of start-up. It acts only at publish, so
-		     `dotnet build` and the tests do not change. It is set here, not on the release
-		     command line, because the restore must see it too: that is the step that downloads
-		     the crossgen2 pack, and the release publishes with no-restore. The crossgen2 pack is a
-		     PackageDownload, so it does not go into packages.lock.json. Tiered compilation and
-		     dynamic PGO keep their defaults; the R2R code is re-JIT-ed when it is hot. -->
-		<PublishReadyToRun>true</PublishReadyToRun>
+		     `dotnet build` and the tests do not change.
+
+		     It is set here, not on the release command line, because the restore must see it too:
+		     that is the step that downloads the crossgen2 pack, and the release publishes with
+		     no-restore. The crossgen2 pack is a PackageDownload, so it does not go into
+		     packages.lock.json.
+
+		     Two conditions keep the restore graph the same on every host:
+		     - UseDefaultPublishRuntimeIdentifier=false. Without it, PublishReadyToRun makes the SDK
+		       add the HOST RID to RuntimeIdentifiers (RuntimeIdentifierInference.targets). On a
+		       linux-arm64 or win-arm64 machine that adds a fifth RID, and the locked restore then
+		       fails NU1004 against the four RIDs the lock file records.
+		     - R2R only for a restore or a publish with an explicit RID. With that default off, an
+		       R2R publish needs a RID, so a RID-less publish stays the portable, IL-only publish
+		       that it was before.
+
+		     Tiered compilation and dynamic PGO keep their defaults; the R2R code is re-JIT-ed when
+		     it is hot. -->
+		<UseDefaultPublishRuntimeIdentifier>false</UseDefaultPublishRuntimeIdentifier>
+		<PublishReadyToRun Condition="'$(RuntimeIdentifier)' != '' or '$(MSBuildIsRestoring)' == 'true'">true</PublishReadyToRun>
 	</PropertyGroup>
 
 	<ItemGroup>
