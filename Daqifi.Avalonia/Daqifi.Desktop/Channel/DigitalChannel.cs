@@ -129,7 +129,7 @@ public class DigitalChannel : AbstractChannel
             // Core zeroes the channel's stored output value when PWM disables (the pin goes
             // transiently high-impedance); keep the desktop commanded-state flag in lockstep
             // without re-issuing a drive command.
-            HydrateIsDigitalOn(_coreChannel.OutputValue);
+            HydrateIsDigitalOn(CommandedOutputValue(_coreChannel));
             OnPropertyChanged();
         }
     }
@@ -195,26 +195,65 @@ public class DigitalChannel : AbstractChannel
 
         // Initialize derived desktop state based on core
         IsOutput = coreChannel.Direction == ChannelDirection.Output;
-        HydrateIsDigitalOn(coreChannel.OutputValue);
+        HydrateIsDigitalOn(CommandedOutputValue(coreChannel));
     }
+
+    /// <summary>
+    /// The output value Core last recorded as commanded on <paramref name="coreChannel"/>.
+    /// </summary>
+    /// <remarks>
+    /// Core 1.10.0 marks <c>IDigitalChannel.OutputValue</c> obsolete and points to <c>IsHigh</c>,
+    /// the pin's streamed level. This app's output toggle (<c>IsDigitalOn</c>) shows the COMMANDED
+    /// state on purpose, which is what Core still documents this value as: "a local note of the
+    /// last commanded value". Moving the toggle to the streamed level is a product change, tracked
+    /// separately from the Core 1.10.0 uptake (issue #584). Until Core removes the member, the one
+    /// read is here, with the warning suppressed for this reason.
+    /// </remarks>
+#pragma warning disable CS0618
+    private static bool CommandedOutputValue(Daqifi.Core.Channel.IDigitalChannel coreChannel) =>
+        coreChannel.OutputValue;
+#pragma warning restore CS0618
 
     // @port: Daqifi.Desktop.Channel.DigitalChannel.ReplaceCoreChannel
     internal void ReplaceCoreChannel(Daqifi.Core.Channel.IDigitalChannel coreChannel)
     {
         ArgumentNullException.ThrowIfNull(coreChannel);
 
-        var wasEnabled = _coreChannel.IsEnabled;
-        var direction = _coreChannel.Direction;
-        var outputValue = _coreChannel.OutputValue;
-        var isPwmEnabled = _coreChannel.IsPwmEnabled;
-        var pwmDutyCyclePercent = _coreChannel.PwmDutyCyclePercent;
+        // Core repopulates channels in place, so a status message normally hands back the object
+        // this wrapper already holds. Copying its state onto itself is not a no-op in Core 1.10.0:
+        // while PWM runs, Direction reads Output (the timer drives the pin), and writing that back
+        // replaced the direction the pin returns to when PWM stops (issue #584).
+        var sameChannel = ReferenceEquals(_coreChannel, coreChannel);
+        var outputValue = CommandedOutputValue(_coreChannel);
 
-        _coreChannel = coreChannel;
-        _coreChannel.IsEnabled = wasEnabled;
-        _coreChannel.Direction = direction;
-        _coreChannel.OutputValue = outputValue;
-        _coreChannel.IsPwmEnabled = isPwmEnabled;
-        _coreChannel.PwmDutyCyclePercent = pwmDutyCyclePercent;
+        if (!sameChannel)
+        {
+            var wasEnabled = _coreChannel.IsEnabled;
+            var direction = _coreChannel.Direction;
+            var isPwmEnabled = _coreChannel.IsPwmEnabled;
+            var pwmDutyCyclePercent = _coreChannel.PwmDutyCyclePercent;
+
+            _coreChannel = coreChannel;
+            _coreChannel.IsEnabled = wasEnabled;
+
+            // While PWM runs the old channel reports Output whatever the pin returns to, so that
+            // value says nothing about the direction to keep; the new channel's own value (from
+            // the status message) is the better one.
+            if (!isPwmEnabled)
+            {
+                _coreChannel.Direction = direction;
+            }
+
+            // Core 1.10.0 marks these setters obsolete because they send nothing to the device.
+            // That is what this needs: carry the app's last commanded state onto the new Core
+            // object, with no device command re-issued (see the comment below). Reached only when
+            // Core hands over a different object, which it does not do on a normal repopulate.
+#pragma warning disable CS0618
+            _coreChannel.OutputValue = outputValue;
+            _coreChannel.IsPwmEnabled = isPwmEnabled;
+#pragma warning restore CS0618
+            _coreChannel.PwmDutyCyclePercent = pwmDutyCyclePercent;
+        }
 
         // Keep the desktop commanded-state flag in lockstep with Core's mirror so the
         // tile/toggle cannot desync after a refresh (no device command is re-issued).

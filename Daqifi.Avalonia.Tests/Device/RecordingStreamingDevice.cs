@@ -190,6 +190,8 @@ internal sealed class RecordingStreamingDevice : IStreamingDevice
 
     public int PwmFrequencyHz { get; set; }
 
+    public int PwmFrequencyFloorHz { get; set; } = Daqifi.Core.Device.DaqifiStreamingDevice.MinPwmFrequencyHz;
+
     public bool Connect() => true;
 
     public bool Disconnect() => true;
