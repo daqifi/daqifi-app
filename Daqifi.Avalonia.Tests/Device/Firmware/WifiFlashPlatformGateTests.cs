@@ -511,14 +511,13 @@ public class WifiFlashPlatformGateTests : IDisposable
     }
 
     /// <summary>
-    /// Both device panes explain the disabled button. These bindings are resolved by reflection, so
+    /// The device pane explains the disabled button. These bindings are resolved by reflection, so
     /// nothing in either head's build can see them break — see <see cref="BindingFacts"/>.
     /// </summary>
-    [Theory]
-    [InlineData("Daqifi.Avalonia/Daqifi.Desktop/View/Prototype/DevicesPanePrototype.axaml")]
-    [InlineData("Daqifi.Avalonia/Views/Mobile/DevicesMobileView.axaml")]
-    public void The_device_panes_explain_why_the_button_is_disabled(string viewPath)
+    [Fact]
+    public void The_device_pane_explains_why_the_button_is_disabled()
     {
+        const string viewPath = "Daqifi.Avalonia/Daqifi.Desktop/View/Prototype/DevicesPanePrototype.axaml";
         BindingFacts.AssertBinds(viewPath, "{Binding Shell.WifiFlashUnavailableMessage}");
         BindingFacts.AssertBinds(viewPath, "IsVisible=\"{Binding !Shell.CanFlashWifiModule}\"");
 

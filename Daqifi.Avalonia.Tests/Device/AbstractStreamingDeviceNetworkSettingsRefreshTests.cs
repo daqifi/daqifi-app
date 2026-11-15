@@ -11,9 +11,9 @@ namespace Daqifi.Avalonia.Tests.Device;
 /// Pins how a metadata read reaches the NETWORK section of the device drawer (issue #565).
 ///
 /// <para>
-/// Both heads bind that section through <c>SelectedDevice.NetworkConfiguration.Mode</c>,
+/// The drawer binds that section through <c>SelectedDevice.NetworkConfiguration.Mode</c>,
 /// <c>.SecurityType</c>, <c>.Ssid</c> and <c>.Password</c>
-/// (<c>DevicesPanePrototype.axaml</c> and <c>DevicesMobileView.axaml</c>).
+/// (<c>DevicesPanePrototype.axaml</c>).
 /// <see cref="NetworkConfiguration"/> is a plain Daqifi.Core class with no change notification, so
 /// the only thing a binding can watch is the device's <c>NetworkConfiguration</c> property itself.
 /// The hydrate used to write the device's new values into the existing instance and raise
