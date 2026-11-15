@@ -523,7 +523,12 @@ pills and has no stock accent control, which is the measurement that the palette
 what it was meant to. The pre-change capture reproduced the then-committed manifest on all
 forty, and five `--determinism` runs agreed on all forty after the change; the hashes are from
 run 1. Two earlier attempts on a loaded host (load average 6-15, a sibling perf benchmark
-running) failed on the known `desktop-min-7` 379/380 drawer race and saved nothing.
+running) failed on the known `desktop-min-7` 379/380 drawer race and saved nothing. After review,
+the primary dialog button's label went from white (3.03:1 on the brand blue) to the dark `Surface`
+token (6.33:1), and the four dialog screens that draw it (`dialog-export-configure`,
+`dialog-export-failed`, `dialog-firmware-uploading`, `dialog-firmware-close-refused`) were
+re-recorded once more, on a tree with `main` at `19f83df` merged in; the other thirty-six hashes
+did not move, and five `--determinism` runs agreed on all forty.
 
 `dialog-connect-usb-idle` and `dialog-connect-usb-error` were re-recorded 2026-11-10 (macOS 26.5,
 Apple silicon, .NET SDK 10.0.302) for #493, which shows a device serial in the 16-digit hex form
