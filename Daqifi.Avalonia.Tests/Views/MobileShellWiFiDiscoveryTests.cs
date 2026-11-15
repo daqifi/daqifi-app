@@ -213,6 +213,149 @@ public sealed class MobileShellWiFiDiscoveryTests : IDisposable
         Assert.True(WaitUntil(() => _scope.Disposed == _scope.Entered), "The faulted sweep left its scope held.");
     }
 
+    // ---- When the sweep ends by itself (#591) ---------------------------------------------------
+
+    /// <summary>
+    /// The defect. On a network with no device the sweep never ended: no result, and on Android
+    /// the multicast lock stayed held until the user came back and tapped Stop. It must end at its
+    /// time limit, say that nothing was found and what to check, and release the scope.
+    /// </summary>
+    [Fact]
+    public void A_sweep_that_finds_nothing_ends_at_its_time_limit_and_says_so()
+    {
+        var finder = new ScriptedFinder(_ => null);
+        _shell.CreateWifiFinder = () => finder;
+        _shell.WifiSweepLimit = TimeSpan.FromMilliseconds(300);
+
+        _shell.ScanCommand.Execute(null);
+
+        Assert.True(WaitUntil(() => { lock (_uiGate) { return !_shell.IsScanning; } }), "The sweep never ended.");
+        Assert.True(finder.Passes >= 2, $"The sweep ended after {finder.Passes} pass(es); one pass is not reliable (#516).");
+        lock (_uiGate)
+        {
+            Assert.StartsWith("No DAQiFi device found on this WiFi network.", _shell.Status, StringComparison.Ordinal);
+            Assert.Contains("connect by IP", _shell.Status, StringComparison.Ordinal);
+        }
+        Assert.True(WaitUntil(() => _scope.Disposed == _scope.Entered), "The ended sweep left the discovery scope held.");
+        Assert.True(WaitUntil(() => finder.IsDisposed), "The ended sweep left the finder undisposed.");
+    }
+
+    /// <summary>
+    /// A sweep that found a device ends at its limit too, and leaves the list for the user to pick
+    /// from.
+    /// </summary>
+    [Fact]
+    public void A_sweep_that_found_a_device_ends_at_its_time_limit_and_keeps_the_list()
+    {
+        var finder = new ScriptedFinder(_ => Board);
+        _shell.CreateWifiFinder = () => finder;
+        _shell.WifiSweepLimit = TimeSpan.FromMilliseconds(300);
+
+        _shell.ScanCommand.Execute(null);
+
+        Assert.True(WaitUntil(() => { lock (_uiGate) { return !_shell.IsScanning; } }), "The sweep never ended.");
+        lock (_uiGate)
+        {
+            Assert.Single(_shell.Devices);
+            Assert.Equal("Scan finished — 1 device(s) found — tap one to connect.", _shell.Status);
+        }
+        Assert.True(WaitUntil(() => _scope.Disposed == _scope.Entered), "The ended sweep left the discovery scope held.");
+    }
+
+    /// <summary>
+    /// The second half of the defect: HOME during a sweep. The sweep must end and release the scope
+    /// at once, and the status must say why when the user comes back.
+    /// </summary>
+    [Fact]
+    public void The_app_going_to_the_background_ends_the_sweep_and_releases_the_scope()
+    {
+        var finder = new ScriptedFinder(_ => null);
+        _shell.CreateWifiFinder = () => finder;
+
+        _shell.ScanCommand.Execute(null);
+        Assert.True(WaitUntil(() => _scope.Entered == 1), "Arrangement: the sweep never entered the discovery scope.");
+
+        lock (_uiGate) { _shell.StopScanForBackground(); }
+
+        Assert.False(_shell.IsScanning);
+        Assert.True(WaitUntil(() => _scope.Disposed == 1), "The sweep kept the discovery scope in the background.");
+        lock (_uiGate)
+        {
+            Assert.Equal("Scan stopped — the app went to the background. Tap Scan to search again.", _shell.Status);
+        }
+    }
+
+    /// <summary>
+    /// Review on #607. A reply that the finder posted just before the app went to the background
+    /// runs after the stop. It must not add a row or replace the background-stop status.
+    /// </summary>
+    [Fact]
+    public void A_reply_posted_before_the_background_stop_does_not_overwrite_it()
+    {
+        var posted = new Queue<Action>();
+        _shell.PostToUiThread = action => { lock (posted) { posted.Enqueue(action); } };
+        var finder = new ScriptedFinder(_ => Board);
+        _shell.CreateWifiFinder = () => finder;
+
+        _shell.ScanCommand.Execute(null);
+        Assert.True(WaitUntil(() => { lock (posted) { return posted.Count > 0; } }), "The board's reply was never posted.");
+
+        _shell.StopScanForBackground();
+        RunPosted(posted);
+
+        Assert.Empty(_shell.Devices);
+        Assert.Equal("Scan stopped — the app went to the background. Tap Scan to search again.", _shell.Status);
+    }
+
+    /// <summary>
+    /// The fault path obeys the same rule: a sweep that the user already stopped must not replace
+    /// the stop's status with "Scan failed".
+    /// </summary>
+    [Fact]
+    public void A_fault_from_a_sweep_that_was_already_stopped_does_not_overwrite_the_status()
+    {
+        var posted = new Queue<Action>();
+        _shell.PostToUiThread = action => { lock (posted) { posted.Enqueue(action); } };
+        var finder = new ScriptedFinder(_ => null) { Fault = new InvalidOperationException("no socket") };
+        _shell.CreateWifiFinder = () => finder;
+
+        _shell.ScanCommand.Execute(null);
+        Assert.True(WaitUntil(() => { lock (posted) { return posted.Count > 0; } }), "The fault was never posted.");
+
+        _shell.ScanCommand.Execute(null);   // the user taps Stop
+        RunPosted(posted);
+
+        Assert.False(_shell.IsScanning);
+        Assert.Equal("Scan stopped — no devices found.", _shell.Status);
+    }
+
+    private static void RunPosted(Queue<Action> posted)
+    {
+        while (true)
+        {
+            Action next;
+            lock (posted)
+            {
+                if (posted.Count == 0) { return; }
+                next = posted.Dequeue();
+            }
+            next();
+        }
+    }
+
+    /// <summary>Going to the background with no sweep running leaves the status alone.</summary>
+    [Fact]
+    public void The_app_going_to_the_background_without_a_sweep_changes_nothing()
+    {
+        var before = _shell.Status;
+
+        _shell.StopScanForBackground();
+
+        Assert.False(_shell.IsScanning);
+        Assert.Equal(before, _shell.Status);
+        Assert.Equal(0, _scope.Entered);
+    }
+
     private static bool WaitUntil(Func<bool> condition)
     {
         var deadline = DateTime.UtcNow + Wait;

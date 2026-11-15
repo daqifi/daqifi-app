@@ -481,7 +481,7 @@
                              port collapsed it, so with nothing plotted the region was blank. The
                              model is built with its three labelled axes in DatabaseLogger's
                              constructor and holds no series until DisplayLoggingSession runs, so
-                             leaving the view visible draws the same empty Analog (V) / Time (ms) /
+                             leaving the view visible draws the same empty Analog (V) / Elapsed time /
                              Digital frame LiveGraphPane already draws in this state, with the
                              empty-state card below overlaid on it exactly as it is there. -->
                         <oxy:PlotView Grid.Row="1"

@@ -530,6 +530,24 @@ token (6.33:1), and the four dialog screens that draw it (`dialog-export-configu
 re-recorded once more, on a tree with `main` at `19f83df` merged in; the other thirty-six hashes
 did not move, and five `--determinism` runs agreed on all forty.
 
+The twelve screens that #585 (below) and the visual-consistency change (above) both re-recorded
+— `desktop-1`, `-2`, `-6`, `-7`, `-8`, `-9` and their `desktop-min-*` twins — were captured once
+more on the merged tree (`main` at `5cd8abd` merged into the visual-consistency branch), because
+neither side's hash describes a frame with both the clock-format time axis and the brand-blue,
+outline-icon chrome. A line merge of the two manifests would have been green on neither side.
+Five `--determinism` runs agreed on all forty; the hashes are from run 1.
+
+Twelve desktop screens were re-recorded 2026-11-14 (macOS 26.5, Apple silicon, .NET SDK
+10.0.302) for #585, which gives both plots an elapsed-time axis: the title reads
+`Elapsed time (m:ss)` instead of `Time (ms)`, and the empty frame spans `0:00` to `1:00` instead
+of 0 to 100. The twelve are every screen that shows a plot frame, at both window sizes:
+`desktop-1-livegraph`, `desktop-2-loggeddata`, and the four drawers and flyouts that open over the
+Live Graph (`-6-settings-drawer`, `-7-notifications-flyout`, `-8-livegraph-settings-flyout`,
+`-9-summary-flyout`), each also as `desktop-min-*`. The mobile screens draw no time axis and are
+unchanged. The pre-change capture at `origin/main` reproduced the manifest on all forty screens,
+the post-change capture differed on exactly these twelve, five `--determinism` runs agreed on all
+forty after the change, and the hashes come from determinism run 1 on the branch.
+
 `dialog-connect-usb-idle` and `dialog-connect-usb-error` were re-recorded 2026-11-10 (macOS 26.5,
 Apple silicon, .NET SDK 10.0.302) for #493, which shows a device serial in the 16-digit hex form
 `*IDN?` reports instead of the stored decimal. They are the only two screens in this manifest that
