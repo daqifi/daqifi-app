@@ -75,6 +75,80 @@ public class AccentPaletteTests
         Assert.True(offenders.Count == 0, "Stock accent buttons:" + Environment.NewLine + string.Join(Environment.NewLine, offenders));
     }
 
+    /// <summary>
+    /// The primary dialog button's label must stay readable in every enabled state: 4.5:1 is the WCAG
+    /// minimum for text this small (12 px). It started as white on the brand blue, which is 3.03:1 at
+    /// rest and 2.53:1 on hover. Colours are read from the markup and the design tokens, so a
+    /// retuned shade is checked, not assumed.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("^:pointerover /template/ Border#Bg")]
+    [InlineData("^:pressed /template/ Border#Bg")]
+    public void The_primary_dialog_button_label_has_4_5_to_1_contrast(string? state)
+    {
+        var theme = Parse("Daqifi.Avalonia/Daqifi.Desktop/Resources/DarkDialog.axaml")
+            .Descendants(XName.Get("ControlTheme", AvaloniaNamespace))
+            .Single(e => e.Attribute(KeyAttribute)?.Value == "DarkPrimaryButton");
+
+        var setters = state is null
+            ? theme.Elements(XName.Get("Setter", AvaloniaNamespace))
+            : theme.Elements(XName.Get("Style", AvaloniaNamespace))
+                .Single(e => e.Attribute("Selector")?.Value == state)
+                .Elements(XName.Get("Setter", AvaloniaNamespace));
+        string Setter(IEnumerable<XElement> from, string property) =>
+            from.Single(e => e.Attribute("Property")?.Value == property).Attribute("Value")!.Value;
+
+        var foreground = Resolve(Setter(theme.Elements(XName.Get("Setter", AvaloniaNamespace)), "Foreground"));
+        var background = Resolve(Setter(setters, "Background"));
+        var ratio = ContrastRatio(foreground, background);
+
+        Assert.True(ratio >= 4.5, $"{state ?? "rest"}: {foreground} on {background} is {ratio:F2}:1, below 4.5:1.");
+    }
+
+    private static string Resolve(string value)
+    {
+        const string prefix = "{DynamicResource ";
+        if (value == "White")
+        {
+            return "#FFFFFF";
+        }
+
+        if (!value.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return value;
+        }
+
+        var key = value[prefix.Length..^1];
+        return Parse("Daqifi.Avalonia/Daqifi.Desktop/Resources/DesignTokens.axaml")
+            .Descendants(XName.Get("SolidColorBrush", AvaloniaNamespace))
+            .First(e => e.Attribute(KeyAttribute)?.Value == key)
+            .Attribute("Color")!.Value;
+    }
+
+    private static double ContrastRatio(string a, string b)
+    {
+        static double Luminance(string hex)
+        {
+            hex = hex.TrimStart('#');
+            if (hex.Length == 8)
+            {
+                hex = hex[2..]; // #AARRGGBB: every colour compared here is opaque
+            }
+
+            double Channel(int i)
+            {
+                var c = Convert.ToInt32(hex.Substring(i, 2), 16) / 255.0;
+                return c <= 0.03928 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4);
+            }
+
+            return 0.2126 * Channel(0) + 0.7152 * Channel(2) + 0.0722 * Channel(4);
+        }
+
+        var (la, lb) = (Luminance(a), Luminance(b));
+        return (Math.Max(la, lb) + 0.05) / (Math.Min(la, lb) + 0.05);
+    }
+
     private static string TokenAccent()
     {
         var tokens = Parse("Daqifi.Avalonia/Daqifi.Desktop/Resources/DesignTokens.axaml");
