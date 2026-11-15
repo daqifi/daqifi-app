@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Daqifi.Desktop.ViewModels"
+             xmlns:device="using:Daqifi.Desktop.Device"
              xmlns:networkDataModel="using:Daqifi.Core.Device.Network"
              xmlns:sdCard="using:Daqifi.Core.Device.SdCard"
              xmlns:i="https://github.com/projektanker/icons.avalonia"
@@ -606,7 +607,7 @@
                             <TextBlock Text="NAME" Classes="infoLabel" Margin="0,16,0,6"/>
                             <Border Classes="drawerTextField">
                                 <TextBox Classes="drawerTextBox"
-                                         MaxLength="31"
+                                         MaxLength="{x:Static device:FriendlyNameRule.MaxLength}"
                                          Text="{Binding Shell.PendingFriendlyName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                             </Border>
 
