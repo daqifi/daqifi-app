@@ -186,7 +186,7 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
     internal void RefreshSessions()
     {
         if (IsBusy) { _refreshPending = true; return; }
-        _ = LoadSessionsAsync();
+        _ = LoadSessionsAsync(keepOperationResult: true);
     }
 
     private bool _refreshPending;
@@ -195,14 +195,27 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
     {
         if (value || !_refreshPending) { return; }
         _refreshPending = false;
-        _ = LoadSessionsAsync();
+        // The busy operation that just ended may be an export or a delete that has written its
+        // result to the status line. Keep it: the user did not ask for this reload.
+        _ = LoadSessionsAsync(keepOperationResult: true);
     }
+
+    /// <summary>The status line a failed load shows. A later successful load clears exactly this
+    /// text, and nothing else, when it must keep an operation result.</summary>
+    private const string LoadFailedMessage = "Couldn't load logged sessions. Tap Refresh to retry.";
 
     /// <summary>
     /// The one load path. <see cref="Reload"/> (every visit and the Refresh tap) and
     /// <see cref="RefreshSessions"/> (a committed recording) both read the list here.
     /// </summary>
-    private async Task LoadSessionsAsync()
+    /// <param name="keepOperationResult">
+    /// True for the automatic refresh after a commit (review of PR #609). A commit can land while
+    /// an export or a delete holds <see cref="IsBusy"/>; the queued refresh then runs just after
+    /// that operation writes its result ("Exported 1 session.", "Couldn't delete that session…").
+    /// Clearing the status line on success would erase that result before the user could read
+    /// it. So this load clears only a previous load error. A user Reload still clears the line.
+    /// </param>
+    private async Task LoadSessionsAsync(bool keepOperationResult = false)
     {
         if (IsBusy) { return; }
         IsBusy = true;
@@ -230,10 +243,14 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
                 }
             });
             LoadFailedFlag = false;
-            // Clear any prior error unconditionally on success — otherwise a successful
-            // retry against an EMPTY db would show the definitive "NO LOGGED SESSIONS"
-            // empty state AND the stale "Couldn't load…" error at the same time.
-            StatusMessage = string.Empty;
+            // Clear any prior load error on success — otherwise a successful retry against an
+            // EMPTY db would show the definitive "NO LOGGED SESSIONS" empty state AND the stale
+            // "Couldn't load…" error at the same time. An automatic refresh clears only that
+            // error and keeps an export or delete result (see keepOperationResult).
+            if (!keepOperationResult || StatusMessage == LoadFailedMessage)
+            {
+                StatusMessage = string.Empty;
+            }
         }
         catch (Exception ex)
         {
@@ -242,7 +259,7 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
             // instead of the definitive "NO LOGGED SESSIONS" empty state.
             _appLogger.Error(ex, "Mobile: failed to load logged sessions");
             LoadFailedFlag = true;
-            StatusMessage = "Couldn't load logged sessions. Tap Refresh to retry.";
+            StatusMessage = LoadFailedMessage;
         }
         finally
         {

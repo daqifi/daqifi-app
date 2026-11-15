@@ -8,6 +8,7 @@ using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Logger;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
+using ChannelType = Daqifi.Core.Channel.ChannelType;
 using CoreStreamingDevice = Daqifi.Core.Device.DaqifiStreamingDevice;
 
 namespace Daqifi.Avalonia.Tests.Views;
@@ -281,6 +282,122 @@ public sealed class MobileShellRecordTests : IDisposable
         Assert.Contains("vm.RefreshSessions();", host, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Review of PR #609: a recording can commit while the APP LOGS export picker is open. The
+    /// refresh is queued and runs just after the export writes its result. It used to clear the
+    /// status line on success, so the user saw no export error at all. Here the export really
+    /// fails: the listed row has no samples in memory and this project has no database, so the
+    /// real exporter returns false.
+    /// </summary>
+    [Fact]
+    public async Task A_commit_during_a_failed_export_keeps_the_export_error()
+    {
+        var database = new CommittedSessions(new LoggingSession(6, "Session_6"));
+        var appLogs = await OpenAppLogsAsync(database);
+        var directory = Directory.CreateTempSubdirectory("daqifi-applogs-export-");
+        try
+        {
+            var picker = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            appLogs.SavePathResolver = _ => picker.Task;
+
+            var export = appLogs.ExportSessionCommand.ExecuteAsync(appLogs.Sessions[0]);
+            Assert.True(appLogs.IsBusy, "Arrangement: the export must hold the list busy.");
+            database.Commit(new LoggingSession(7, "Session_7"));
+            appLogs.RefreshSessions();
+
+            picker.SetResult(Path.Combine(directory.FullName, "Session_6.csv"));
+            await export.WaitAsync(SendTimeout);
+            await WaitUntilListedAsync(appLogs, "Session_7");
+
+            Assert.Equal("Couldn't export that session — see logs.", appLogs.StatusMessage);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The same review, for a successful export: the queued refresh must not erase its
+    /// confirmation. The row carries one sample in memory, so the real exporter writes the CSV.
+    /// </summary>
+    [Fact]
+    public async Task A_commit_during_a_successful_export_keeps_the_confirmation()
+    {
+        var database = new CommittedSessions(SessionWithOneSample(6, "Session_6"));
+        var appLogs = await OpenAppLogsAsync(database);
+        var directory = Directory.CreateTempSubdirectory("daqifi-applogs-export-");
+        try
+        {
+            var picker = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            appLogs.SavePathResolver = _ => picker.Task;
+            var destination = Path.Combine(directory.FullName, "Session_6.csv");
+
+            var export = appLogs.ExportSessionCommand.ExecuteAsync(appLogs.Sessions[0]);
+            Assert.True(appLogs.IsBusy, "Arrangement: the export must hold the list busy.");
+            database.Commit(new LoggingSession(7, "Session_7"));
+            appLogs.RefreshSessions();
+
+            picker.SetResult(destination);
+            await export.WaitAsync(SendTimeout);
+            await WaitUntilListedAsync(appLogs, "Session_7");
+
+            Assert.True(File.Exists(destination), "Arrangement: the export wrote no CSV.");
+            Assert.Equal("Exported 1 session.", appLogs.StatusMessage);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The same review, for a failed delete. <c>DeleteSession</c> itself is out of reach here (it
+    /// reads <c>LoggingManager.Instance.Active</c>, which this project cannot construct), so the
+    /// test plays its part: it holds the list busy while the delete runs, writes the line its
+    /// catch writes, then releases the list.
+    /// </summary>
+    [Fact]
+    public async Task A_commit_during_a_failed_delete_keeps_the_delete_error()
+    {
+        const string deleteFailed = "Couldn't delete that session — see logs.";
+        var database = new CommittedSessions(new LoggingSession(6, "Session_6"));
+        var appLogs = await OpenAppLogsAsync(database);
+
+        appLogs.IsBusy = true;
+        database.Commit(new LoggingSession(7, "Session_7"));
+        appLogs.RefreshSessions();
+        Assert.DoesNotContain(appLogs.Sessions, s => s.Name == "Session_7");
+        appLogs.StatusMessage = deleteFailed;
+        appLogs.IsBusy = false;
+
+        await WaitUntilListedAsync(appLogs, "Session_7");
+        Assert.Equal(deleteFailed, appLogs.StatusMessage);
+    }
+
+    /// <summary>
+    /// The other half of that review: the refresh keeps an operation result, but it still clears
+    /// a load error once a load succeeds, so the list never shows "Couldn't load…" over its rows.
+    /// </summary>
+    [Fact]
+    public async Task A_refresh_that_loads_clears_an_earlier_load_error()
+    {
+        var database = new CommittedSessions(new LoggingSession(6, "Session_6"));
+        var appLogs = await OpenAppLogsAsync(database);
+
+        database.FailNextRead();
+        await appLogs.ReloadCommand.ExecuteAsync(null);
+        Assert.True(appLogs.LoadFailed, "Arrangement: the visit's load must fail.");
+        Assert.NotEqual(string.Empty, appLogs.StatusMessage);
+
+        database.Commit(new LoggingSession(7, "Session_7"));
+        appLogs.RefreshSessions();
+        await WaitUntilListedAsync(appLogs, "Session_7");
+
+        Assert.False(appLogs.LoadFailed);
+        Assert.Equal(string.Empty, appLogs.StatusMessage);
+    }
+
     [Fact]
     public void A_recording_that_cannot_start_streams_nothing()
     {
@@ -400,6 +517,25 @@ public sealed class MobileShellRecordTests : IDisposable
         return appLogs;
     }
 
+    /// <summary>A session whose one sample is held in memory, so the exporter needs no database.</summary>
+    private static LoggingSession SessionWithOneSample(int id, string name)
+    {
+        var session = new LoggingSession(id, name);
+        session.DataSamples.Add(new DataSample
+        {
+            LoggingSession = session,
+            LoggingSessionID = id,
+            DeviceName = "Nyquist",
+            DeviceSerialNo = "SERIAL-1",
+            ChannelName = "AI0",
+            Color = "#FFD32F2F",
+            Type = ChannelType.Analog,
+            TimestampTicks = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks,
+            Value = 1.5,
+        });
+        return session;
+    }
+
     /// <summary>The refresh is fire-and-forget, so poll for its result rather than await it.</summary>
     private static async Task WaitUntilListedAsync(LoggedSessionsMobileViewModel appLogs, string session)
     {
@@ -423,6 +559,7 @@ public sealed class MobileShellRecordTests : IDisposable
         private readonly List<LoggingSession> _committed = [.. initial];
         private readonly ManualResetEventSlim _readHeld = new();
         private SemaphoreSlim? _hold;
+        private bool _failNext;
 
         public void Commit(LoggingSession session)
         {
@@ -437,12 +574,23 @@ public sealed class MobileShellRecordTests : IDisposable
 
         public bool WaitForHeldRead(TimeSpan timeout) => _readHeld.Wait(timeout);
 
+        /// <summary>The next read throws, as a failed SQLite query would.</summary>
+        public void FailNextRead()
+        {
+            lock (_sync) { _failNext = true; }
+        }
+
         public IReadOnlyList<LoggingSession> Read()
         {
             SemaphoreSlim? hold;
             List<LoggingSession> snapshot;
             lock (_sync)
             {
+                if (_failNext)
+                {
+                    _failNext = false;
+                    throw new InvalidOperationException("Test: the session query failed.");
+                }
                 snapshot = [.. _committed];
                 hold = _hold;
                 _hold = null;
