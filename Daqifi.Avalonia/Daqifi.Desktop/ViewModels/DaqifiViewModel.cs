@@ -1294,6 +1294,40 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     [RelayCommand]
     private void CloseLogSummary() => IsLogSummaryOpen = false;
 
+    /// <summary>
+    /// True while one of the four right-side panels (#615) is open: Settings, Notifications,
+    /// Plot Settings or Log Summary. They share MainWindow's one SplitView pane.
+    /// </summary>
+    public bool IsAnyDrawerOpen =>
+        IsAppSettingsOpen || IsNotificationsOpen || IsLiveGraphSettingsOpen || IsLogSummaryOpen;
+
+    /// <summary>
+    /// Closes whichever right-side panel is open. MainWindow calls it when the pane is dismissed
+    /// from the view — a click on the scrim, or Escape — so the flags, which drive the pane, agree
+    /// with what is on screen. Unlike <see cref="CloseFlyouts"/> it leaves the Logged Data session
+    /// drawer alone: that one is not in this pane.
+    /// </summary>
+    public void CloseDrawers()
+    {
+        IsAppSettingsOpen = false;
+        IsNotificationsOpen = false;
+        IsLiveGraphSettingsOpen = false;
+        IsLogSummaryOpen = false;
+    }
+
+    // One right-side panel at a time (#615). The four now share one pane, where two open at once
+    // would draw on top of each other; Settings opens from a two-way toggle, not a command, so it
+    // closes the others here.
+    partial void OnIsAppSettingsOpenChanged(bool value)
+    {
+        if (value)
+        {
+            IsNotificationsOpen = false;
+            IsLiveGraphSettingsOpen = false;
+            IsLogSummaryOpen = false;
+        }
+    }
+
     [RelayCommand]
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.DisconnectDevice
     private void DisconnectDevice(IStreamingDevice? deviceToDisconnect)
@@ -1605,6 +1639,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     private void OpenLiveGraphSettings()
     {
         CloseFlyouts();
+        IsAppSettingsOpen = false;
         IsLiveGraphSettingsOpen = true;
     }
 
@@ -1637,6 +1672,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     private void OpenLogSummary()
     {
         CloseFlyouts();
+        IsAppSettingsOpen = false;
         IsLogSummaryOpen = true;
     }
 
@@ -2242,6 +2278,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.OpenNotifications
     private void OpenNotifications()
     {
+        // One right-side panel at a time (#615): they share one pane now.
+        IsAppSettingsOpen = false;
+        IsLiveGraphSettingsOpen = false;
+        IsLogSummaryOpen = false;
         IsNotificationsOpen = true;
     }
 

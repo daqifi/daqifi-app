@@ -123,10 +123,10 @@ public class MainWindowBindingTests
     /// getting it wrong is invisible to both the compiler and a look at the screen.
     ///
     /// <para>
-    /// The three flyouts are not independent slide-outs — they are stacked in the pane of a single
-    /// <c>SplitView</c>, each shown by its own <c>IsVisible</c>, and the pane is opened by a
-    /// <c>MultiBinding</c> OR-ing the same three view-model booleans. The two lists have to stay the
-    /// same list. Drop one from the <c>MultiBinding</c> and that flyout becomes unreachable: its
+    /// The four right-side panels — the settings drawer (since #615) and the three flyouts — are not
+    /// independent slide-outs: they are stacked in the pane of a single <c>SplitView</c>, each shown
+    /// by its own <c>IsVisible</c>, and the pane is opened by a <c>MultiBinding</c> OR-ing the same
+    /// four view-model booleans. The two lists have to stay the same list. Drop one from the <c>MultiBinding</c> and that flyout becomes unreachable: its
     /// <c>IsVisible</c> goes true inside a pane that never opens. Add one and the pane slides out
     /// empty. Both compile, and both are states a "does the shell still look right?" pass sees only
     /// if it happens to open that flyout.
@@ -165,6 +165,13 @@ public class MainWindowBindingTests
         var inPane = pane.Descendants().Where(IsFlyout).ToList();
         var stray = root.Descendants().Where(IsFlyout).Except(inPane).ToList();
 
+        // The panels are the children of the pane's one Panel: three flyout controls and the
+        // settings drawer, which is written inline.
+        var panels = pane.Descendants()
+            .First(element => element.Name.LocalName == "Panel")
+            .Elements()
+            .ToList();
+
         Assert.True(
             stray.Count == 0,
             $"{View}: {stray.Count} flyout(s) sit outside SplitView.Pane "
@@ -173,7 +180,8 @@ public class MainWindowBindingTests
             + "longer holds.");
 
         Assert.Equal(3, inPane.Count);
-        Assert.Equal(inPane.Select(BoundVisibilityPath).ToHashSet(), paneOpen);
+        Assert.Equal(4, panels.Count);
+        Assert.Equal(panels.Select(BoundVisibilityPath).ToHashSet(), paneOpen);
     }
 
     private static bool IsFlyout(XElement element) =>

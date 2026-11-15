@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:i="https://github.com/projektanker/icons.avalonia"
              xmlns:vm="using:Daqifi.Desktop.ViewModels"
+             xmlns:local="using:Daqifi.Desktop.View.Flyouts"
              x:DataType="vm:DaqifiViewModel"
              x:CompileBindings="True"
              Background="{DynamicResource SurfaceRaised}">
@@ -20,25 +21,12 @@
 
     <Grid RowDefinitions="Auto,*">
 
-        <!-- Header (MahApps Flyout rendered Header + close chrome) -->
-        <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="20,12,12,12">
-            <TextBlock Grid.Column="0" Text="Notifications"
-                       FontSize="18" FontWeight="Light"
-                       Foreground="{DynamicResource TextPrimary}"
-                       VerticalAlignment="Center"/>
-            <!-- A plain Button with a close command, not a ToggleButton bound to the open
-                 flag (#613): the flag is always true while this is on screen, so the toggle
-                 sat in its checked state and Fluent filled it with the accent colour. -->
-            <Button Grid.Column="1"
-                    Width="28" Height="28"
-                    Theme="{StaticResource RoundCloseButton}"
-                    Foreground="{DynamicResource TextSecondary}"
-                    ToolTip.Tip="Close"
-                    AutomationProperties.Name="Close"
-                    Command="{Binding CloseNotificationsCommand}">
-                <i:Icon Value="mdi-close" FontSize="16"/>
-            </Button>
-        </Grid>
+        <!-- The shared panel header (#615); its look is the DrawerHeader theme in
+             Resources/Shell.axaml, the same one the settings drawer uses. -->
+        <local:DrawerHeader Grid.Row="0"
+                            Overline="ALERTS"
+                            Title="Notifications"
+                            CloseCommand="{Binding CloseNotificationsCommand}"/>
 
         <!--
             Empty state. Sibling of the list in the same row, swapped on HasNotifications the way
@@ -50,7 +38,7 @@
         <StackPanel Grid.Row="1"
                     IsVisible="{Binding !HasNotifications}"
                     Spacing="10"
-                    Margin="20,0,20,40"
+                    Margin="24,16"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center">
             <i:Icon Value="mdi-bell-check-outline"
@@ -69,8 +57,11 @@
             <ItemsControl ItemsSource="{Binding NotificationList}">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                        <StackPanel Margin="10" Orientation="Vertical">
-                            <TextBlock Text="{Binding Message}" FontWeight="Medium" FontSize="18" TextWrapping="Wrap"/>
+                        <!-- 24px sides, the drawer column (#615); the message at body size,
+                             not the 18px it had, which was as large as the panel title. -->
+                        <Border Classes="drawerSection">
+                        <StackPanel Orientation="Vertical">
+                            <TextBlock Text="{Binding Message}" FontSize="{DynamicResource FontSizeBody}" TextWrapping="Wrap"/>
                             <Button Content="Click here"
                                     IsVisible="{Binding Link, Converter={x:Static ObjectConverters.IsNotNull}}"
                                     Tag="{Binding Link}"
@@ -93,6 +84,7 @@
                                         Cursor="Hand"/>
                             </StackPanel>
                         </StackPanel>
+                        </Border>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
                 <ItemsControl.ItemsPanel>

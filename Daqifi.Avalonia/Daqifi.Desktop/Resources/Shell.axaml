@@ -1,5 +1,7 @@
 <ResourceDictionary xmlns="https://github.com/avaloniaui"
-                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:i="https://github.com/projektanker/icons.avalonia"
+                    xmlns:flyouts="using:Daqifi.Desktop.View.Flyouts">
     <!--
         Shared shell chrome — the desktop's navigation rail + segmented toggle,
         promoted out of MainWindow.axaml so BOTH the desktop MainWindow AND the
@@ -134,6 +136,41 @@
         <Style Selector="^:focus-visible /template/ Border#Bg">
             <Setter Property="Background" Value="#1FFFFFFF"/>
         </Style>
+    </ControlTheme>
+
+    <!-- Right-side panel header (#615): overline, title and round close button, for the
+         settings drawer and the three SplitView flyouts alike. The values are the settings
+         drawer's, which was the most finished of the two designs: 9px bold TextTertiary
+         overline, 22px light title, a 28px RoundCloseButton. The margin puts the title text
+         at the 24px column that every panel body below it uses. -->
+    <ControlTheme x:Key="{x:Type flyouts:DrawerHeader}" TargetType="flyouts:DrawerHeader">
+        <Setter Property="Margin" Value="24,22,16,18"/>
+        <Setter Property="Template">
+            <ControlTemplate>
+                <Grid ColumnDefinitions="*,Auto">
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="{TemplateBinding Overline}"
+                                   FontSize="9"
+                                   FontWeight="Bold"
+                                   Foreground="{DynamicResource TextTertiary}"/>
+                        <TextBlock Text="{TemplateBinding Title}"
+                                   FontSize="22"
+                                   FontWeight="Light"
+                                   Foreground="{DynamicResource TextPrimary}"
+                                   Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <Button Grid.Column="1"
+                            Width="28" Height="28"
+                            Theme="{StaticResource RoundCloseButton}"
+                            Foreground="{DynamicResource TextSecondary}"
+                            ToolTip.Tip="Close"
+                            AutomationProperties.Name="Close"
+                            Command="{TemplateBinding CloseCommand}">
+                        <i:Icon Value="mdi-close" FontSize="16"/>
+                    </Button>
+                </Grid>
+            </ControlTemplate>
+        </Setter>
     </ControlTheme>
 
     <!-- Pill buttons — promoted from the prototype views so desktop + mobile share
