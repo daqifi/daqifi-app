@@ -38,6 +38,10 @@ public partial class AppDelegate : AvaloniaAppDelegate<App>
         // Register the Material Design icon pack so `i:Icon` (the mdi-* glyphs the
         // mobile landscape shell reuses from the desktop nav rail) renders on iOS.
         Daqifi.Avalonia.Services.AppIcons.EnsureRegistered();
+        // The export writer's way into a picked folder outside the sandbox, so that Export all
+        // creates its file without replacing one (review of PR #603). Read only when an export
+        // creates its file, so the position here is not load-bearing.
+        Daqifi.Avalonia.Services.ScopedFolderAccess.Current = new BookmarkScopedFolderAccess();
         return base.CustomizeAppBuilder(builder)
             .WithInterFont();
     }

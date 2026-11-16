@@ -45,7 +45,22 @@ internal sealed class ExportFileNamer
     /// <param name="sessionName">The session's display name, or null when it could not be resolved.</param>
     /// <param name="sessionId">The session's id, used for the fallback name and to keep it unique.</param>
     internal string NextCsvPath(string directory, string? sessionName, int sessionId) =>
-        Path.Combine(directory, $"{NextName(sessionName, sessionId)}.csv");
+        Path.Combine(directory, NextCsvName(sessionName, sessionId));
+
+    /// <summary>
+    /// The extension every export file has, without the dot. One constant, because the mobile save
+    /// picker ALSO appends it: the Android picker adds <c>"." + DefaultExtension</c> to the suggested
+    /// name, so a suggestion that already ends in <c>.csv</c> became <c>.csv.csv</c> (issue #587).
+    /// </summary>
+    internal const string CsvExtension = "csv";
+
+    /// <summary>
+    /// As <see cref="NextCsvPath"/>, but returns only the file name (no directory) — for a destination
+    /// that is a storage-provider folder rather than a path, such as an Android content URI, where the
+    /// file is created by name (<c>IStorageFolder.CreateFileAsync</c>).
+    /// </summary>
+    internal string NextCsvName(string? sessionName, int sessionId) =>
+        $"{NextName(sessionName, sessionId)}.{CsvExtension}";
 
     /// <summary>
     /// As <see cref="NextCsvPath"/>, but returns the bare base name (no directory, no extension).
