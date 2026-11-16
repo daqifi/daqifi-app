@@ -338,7 +338,8 @@
                                     Padding="6,2"
                                     Margin="0,0,8,0"
                                     VerticalAlignment="Center"
-                                    IsVisible="{Binding IsFirmwareOutdated}"
+                                    IsVisible="{Binding ShowsUpdateAvailable}"
+                                    AutomationProperties.AutomationId="DeviceTileUpdatePill"
                                     ToolTip.Tip="A firmware update is available for this device.">
                                 <TextBlock Text="UPDATE"
                                            FontSize="9"
@@ -615,6 +616,9 @@
                                     Content="SAVE NAME"
                                     HorizontalAlignment="Right"
                                     Margin="0,10,0,0"
+                                    AutomationProperties.AutomationId="SaveNameButton"
+                                    ToolTip.Tip="{Binding DeviceActionsToolTip}"
+                                    ToolTip.ShowOnDisabled="True"
                                     Command="{Binding Shell.SetFriendlyNameCommand}"/>
 
                             <StackPanel Orientation="Horizontal"
@@ -651,7 +655,13 @@
                             <TextBlock Text="DATA ACQUISITION" Classes="sectionLabel drawerSectionLabel"/>
 
                             <TextBlock Text="LOGGING MODE" Classes="infoLabel" Margin="0,0,0,6"/>
+                            <!-- Issue #643: LOGGING MODE, FREQUENCY and the firmware-file box are disabled
+                                 during a firmware update, as REBOOT and DISCONNECT are (#538). IsEnabled is
+                                 inherited, so the controls inside keep their own conditions as well. -->
                             <Border Background="{DynamicResource Surface}"
+                                    IsEnabled="{Binding CanUseDeviceCommands}"
+                                    ToolTip.Tip="{Binding DeviceActionsToolTip}"
+                                    ToolTip.ShowOnDisabled="True"
                                     BorderBrush="{DynamicResource BorderDim}"
                                     BorderThickness="1"
                                     CornerRadius="3"
@@ -702,7 +712,11 @@
                             </Border>
 
                             <TextBlock Text="FREQUENCY (Hz)" Classes="infoLabel" Margin="0,16,0,6"/>
-                            <Grid ColumnDefinitions="Auto,*">
+                            <Grid ColumnDefinitions="Auto,*"
+                                  Background="Transparent"
+                                  IsEnabled="{Binding CanUseDeviceCommands}"
+                                  ToolTip.Tip="{Binding DeviceActionsToolTip}"
+                                  ToolTip.ShowOnDisabled="True">
                                 <Border Grid.Column="0"
                                         Classes="drawerTextField"
                                         Width="80"
@@ -780,6 +794,9 @@
                                     Content="APPLY NETWORK SETTINGS"
                                     HorizontalAlignment="Right"
                                     Margin="0,14,0,0"
+                                    AutomationProperties.AutomationId="ApplyNetworkSettingsButton"
+                                    ToolTip.Tip="{Binding DeviceActionsToolTip}"
+                                    ToolTip.ShowOnDisabled="True"
                                     Command="{Binding Shell.UpdateNetworkConfigurationCommand}"/>
 
                             <StackPanel Orientation="Horizontal"
@@ -879,7 +896,11 @@
                                 <!-- Issue #569: below the button and marked optional, because an empty box
                                      is the usual path - it downloads the newest release. -->
                                 <TextBlock Text="OR USE A FIRMWARE FILE (OPTIONAL)" Classes="infoLabel" Margin="0,16,0,6"/>
-                                <Grid ColumnDefinitions="*,Auto">
+                                <Grid ColumnDefinitions="*,Auto"
+                                      Background="Transparent"
+                                      IsEnabled="{Binding CanUseDeviceCommands}"
+                                      ToolTip.Tip="{Binding DeviceActionsToolTip}"
+                                      ToolTip.ShowOnDisabled="True">
                                     <Border Grid.Column="0" Classes="drawerTextField" Margin="0,0,8,0">
                                         <TextBox Classes="drawerTextBox"
                                                  PlaceholderText="Leave empty for the newest release"
@@ -1007,7 +1028,8 @@
 
                             <!-- ACTIONS -->
                             <TextBlock Text="ACTIONS" Classes="sectionLabel drawerSectionLabel"/>
-                            <!-- Issue #538: both are disabled during a firmware update. The tooltip says
+                            <!-- Issue #538: both are disabled during a firmware update (and so is every other
+                                 drawer control that talks to the device, #643). The tooltip says
                                  why, and ShowOnDisabled is needed because a disabled control shows no
                                  tooltip by default. -->
                             <StackPanel Orientation="Horizontal">

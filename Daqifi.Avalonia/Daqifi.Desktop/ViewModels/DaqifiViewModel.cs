@@ -173,6 +173,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(UpdateWifiFirmwareOnlyCommand))]
+    // Issue #643: the drawer commands that talk to the device need a selected device.
+    [NotifyCanExecuteChangedFor(nameof(UpdateNetworkConfigurationCommand))]
+    [NotifyCanExecuteChangedFor(nameof(SetFriendlyNameCommand))]
+    [NotifyCanExecuteChangedFor(nameof(BrowseForFirmwareCommand))]
     // The RATE chip reads the selected device's rate, so selecting a different device moves it.
     [NotifyPropertyChangedFor(nameof(SelectedStreamingFrequency))]
     private IStreamingDevice? _selectedDevice;
@@ -1413,7 +1417,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanUseDeviceCommands))]
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.UpdateNetworkConfiguration
     public async Task UpdateNetworkConfiguration()
     {
@@ -1568,7 +1572,53 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// SAVE NAME is enabled only for a name the device will accept, so an invalid name cannot be
     /// submitted. The device checks stay in <see cref="SetFriendlyName"/>, which explains them.
     /// </summary>
-    private bool CanSetFriendlyName() => FriendlyNameRule.Describe(TrimmedPendingFriendlyName) is null;
+    private bool CanSetFriendlyName() =>
+        CanUseDeviceCommands() && FriendlyNameRule.Describe(TrimmedPendingFriendlyName) is null;
+
+    /// <summary>
+    /// Condition of the drawer commands that talk to the device — APPLY NETWORK SETTINGS, SAVE NAME
+    /// and BROWSE: a device is selected, and no firmware update is in progress (issue #643). During
+    /// an update the device is in its bootloader, and APPLY reported "not connected" while the
+    /// header said "1 CONNECTED".
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    private bool CanUseDeviceCommands() => DeviceCommandAvailability.IsAvailable(SelectedDevice);
+
+    /// <summary>The last firmware-update state that <see cref="ApplyFirmwareUpdateState"/> saw.</summary>
+    private bool _firmwareUpdateWasInProgress;
+
+    /// <summary>
+    /// Brings the drawer's shell-owned controls to the current firmware-update state (issue #643).
+    /// The Devices pane calls this from its UI-thread hop for
+    /// <c>ConnectionManager.FirmwareUpdateInProgressChanged</c>, and after each rebuild of its tiles.
+    /// </summary>
+    /// <remarks>
+    /// The status lines are cleared only when the state flips — when an update starts and when it
+    /// ends — so a rebuild for another reason leaves a fresh "Settings applied" in place. A message
+    /// from before the update describes a device state that the update replaced, and a message from
+    /// during it described a device in its bootloader.
+    /// </remarks>
+    // Downstream-only: no upstream counterpart.
+    internal void ApplyFirmwareUpdateState()
+    {
+        UpdateNetworkConfigurationCommand.NotifyCanExecuteChanged();
+        SetFriendlyNameCommand.NotifyCanExecuteChanged();
+        BrowseForFirmwareCommand.NotifyCanExecuteChanged();
+
+        var inProgress = ConnectionManager.Instance.IsFirmwareUpdateInProgress;
+        if (inProgress == _firmwareUpdateWasInProgress) return;
+        _firmwareUpdateWasInProgress = inProgress;
+        ClearDrawerStatusLines();
+    }
+
+    /// <summary>Clears the drawer's result lines for APPLY NETWORK SETTINGS and SAVE NAME.</summary>
+    private void ClearDrawerStatusLines()
+    {
+        ResetNetworkSettingsStatus();
+        CancelAndDisposeFriendlyNameAppliedCts();
+        FriendlyNameApplied = false;
+        FriendlyNameError = null;
+    }
 
     /// <summary>
     /// Sets <see cref="PendingFriendlyName"/> without marking the edit buffer dirty. Used to seed
@@ -1689,7 +1739,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanUseDeviceCommands))]
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.BrowseForFirmware
     public async Task BrowseForFirmwareAsync()
     {

@@ -73,6 +73,13 @@ public sealed class DeviceTileViewModel : ObservableObject, IDisposable
     // @port: Daqifi.Desktop.ViewModels.DeviceTileViewModel.IsFirmwareOutdated
     public bool IsFirmwareOutdated => Device.IsFirmwareOutdated;
 
+    /// <summary>
+    /// Whether the tile shows the UPDATE pill: the firmware is outdated, and no update runs on this
+    /// device. During an update the UPDATING pill replaces it (issue #643); the tile showed both.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    public bool ShowsUpdateAvailable => IsFirmwareOutdated && !IsUpdatingFirmware;
+
     /// <summary>WiFi module firmware version as read from the device (or "Unknown").</summary>
     // @port: Daqifi.Desktop.ViewModels.DeviceTileViewModel.WifiVersion
     public string WifiVersion => Device.WifiFirmwareVersion;
@@ -101,7 +108,13 @@ public sealed class DeviceTileViewModel : ObservableObject, IDisposable
     public bool IsUpdatingFirmware
     {
         get => _isUpdatingFirmware;
-        set => SetProperty(ref _isUpdatingFirmware, value);
+        set
+        {
+            if (SetProperty(ref _isUpdatingFirmware, value))
+            {
+                OnPropertyChanged(nameof(ShowsUpdateAvailable));
+            }
+        }
     }
 
     private bool _isUpdatingFirmware;
@@ -152,6 +165,7 @@ public sealed class DeviceTileViewModel : ObservableObject, IDisposable
                 break;
             case nameof(IStreamingDevice.IsFirmwareOutdated):
                 OnPropertyChanged(nameof(IsFirmwareOutdated));
+                OnPropertyChanged(nameof(ShowsUpdateAvailable));
                 break;
             case nameof(IStreamingDevice.DeviceType):
                 OnPropertyChanged(nameof(DeviceTypeDisplay));
