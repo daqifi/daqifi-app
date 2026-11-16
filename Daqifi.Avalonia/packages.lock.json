@@ -169,9 +169,9 @@
       },
       "Sentry": {
         "type": "Direct",
-        "requested": "[6.12.1, )",
-        "resolved": "6.12.1",
-        "contentHash": "yCHz3cLGZ3TVik3rLV6rp6SaqJ0Ai7PyIi2KdoHNGpZYWEkcX7kx13IV46mufAzPW7pqZZoKNoru0w0RpmkmrA=="
+        "requested": "[7.0.0, )",
+        "resolved": "7.0.0",
+        "contentHash": "aMf7k3poqjVO/Vw1DNxopP9HjCIlfNX3EgJ5pJ8jvwWTYkSXJpkQpERdKwxmQ+WdEkTtkQLdJC4xtsClG/Kk3g=="
       },
       "SQLitePCLRaw.bundle_e_sqlite3": {
         "type": "Direct",

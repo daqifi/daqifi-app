@@ -93,7 +93,7 @@
 		<PackageReference Include="NCalcSync" Version="7.4.0" />
 		<PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
 		<PackageReference Include="NLog" Version="6.2.2" />
-		<PackageReference Include="Sentry" Version="6.12.1" />
+		<PackageReference Include="Sentry" Version="7.0.0" />
 		<!-- AppLogger reads this back via AssemblyMetadata at startup (see ResolveSentryDsn).
 		     Overridable per build: -p:SentryDsn= disables reporting entirely, and either an
 		     App.config entry or DAQIFI_SENTRY_DSN takes precedence at run time. -->
