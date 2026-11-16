@@ -589,7 +589,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
     private string _latestFirmwareVersion = string.Empty;
     private Uri? _latestFirmwareReleaseNotesUri;
-    private string? _pendingFirmwareSectionSerial;
+    private DeviceSectionRequest? _pendingDeviceSection;
+
+    /// <summary>A request to open the drawer of the device with <paramref name="Serial"/> at <paramref name="Section"/>.</summary>
+    internal sealed record DeviceSectionRequest(string Serial, DeviceDrawerSection Section);
 
     /// <summary>
     /// The newest published firmware version, or an empty string until a check has succeeded.
@@ -608,11 +611,11 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     public Uri? LatestFirmwareReleaseNotesUri => _latestFirmwareReleaseNotesUri;
 
     /// <summary>
-    /// Raised when <see cref="ShowFirmwareSection"/> asks for a device's FIRMWARE section. A
-    /// Devices pane that is on screen takes the request with <see cref="TakeFirmwareSectionRequest"/>;
-    /// a pane built after the request takes it when it is built.
+    /// Raised when <see cref="ShowFirmwareSection"/> or <see cref="ShowNetworkSection"/> asks for a
+    /// section of a device's drawer. A Devices pane that is on screen takes the request with
+    /// <see cref="TakeDeviceSectionRequest"/>; a pane built after the request takes it when it is built.
     /// </summary>
-    internal event EventHandler? FirmwareSectionRequested;
+    internal event EventHandler? DeviceSectionRequested;
 
     /// <summary>
     /// Records the newest release and announces it. <paramref name="tag"/> is the GitHub release tag
@@ -647,11 +650,22 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// notification was made is a new wrapper with the same serial.
     /// </remarks>
     // Downstream-only: no upstream counterpart.
-    public void ShowFirmwareSection(IStreamingDevice device)
+    public void ShowFirmwareSection(IStreamingDevice device) => ShowDeviceSection(device, DeviceDrawerSection.Firmware);
+
+    /// <summary>
+    /// Opens the Devices tab and asks the Devices pane to open <paramref name="device"/>'s drawer at
+    /// its NETWORK section (issue #644), the same way as <see cref="ShowFirmwareSection"/>.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    public void ShowNetworkSection(IStreamingDevice device) => ShowDeviceSection(device, DeviceDrawerSection.Network);
+
+    private void ShowDeviceSection(IStreamingDevice device, DeviceDrawerSection section)
     {
-        _pendingFirmwareSectionSerial = device.DeviceSerialNo;
+        _pendingDeviceSection = string.IsNullOrWhiteSpace(device.DeviceSerialNo)
+            ? null
+            : new DeviceSectionRequest(device.DeviceSerialNo, section);
         SelectedIndex = DevicesTabIndex;
-        FirmwareSectionRequested?.Invoke(this, EventArgs.Empty);
+        DeviceSectionRequested?.Invoke(this, EventArgs.Empty);
     }
 
     // Keyed by serial with the same rule as DeviceSerials.SameDevice (ordinal, case-insensitive).
@@ -711,12 +725,12 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             : null;
     }
 
-    /// <summary>Returns the serial of the pending FIRMWARE-section request and clears it, or <c>null</c> when none is pending.</summary>
-    internal string? TakeFirmwareSectionRequest()
+    /// <summary>Returns the pending drawer-section request and clears it, or <c>null</c> when none is pending.</summary>
+    internal DeviceSectionRequest? TakeDeviceSectionRequest()
     {
-        var serial = _pendingFirmwareSectionSerial;
-        _pendingFirmwareSectionSerial = null;
-        return serial;
+        var request = _pendingDeviceSection;
+        _pendingDeviceSection = null;
+        return request;
     }
     #endregion
 

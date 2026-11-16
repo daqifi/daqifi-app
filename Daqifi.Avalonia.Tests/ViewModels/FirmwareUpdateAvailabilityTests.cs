@@ -439,7 +439,7 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
         pane.Devices.Add(new DeviceTileViewModel(device));
         shell.IsNotificationsOpen = true;
         var shown = 0;
-        pane.FirmwareSectionShown += (_, _) => shown++;
+        pane.DeviceSectionShown += (_, _) => shown++;
 
         shell.ShowFirmwareSection(device);
 
@@ -449,8 +449,35 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
         Assert.Same(device, pane.SelectedDevice);
         Assert.Same(device, shell.SelectedDevice);
         Assert.Equal(1, shown);
-        Assert.True(pane.TakeFirmwareScrollRequest());
-        Assert.False(pane.TakeFirmwareScrollRequest());
+        Assert.Equal(DeviceDrawerSection.Firmware, pane.TakeSectionScrollRequest());
+        Assert.Null(pane.TakeSectionScrollRequest());
+    }
+
+    /// <summary>
+    /// Issue #644: the button of the notification about the WiFi settings opens the same drawer at
+    /// NETWORK, through the same request.
+    /// </summary>
+    [Fact]
+    public void ShowNetworkSection_opens_the_drawer_of_that_device_at_network()
+    {
+        var shell = new DaqifiViewModel(new NullDialogService());
+        var pane = Track(new DevicesPaneViewModel(shell));
+        var device = Nq1("9090539562006014104", "3.9.1");
+        pane.Devices.Add(new DeviceTileViewModel(Nq1("9090539562006014105", "3.9.1")));
+        pane.Devices.Add(new DeviceTileViewModel(device));
+        shell.IsNotificationsOpen = true;
+        var shown = 0;
+        pane.DeviceSectionShown += (_, _) => shown++;
+
+        shell.ShowNetworkSection(device);
+
+        Assert.Equal(DaqifiViewModel.DevicesTabIndex, shell.SelectedIndex);
+        Assert.False(shell.IsNotificationsOpen);
+        Assert.True(pane.IsSettingsOpen);
+        Assert.Same(device, pane.SelectedDevice);
+        Assert.Equal(1, shown);
+        Assert.Equal(DeviceDrawerSection.Network, pane.TakeSectionScrollRequest());
+        Assert.Null(pane.TakeSectionScrollRequest());
     }
 
     /// <summary>
@@ -469,7 +496,7 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
 
         Assert.True(pane.IsSettingsOpen);
         Assert.Same(device, pane.SelectedDevice);
-        Assert.True(pane.TakeFirmwareScrollRequest());
+        Assert.Equal(DeviceDrawerSection.Firmware, pane.TakeSectionScrollRequest());
     }
 
     /// <summary>A device that reconnected is a new wrapper with the same serial; the request finds it.</summary>
@@ -497,7 +524,7 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
         pane.Devices.Add(new DeviceTileViewModel(device));
         shell.ShowFirmwareSection(device);
 
-        Assert.Null(shell.TakeFirmwareSectionRequest());
+        Assert.Null(shell.TakeDeviceSectionRequest());
     }
 
     [Fact]
@@ -510,7 +537,7 @@ public class FirmwareUpdateAvailabilityTests : IDisposable
 
         Assert.Equal(DaqifiViewModel.DevicesTabIndex, shell.SelectedIndex);
         Assert.False(pane.IsSettingsOpen);
-        Assert.False(pane.TakeFirmwareScrollRequest());
+        Assert.Null(pane.TakeSectionScrollRequest());
     }
     #endregion
 

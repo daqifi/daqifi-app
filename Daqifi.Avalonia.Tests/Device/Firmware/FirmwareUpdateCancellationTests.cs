@@ -194,7 +194,9 @@ public class FirmwareUpdateCancellationTests : IDisposable
             _dataDirectory,
             wifiUpdateModeSettleDelay: TimeSpan.Zero,
             canFlashWifiModule: true,
-            readPostRestartVersion: (_, _) => Task.FromResult<string?>(null));
+            readPostRestartVersion: (_, _) => Task.FromResult<string?>(null),
+            // The WiFi-settings read after the write (issue #642) waits and asks for a reply too.
+            readPostRestartNetworkSettings: (_, _) => Task.FromResult<ReportedNetworkSettings?>(null));
         using var harness = ConnectedWincDevice();
         _host.SelectedDevice = harness.Device;
         _host.ParkOnQuiesce = false;

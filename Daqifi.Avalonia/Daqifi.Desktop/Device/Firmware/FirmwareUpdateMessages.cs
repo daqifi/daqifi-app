@@ -1,5 +1,6 @@
 // Downstream-only: no upstream counterpart. Issue #570.
 
+using Daqifi.Core.Device.Network;
 using Daqifi.Core.Firmware;
 
 namespace Daqifi.Desktop.Device.Firmware;
@@ -78,8 +79,14 @@ public static class FirmwareUpdateMessages
 
     /// <summary>
     /// The name the user knows the device by: the friendly name when set, otherwise the part number
-    /// the device tile shows ("Nq1"), otherwise the connection name.
+    /// the device tile shows ("Nq1"), otherwise the serial, otherwise the connection name.
     /// </summary>
+    /// <remarks>
+    /// The one name rule for every firmware message: the confirmation dialog, the success dialog and
+    /// the notifications (issue #644). Before #644 the dialogs used this rule and the notification
+    /// after an update used <c>DeviceDisplayName</c>, which skips the part number, so one event named
+    /// one device "Nq1" in the dialog and "7E2815916200E898" in the notification.
+    /// </remarks>
     public static string DeviceNameFor(IStreamingDevice device)
     {
         if (!string.IsNullOrWhiteSpace(device.FriendlyName))
@@ -87,6 +94,86 @@ public static class FirmwareUpdateMessages
             return device.FriendlyName;
         }
 
-        return !string.IsNullOrWhiteSpace(device.DevicePartNumber) ? device.DevicePartNumber : device.Name;
+        if (!string.IsNullOrWhiteSpace(device.DevicePartNumber))
+        {
+            return device.DevicePartNumber;
+        }
+
+        return !string.IsNullOrWhiteSpace(device.DeviceSerialNo)
+            ? DeviceSerials.ToDisplay(device.DeviceSerialNo)
+            : device.Name;
+    }
+
+    /// <summary>
+    /// What the user is told about the WiFi settings after an update when the app does not know
+    /// whether they changed: the device did not report its settings before or after the update.
+    /// </summary>
+    /// <param name="device">The name of the device, from <see cref="DeviceNameFor"/>.</param>
+    public static string WifiSettingsMayBeErased(string device) =>
+        $"The firmware update can erase the WiFi settings and the calibration of {device}. " +
+        "Set the WiFi settings again.";
+
+    /// <summary>
+    /// The label of the notification button that opens the NETWORK section of the device drawer
+    /// (issue #644).
+    /// </summary>
+    public const string OpenWifiSettingsActionText = "WiFi settings";
+
+    /// <summary>
+    /// What the user is told about the WiFi settings after a successful update, from the settings
+    /// the device reported before the update and after it (issue #644). Null when the settings did
+    /// not change: there is then nothing to tell.
+    /// </summary>
+    /// <param name="deviceName">
+    /// The name from <see cref="DeviceNameFor"/>. Every text names the device, so the notification
+    /// can show the text as it is.
+    /// </param>
+    /// <param name="before">
+    /// The settings the device reported before the update, or null when they are not known. Only the
+    /// mode and the SSID are compared.
+    /// </param>
+    /// <param name="after">
+    /// The settings the device reported after its restart (issue #642), or null when it did not
+    /// report them.
+    /// </param>
+    /// <remarks>
+    /// When the mode or the SSID is not known on one side, the text is
+    /// <see cref="WifiSettingsMayBeErased"/>: the app cannot say that nothing changed. When they did
+    /// not change, there is no WiFi text and no calibration text. The v3.9.0 release notes say that
+    /// an update with an older bootloader erases the WiFi settings and the calibration together, so
+    /// WiFi settings that are still there show that this erase did not occur.
+    /// </remarks>
+    public static string? WifiSettingsAfterUpdate(
+        string deviceName,
+        ReportedNetworkSettings? before,
+        ReportedNetworkSettings? after)
+    {
+        var named = !string.IsNullOrWhiteSpace(deviceName);
+        var device = named ? deviceName.Trim() : "the device";
+        var subject = named ? device : "The device";
+
+        if (before?.Mode is not { } oldMode || before.Ssid is not { } oldSsid
+            || after?.Mode is not { } newMode || after.Ssid is not { } newSsid)
+        {
+            return WifiSettingsMayBeErased(device);
+        }
+
+        if (oldMode == newMode && string.Equals(oldSsid, newSsid, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        const string calibration = "The update can also have erased the calibration of the device.";
+
+        if (newMode == WifiMode.SelfHosted)
+        {
+            return $"The WiFi settings were erased. {subject} is now its own access point, {newSsid}. " +
+                   "To connect it to your network again, open the WiFi settings of the device. " +
+                   calibration;
+        }
+
+        return $"The WiFi settings changed during the update. {subject} now uses the network {newSsid}. " +
+               "Open the WiFi settings of the device and make sure that they are correct. " +
+               calibration;
     }
 }

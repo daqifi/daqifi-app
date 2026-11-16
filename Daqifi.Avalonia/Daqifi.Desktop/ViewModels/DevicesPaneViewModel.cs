@@ -54,7 +54,7 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
     [NotifyPropertyChangedFor(nameof(UpdateFirmwareButtonText))]
     private DeviceTileViewModel? _selectedTile;
 
-    private bool _firmwareScrollPending;
+    private DeviceDrawerSection? _sectionScrollPending;
 
     [ObservableProperty] private bool _isSettingsOpen;
 
@@ -199,38 +199,41 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
     public string FirmwareReleaseNotesText => $"Release notes for {LatestFirmwareVersion}";
 
     /// <summary>
-    /// Raised after this pane opened a drawer for a <c>DaqifiViewModel.ShowFirmwareSection</c>
-    /// request, so the view scrolls the drawer to its FIRMWARE section. A request taken while the
-    /// pane is being built happens before the view can subscribe; the view collects that one with
-    /// <see cref="TakeFirmwareScrollRequest"/>.
+    /// Raised after this pane opened a drawer for a <c>DaqifiViewModel.ShowFirmwareSection</c> or
+    /// <c>ShowNetworkSection</c> request, so the view scrolls the drawer to that section. A request
+    /// taken while the pane is being built happens before the view can subscribe; the view collects
+    /// that one with <see cref="TakeSectionScrollRequest"/>.
     /// </summary>
-    internal event EventHandler? FirmwareSectionShown;
+    internal event EventHandler? DeviceSectionShown;
 
-    /// <summary>Returns true once for each FIRMWARE-section request the view has not yet scrolled to.</summary>
-    internal bool TakeFirmwareScrollRequest()
+    /// <summary>
+    /// Returns the section of a request the view has not yet scrolled to, once, or <c>null</c> when
+    /// none is pending.
+    /// </summary>
+    internal DeviceDrawerSection? TakeSectionScrollRequest()
     {
-        var pending = _firmwareScrollPending;
-        _firmwareScrollPending = false;
+        var pending = _sectionScrollPending;
+        _sectionScrollPending = null;
         return pending;
     }
 
-    private void OnShellFirmwareSectionRequested(object? sender, EventArgs e) => OpenRequestedFirmwareSection();
+    private void OnShellDeviceSectionRequested(object? sender, EventArgs e) => OpenRequestedDeviceSection();
 
     /// <summary>
     /// Opens the drawer of the device the shell asked for, if it is connected. A device that left
     /// before the button was clicked has no tile, and the user stays on the Devices pane.
     /// </summary>
-    private void OpenRequestedFirmwareSection()
+    private void OpenRequestedDeviceSection()
     {
-        var serial = _shell?.TakeFirmwareSectionRequest();
-        if (serial == null) return;
+        var request = _shell?.TakeDeviceSectionRequest();
+        if (request == null) return;
 
-        var tile = Devices.FirstOrDefault(d => DeviceSerials.SameDevice(d.Device.DeviceSerialNo, serial));
+        var tile = Devices.FirstOrDefault(d => DeviceSerials.SameDevice(d.Device.DeviceSerialNo, request.Serial));
         if (tile == null) return;
 
         OpenSettings(tile);
-        _firmwareScrollPending = true;
-        FirmwareSectionShown?.Invoke(this, EventArgs.Empty);
+        _sectionScrollPending = request.Section;
+        DeviceSectionShown?.Invoke(this, EventArgs.Empty);
     }
 
     private void OnShellPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -306,7 +309,7 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         if (_shell != null)
         {
             _shell.PropertyChanged += OnShellPropertyChanged;
-            _shell.FirmwareSectionRequested += OnShellFirmwareSectionRequested;
+            _shell.DeviceSectionRequested += OnShellDeviceSectionRequested;
         }
 
         ConnectionManager.Instance.PropertyChanged += OnConnectionManagerPropertyChanged;
@@ -484,7 +487,7 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         // A notification's Update button can switch to the Devices tab, which builds this pane
         // (and so runs this) after the request was made. A request is taken at most once, so the
         // other rebuilds find none.
-        OpenRequestedFirmwareSection();
+        OpenRequestedDeviceSection();
     }
 
     // @port: Daqifi.Desktop.ViewModels.DevicesPaneViewModel.OpenSettings
@@ -574,7 +577,7 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         if (_shell != null)
         {
             _shell.PropertyChanged -= OnShellPropertyChanged;
-            _shell.FirmwareSectionRequested -= OnShellFirmwareSectionRequested;
+            _shell.DeviceSectionRequested -= OnShellDeviceSectionRequested;
         }
 
         foreach (var tile in Devices) tile.Dispose();
