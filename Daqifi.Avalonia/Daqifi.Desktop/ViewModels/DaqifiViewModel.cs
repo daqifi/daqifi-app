@@ -1106,11 +1106,6 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // Notifications
                     _ = CheckForAppUpdateAsync();
 
-                    // Issue #90: when USB hotplug-removal detection isn't running on a platform that
-                    // has USB serial, say so. Previously the failure only reached the log, so the
-                    // user had no way to know an unplugged device would keep showing as connected.
-                    ReportHotplugDetectionUnavailable();
-
                     // Startup moved an unreadable database aside — say so, or the Logged Data pane
                     // is simply empty with no explanation of where the sessions went.
                     ReportQuarantinedDatabase();
@@ -1991,24 +1986,6 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     }
 
     #region Firmware version checking methods
-
-    /// <summary>
-    /// Adds a standing notification when USB hotplug-removal detection is not running on a platform
-    /// that has USB serial hardware, so the user learns that unplugging a connected device will not
-    /// be noticed instead of being left to infer it from a stale connected state (issue #90).
-    /// Adds nothing on the platforms where detection is working, and nothing on the mobile heads,
-    /// which have no serial transport to watch.
-    /// </summary>
-    private void ReportHotplugDetectionUnavailable()
-    {
-        var message = ConnectionManager.Instance.HotplugDetectionUnavailableMessage;
-        if (string.IsNullOrEmpty(message))
-        {
-            return;
-        }
-
-        AddAppNotification(message);
-    }
 
     /// <summary>
     /// Adds a standing notification that has no owning device: one sentence, no link, no action.

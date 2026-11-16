@@ -380,16 +380,14 @@ fails to apply, `PlotView.OnApplyTemplate` silently no-ops and the plot renders
   ```
 
   and USB hotplug-removal detection was dead on macOS with no user-visible
-  signal. `ConnectionManager` now goes through `Services/DeviceWatcher/`:
-  `DeviceWatcherFactory.Create()` returns `WmiDeviceWatcher` on Windows,
-  `SerialPortPollingDeviceWatcher` on macOS/Linux (it samples
-  `SerialPort.GetPortNames()` once a second and raises `DeviceRemoved` when the
-  port set shrinks), and `NoOpDeviceWatcher` on the mobile heads, which have no
-  serial transport to watch. **Expect no `PlatformNotSupportedException` at
-  startup on any head.** If the watcher ever fails to start on a platform that
-  does have USB serial, `ConnectionManager.HotplugDetectionUnavailableMessage`
-  becomes non-null and the main view model raises a standing notification, so
-  the degradation is visible rather than log-only.
+  signal. #90 replaced it with a per-platform watcher (`Services/DeviceWatcher/`),
+  and #441 deleted that too: Core's `SerialStreamTransport` polls for its own
+  port once a second on every platform and reports two consecutive misses as
+  `ConnectionStatus.Lost`, which `ConnectionManager.OnDeviceConnectionLost`
+  tears down as "<device> disconnected (connection lost)." The app no longer
+  constructs any watcher, so **expect no `PlatformNotSupportedException` at
+  startup on any head.** To confirm an unplug, look in
+  `DAQiFi/Logs/DAQifiAppLog.log` for "connection lost unexpectedly".
 
 **Fixed in this PR — hardcoded path separators:**
 
