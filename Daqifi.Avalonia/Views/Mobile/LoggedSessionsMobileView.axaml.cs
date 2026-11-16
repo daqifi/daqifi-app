@@ -1,6 +1,7 @@
 using System.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Platform.Storage;
+using Daqifi.Desktop.Exporter;
 
 namespace Daqifi.Avalonia.Views.Mobile;
 
@@ -34,36 +35,40 @@ public partial class LoggedSessionsMobileView : UserControl
     {
         if (DataContext is LoggedSessionsMobileViewModel vm)
         {
-            vm.SavePathResolver = SavePathAsync;
+            vm.SaveFileResolver = SaveFileAsync;
             vm.SaveFolderResolver = SaveFolderAsync;
         }
     }
 
-    private async Task<string?> SavePathAsync(string suggestedName)
+    // Both resolvers return the storage ITEM, never TryGetLocalPath(): on Android every pick
+    // is a content:// URI with no path, and the old path-only resolvers returned null for it,
+    // which the VM read as a cancel — so export wrote nothing and said nothing (#587). The VM
+    // writes through the item's own stream (StorageExportWriter).
+    private async Task<IStorageFile?> SaveFileAsync(string suggestedName)
     {
         var top = TopLevel.GetTopLevel(this);
         if (top is null) { return null; }
 
-        var file = await top.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        return await top.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = "Export logged data",
+            // No extension in suggestedName: the picker appends DefaultExtension to it.
             SuggestedFileName = suggestedName,
-            DefaultExtension = "csv",
+            DefaultExtension = ExportFileNamer.CsvExtension,
             FileTypeChoices = new[]
             {
-                new FilePickerFileType("CSV") { Patterns = new[] { "*.csv" } },
+                // MimeTypes is what the Android picker filters and creates by; Patterns is
+                // what the desktop and iOS pickers use.
+                new FilePickerFileType("CSV")
+                {
+                    Patterns = new[] { "*." + ExportFileNamer.CsvExtension },
+                    MimeTypes = new[] { "text/csv" },
+                },
             },
         });
-
-        // Only a real local filesystem path is usable: OptimizedLoggingSessionExporter
-        // opens a StreamWriter on it. A content-URI-only pick (TryGetLocalPath == null,
-        // e.g. a cloud/SAF location on Android) has no such path, so return null rather
-        // than a bogus Path.LocalPath that would fault mid-export. (Stream-based export
-        // to arbitrary content URIs is #7 phase 2.)
-        return file?.TryGetLocalPath();
     }
 
-    private async Task<string?> SaveFolderAsync()
+    private async Task<IStorageFolder?> SaveFolderAsync()
     {
         var top = TopLevel.GetTopLevel(this);
         if (top is null) { return null; }
@@ -74,10 +79,6 @@ public partial class LoggedSessionsMobileView : UserControl
             AllowMultiple = false,
         });
 
-        // Same local-path constraint as SavePathAsync: the exporter writes each
-        // {session}.csv via a StreamWriter on a real path, so a content-URI-only
-        // folder pick (TryGetLocalPath == null) is treated as unavailable.
-        var folder = folders.Count > 0 ? folders[0] : null;
-        return folder?.TryGetLocalPath();
+        return folders.Count > 0 ? folders[0] : null;
     }
 }

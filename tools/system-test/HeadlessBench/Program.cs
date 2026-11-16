@@ -54,11 +54,11 @@ using DesktopApp = Daqifi.Desktop.App;
 // Exit code 1 on any [FAIL]. Rows covered with a board: CONN-USB, DEV-INFO, DEV-TILE, CH-TILE,
 // DEV-RATE, CH-AI, STREAM-AI, LOG-SESSION, GRAPH-LIVE, CH-DIO, CH-PWM, SD-LIST, CONN-DISC,
 // DEV-NAME. Rows covered by --scripted, which needs none: LOGGED-LIST, LOGGED-PLOT, EXPORT-FAIL
-// (their double is a seeded database) and SD-LIST, CONN-LOST, CONN-DISC, LOG-MODE (their double
-// is a ScriptedDevice).
+// (their double is a seeded database) and SD-LIST, CONN-LOST, CONN-DISC, LOG-MODE, DEV-NAME
+// (their double is a ScriptedDevice).
 // Add a Step per matrix row; keep the shape.
 
-internal static class HeadlessBench
+internal static partial class HeadlessBench
 {
     private static string _out = "";
     private static string _port = "";
@@ -344,6 +344,7 @@ internal static class HeadlessBench
             var aiTile = channelsPane.AnalogInputs.FirstOrDefault(t => ReferenceEquals(t.Channel, ai));
             channelsPane.ToggleChannelCommand.Execute(aiTile);
             Pump();
+            if (_allAi) { EnableEveryOtherAnalogInput(channelsPane, ai); }
             var subscribed = LoggingManager.Instance.SubscribedChannels.Any(c => ReferenceEquals(c, ai));
             Step(2, "CH-AI", "works", ai.IsActive && subscribed && aiTile is { IsActive: true },
                  $"'{ai.Name}' IsActive={ai.IsActive} subscribed={subscribed}; tile IsActive={aiTile?.IsActive.ToString() ?? "no tile"}; " +
@@ -362,6 +363,7 @@ internal static class HeadlessBench
             DateTime? first = null;
             var arrivals = new List<long>(_rate * (_seconds + 2));
             long firstTicks = 0, lastTicks = 0;
+            var deviceGaps = new DeviceGapTally();
             var arrivalSw = Stopwatch.StartNew();
             OnChannelUpdatedHandler counter = (_, sample) =>
             {
@@ -371,6 +373,7 @@ internal static class HeadlessBench
                 {
                     arrivals.Add(arrivalSw.ElapsedMilliseconds);
                     if (firstTicks == 0) { firstTicks = sample.TimestampTicks; }
+                    else { deviceGaps.Note(sample.TimestampTicks - lastTicks); }
                     lastTicks = sample.TimestampTicks;
                 }
             };
@@ -398,7 +401,10 @@ internal static class HeadlessBench
             // failure, and the row could not be told apart from one where nothing streamed at
             // all (#281).
             var commandedRate = device.StreamingFrequency;
-            if (started) { PumpFor(TimeSpan.FromSeconds(_seconds)); }
+            var streamPumpsFrom = FrameLatenciesMs.Count;
+            if (started) { PumpStreamWindow(shell); }
+            var streamPumpsTo = FrameLatenciesMs.Count;
+            var redraw = started ? MeasureLiveRedraw(main) : default;
             var window = first is null ? 0 : (DateTime.UtcNow - first.Value).TotalSeconds;
             var counted = samples;
             // Read the plot BEFORE stopping: LoggingManager clears the PlotLogger when Active goes false.
@@ -481,6 +487,17 @@ internal static class HeadlessBench
                  $"arrival gaps: max {maxGap} ms, {gapsOver100} over 100 ms across {arrivals.Count} samples; " +
                  $"device-stamped span {deviceSpan:F2} s vs wall-clock {window:F2} s (ratio {clockSkew:F3}; device counter {tsFreq} Hz) " +
                  $"-> {deviceRate:F1} Hz by device timestamps, {(window > 0 ? counted / window : 0):F1} Hz by wall clock");
+            ReportStreamLoad(device, ai, started, counted, window, commandedRate, deviceSpan, deviceGaps,
+                             streamPumpsFrom, streamPumpsTo, redraw, session, shot);
+            if (_allAi)
+            {
+                // A load run ends here: the rows below rename the board and drive its pins, which a
+                // repeated stress run has no business doing. Leave the shared board with no channel on.
+                DisableEveryAnalogInput(channelsPane);
+                shell.DisconnectDeviceCommand.Execute(device);
+                PumpUntil(() => !shell.ConnectedDevices.Contains(device), TimeSpan.FromSeconds(10));
+                return;
+            }
         }
 
         // CH-DIO — the drawer's DIRECTION and OUTPUT STATE radios bind SelectedChannel.IsOutput and
@@ -682,8 +699,7 @@ internal static class HeadlessBench
         }
 
         // CONN-DISC — through DaqifiViewModel.DisconnectDeviceCommand, the command the Devices pane
-        // binds (DevicesPanePrototype.axaml, DevicesMobileView.axaml, and DevicesPaneViewModel.
-        // DisconnectSelected). ConnectionManager.Instance.Disconnect is only ONE of the four things
+        // binds (DevicesPanePrototype.axaml and DevicesPaneViewModel.DisconnectSelected). ConnectionManager.Instance.Disconnect is only ONE of the four things
         // that command does — it also unsubscribes every active channel from LoggingManager, removes
         // the firmware notification and clears SelectedDevice — and this rig used to call the
         // manager directly, so those three went untested. Note which assertion below actually
@@ -1137,9 +1153,9 @@ internal static class HeadlessBench
     // ---------------------------------------------------------------- the T1 (--scripted) states
 
     // The states --scripted understands, in two kinds. The first three fabricate a DATABASE the
-    // app finds at boot; the last four fabricate a DEVICE (ScriptedDevice) and put it in front of
+    // app finds at boot; the last five fabricate a DEVICE (ScriptedDevice) and put it in front of
     // the app through ConnectionManager.Connect. Neither kind opens a serial port, which is what
-    // makes all seven runnable with no hardware — and therefore runnable in CI.
+    // makes all eight runnable with no hardware — and therefore runnable in CI.
     private const string StateSessions500 = "sessions-500";
     private const string StateSession10H = "session-10h";
     private const string StateExportReadonly = "export-readonly";
@@ -1147,9 +1163,10 @@ internal static class HeadlessBench
     private const string StateDropMidStream = "drop-mid-stream";
     private const string StateDisconnectMidStream = "disconnect-mid-stream";
     private const string StateModeChangeMidSession = "mode-change-mid-session";
+    private const string StateNameRefused = "name-refused";
     private static readonly string[] ScriptedStates =
         [StateSessions500, StateSession10H, StateExportReadonly, StateSdEmpty, StateDropMidStream,
-         StateDisconnectMidStream, StateModeChangeMidSession];
+         StateDisconnectMidStream, StateModeChangeMidSession, StateNameRefused, StatePlotIngest];
 
     /// <summary>Serial number the two device states give their <see cref="ScriptedDevice"/>. It
     /// reaches the UI — the drop notification names the device by it — so the rows assert against
@@ -1207,8 +1224,9 @@ internal static class HeadlessBench
         // The two device states have nothing to seed: their double is a ScriptedDevice, and the
         // database they do touch (drop-mid-stream opens a real logging session) is the one the app
         // creates and migrates for itself at boot, under <out>/appdata.
+        if (_scripted is StateNameRefused) { return; }
         if (_scripted is StateSdEmpty or StateDropMidStream or StateDisconnectMidStream
-            or StateModeChangeMidSession) { return; }
+            or StateModeChangeMidSession or StatePlotIngest) { return; }
 
         var sw = Stopwatch.StartNew();
         var factory = new SeedContextFactory(DesktopApp.DatabasePath);
@@ -1314,6 +1332,7 @@ internal static class HeadlessBench
     {
         switch (_scripted)
         {
+            case StateNameRefused: UiProbe = (1, "DEV-NAME"); RunNameRefusedRow(main, shell); break;
             case StateSessions500: UiProbe = (1, "LOGGED-LIST"); RunSessionListRow(main, shell, boot); break;
             case StateSession10H: UiProbe = (1, "LOGGED-PLOT"); RunSessionPlotRow(main, shell); break;
             case StateExportReadonly: UiProbe = (1, "EXPORT-FAIL"); RunExportFailureRow(main, shell); break;
@@ -1321,6 +1340,7 @@ internal static class HeadlessBench
             case StateDropMidStream: UiProbe = (1, "CONN-LOST"); RunDropMidStreamRow(main, shell); break;
             case StateDisconnectMidStream: UiProbe = (1, "CONN-DISC"); RunDisconnectMidStreamRow(main, shell); break;
             case StateModeChangeMidSession: UiProbe = (1, "LOG-MODE"); RunModeChangeMidSessionRow(main, shell); break;
+            case StatePlotIngest: UiProbe = (1, "GRAPH-INGEST"); RunPlotIngestRow(main, shell); break;
             default: throw new ArgumentException($"unknown --scripted state '{_scripted}'");
         }
     }
@@ -1422,16 +1442,23 @@ internal static class HeadlessBench
         // and cover only the first minutes of the session.
         var spanHours = drawn.Select(p => p.X).DefaultIfEmpty(0).Max() / 3_600_000.0;
         var expectedHours = TenHourSeconds / 3600.0;
+        // Issue #585: the labels the time axis draws. A ten-hour session read 0, 2e+06 ... 3.6e+07
+        // under "Time (ms)"; any label with an exponent fails the row.
+        var timeLabels = TimeLabels(db.PlotModel);
+        var scientific = timeLabels.Any(l => l.Contains('e', StringComparison.OrdinalIgnoreCase));
 
         Step(1, "LOGGED-PLOT", "limits",
              db.IsSessionOpen && db.HasSessionData && drawn.Count > 0
                  && Math.Abs(spanHours - expectedHours) < 0.1
-                 && db.CurrentSessionSampleCount == TenHourSampleCount,
+                 && db.CurrentSessionSampleCount == TenHourSampleCount
+                 && timeLabels.Count > 0 && !scientific,
              $"{TenHourSampleCount} samples at {TenHourRateHz} Hz loaded in {sw.Elapsed.TotalSeconds:F1} s; " +
              $"IsSessionOpen={db.IsSessionOpen} HasSessionData={db.HasSessionData}; " +
              $"{db.PlotModel.Series.Count} series drawing {drawn.Count} downsampled point(s) " +
              $"(minimap {minimap}) spanning {spanHours:F2} h of the seeded {expectedHours:F2} h; " +
              $"time axis {AxisRange(db.PlotModel)}; " +
+             $"titled '{db.PlotModel.Axes.FirstOrDefault(a => a.Position == AxisPosition.Bottom)?.ActualTitle}' " +
+             $"with labels [{string.Join(", ", timeLabels)}]{(scientific ? " IN SCIENTIFIC NOTATION" : "")}; " +
              $"header reads '{db.CurrentSessionSampleCountDisplay}' ({db.CurrentSessionSampleCount}); " +
              $"{db.LegendItems.Count} legend item(s)",
              Capture(main, "t1-loggedplot-10h"), sw.Elapsed.TotalSeconds);
@@ -1453,6 +1480,24 @@ internal static class HeadlessBench
         return axis is null
             ? "absent"
             : $"{axis.ActualMinimum / 3_600_000.0:F2}..{axis.ActualMaximum / 3_600_000.0:F2} h";
+    }
+
+    /// <summary>The tick labels the plot's time axis draws for its visible range, as the axis itself
+    /// formats them — the text a user reads under the plot. Empty when the axis has not been laid out
+    /// by a render yet (no tick step), which fails the row rather than throwing.</summary>
+    private static List<string> TimeLabels(PlotModel model)
+    {
+        var axis = model.Axes.FirstOrDefault(a => a.Position == AxisPosition.Bottom);
+        if (axis is null || !(axis.ActualMajorStep > 0))
+        {
+            return [];
+        }
+
+        axis.GetTickValues(out var majorLabelValues, out _, out _);
+        return majorLabelValues
+            .Where(v => v >= axis.ActualMinimum && v <= axis.ActualMaximum)
+            .Select(axis.FormatValue)
+            .ToList();
     }
 
     /// <summary>
@@ -1768,6 +1813,76 @@ internal static class HeadlessBench
              $"'{logs.SdCardStatusLine}', NO FILES panel hidden={emptyPanelHidden}, " +
              $"file grid shown={gridShownWithFile}",
              shot, sw.Elapsed.TotalSeconds);
+    }
+
+    /// <summary>
+    /// DEV-NAME at the edge case issue #596 measured on the bench board: a name the device refuses.
+    /// The drawer used to wait for SAVE NAME, then show Core's exception text, which ends in
+    /// "(Parameter 'name')". It must instead say, in the app's own words, what is wrong while the
+    /// name is still in the box, keep SAVE NAME disabled, and send nothing to the device.
+    /// </summary>
+    /// <remarks>
+    /// The drawer is opened on the window's OWN pane view model (the one
+    /// <c>DevicesPanePrototype</c> builds for itself), not on a second instance, because the PNGs
+    /// are the point: a drawer opened on another instance changes the shell's state and leaves the
+    /// window showing no drawer. SAVE NAME is pressed through <see cref="ApplyFriendlyName"/>,
+    /// which executes the command without asking <c>CanExecute</c> - what the button did before
+    /// #596 - so the command's own guard is exercised too.
+    /// </remarks>
+    private static void RunNameRefusedRow(Window main, DaqifiViewModel shell)
+    {
+        const string deviceName = "Lab Nyquist";
+        const string refused = "Lab \"A\"";
+        var device = new ScriptedDevice(ScriptedSerial) { FriendlyName = deviceName };
+        ConnectScripted(shell, device);
+
+        shell.SelectedIndex = DevicesTabIndex;
+        PumpFor(TimeSpan.FromMilliseconds(500));
+        var pane = main.GetVisualDescendants().OfType<Control>()
+            .Select(c => c.DataContext).OfType<DevicesPaneViewModel>().FirstOrDefault();
+        if (pane is null)
+        {
+            Step(1, "DEV-NAME", "limits", false,
+                 "the Devices tab is showing but no control in the window has a DevicesPaneViewModel", null);
+            return;
+        }
+        OpenDeviceDrawer(pane, device);
+        PumpFor(TimeSpan.FromMilliseconds(800));
+        var seeded = shell.PendingFriendlyName;
+        var errorOnOpen = shell.FriendlyNameError;
+
+        // Typing, as the NAME box's two-way binding does it.
+        shell.PendingFriendlyName = refused;
+        PumpFor(TimeSpan.FromMilliseconds(300));
+        var typedShot = Capture(main, "t1-devname-typed");
+        var errorWhileTyping = shell.FriendlyNameError;
+        var saveButton = main.GetVisualDescendants().OfType<Button>()
+            .FirstOrDefault(b => b.Content as string == "SAVE NAME");
+        var saveEnabled = saveButton?.IsEffectivelyEnabled;
+        var errorShown = errorWhileTyping is not null
+            && main.GetVisualDescendants().OfType<TextBlock>()
+                   .Any(t => t.IsEffectivelyVisible && t.Text == errorWhileTyping);
+
+        var errorAfterSave = ApplyFriendlyName(shell, refused);
+        PumpFor(TimeSpan.FromMilliseconds(300));
+        var savedShot = Capture(main, "t1-devname-refused");
+
+        static bool ForPeople(string? text) =>
+            !string.IsNullOrEmpty(text) && !text.Contains("Parameter", StringComparison.Ordinal)
+            && !text.Contains("ASCII", StringComparison.Ordinal);
+
+        Step(1, "DEV-NAME", "limits",
+             seeded == deviceName && errorOnOpen is null
+                 && ForPeople(errorWhileTyping) && errorShown && saveEnabled == false
+                 && ForPeople(errorAfterSave)
+                 && device.FriendlyNameWrites.Count == 0 && device.FriendlyName == deviceName,
+             $"drawer opened on '{seeded}' with error={(errorOnOpen is null ? "none" : $"'{errorOnOpen}'")}; " +
+             $"typing '{refused}' showed '{errorWhileTyping ?? "(nothing)"}' (rendered in the drawer={errorShown}) " +
+             $"with SAVE NAME enabled={(saveEnabled is null ? "BUTTON NOT FOUND" : saveEnabled)} " +
+             $"({typedShot ?? "no capture"}); pressing SAVE NAME anyway showed '{errorAfterSave ?? "(nothing)"}'; " +
+             $"{device.FriendlyNameWrites.Count} name write(s) reached the device, which is still named " +
+             $"'{device.FriendlyName}'",
+             savedShot);
     }
 
     /// <summary>Whether the Logged Data pane is showing its "NO FILES" empty state.</summary>
@@ -2370,9 +2485,16 @@ internal static class HeadlessBench
         for (var i = 0; i < 4; i++)
         {
             var sw = Stopwatch.StartNew();
+            // Fire the DispatcherTimers that are due, as the app's real dispatcher loop does. RunJobs
+            // only runs queued jobs, and a timer becomes a job only after some other job has run, so
+            // on an idle UI the live plot's 16 ms render timer almost never ticked here: the plot did
+            // not redraw during a stream, and since #595 it would not even take in its samples. One
+            // empty job per pump lets the dispatcher promote whatever timers are due.
+            Dispatcher.UIThread.Post(static () => { }, DispatcherPriority.Background);
             Dispatcher.UIThread.RunJobs();
             PumpLatenciesMs.Add(sw.Elapsed.TotalMilliseconds);
             AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+            FrameLatenciesMs.Add(sw.Elapsed.TotalMilliseconds);
         }
     }
 
@@ -2445,6 +2567,8 @@ internal static class HeadlessBench
                     case "--rate": _rate = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--seconds": _seconds = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                     case "--scripted": _scripted = Next(); break;
+                    case "--all-ai": _allAi = true; break;
+                    case "--hold-ui": _holdUiSeconds = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                     default: Console.WriteLine($"unknown argument '{args[i]}'"); return false;
                 }
             }

@@ -90,13 +90,19 @@ public class FirmwareUpdateCoordinator
     /// <summary>Production default for <see cref="_wifiUpdateModeSettleDelay"/>.</summary>
     public static readonly TimeSpan DefaultWifiUpdateModeSettleDelay = TimeSpan.FromSeconds(5);
 
-    // After entering LAN FW-update mode (SYSTem:COMMunicate:LAN:FWUpdate) the device needs a few
-    // seconds to re-init the WINC into a state where the serial bridge is reachable. Launching the
-    // WINC flash tool immediately makes the FIRST attempt exit without programming (it reports a
-    // false success); a second attempt works only because the device has since settled. Wait here
-    // so the first attempt is reliable. Injectable (production default DefaultWifiUpdateModeSettleDelay)
-    // so unit tests can collapse the wait without weakening the production behavior.
+    // The time the device gets to bring the USB-to-WINC bridge up before the flash tool opens the
+    // port. Launching the tool too early makes the FIRST attempt exit without programming; this
+    // app has always given the device 5 s here. Core 1.10.0 owns the wait now: it sends
+    // LAN:FWUpdate and LAN:APPLY in its prep step and then waits PostLanBridgeEntryDelay, so this
+    // value goes to that option (CreateWifiOptions). Core's default is 2 s; 5 s keeps the budget
+    // the app already used, and Core's recovery after a failure waits the same window. Injectable
+    // (production default DefaultWifiUpdateModeSettleDelay) so unit tests can collapse the wait.
     private readonly TimeSpan _wifiUpdateModeSettleDelay;
+
+    // Runs Microchip's WINC flash tool. Production: Core's ProcessExternalProcessRunner, which
+    // starts winc_flash_tool.cmd. Injectable so a test can stand in for the tool and see what
+    // reached the device's serial transport before the tool started.
+    private readonly IExternalProcessRunner _wifiFlashToolRunner;
 
     /// <summary>Minimum supported WiFi module firmware version. A device below this — or whose WiFi
     /// chip info cannot be read — is flagged as needing a WiFi-only flash.</summary>
@@ -164,7 +170,8 @@ public class FirmwareUpdateCoordinator
     /// <param name="appLogger">Application logger used for diagnostics and Sentry breadcrumbs.</param>
     /// <param name="firmwareDataDirectory">Base directory under which firmware packages are downloaded.</param>
     /// <param name="wifiUpdateModeSettleDelay">
-    /// Overrides the WiFi-update-mode settle delay. Null uses
+    /// Overrides the time the device gets to enter the WiFi bridge before the flash tool starts
+    /// (Core's <see cref="FirmwareUpdateServiceOptions.PostLanBridgeEntryDelay"/>). Null uses
     /// <see cref="DefaultWifiUpdateModeSettleDelay"/>; tests pass <see cref="TimeSpan.Zero"/> to skip the wait.
     /// </param>
     /// <param name="watcher">
@@ -181,6 +188,10 @@ public class FirmwareUpdateCoordinator
     /// <see cref="PostRestartFirmwareVersion.ReadAsync"/>; tests pass a fake so the reading is set
     /// without a device. The result is null when the version is not known (issues #566 and #570).
     /// </param>
+    /// <param name="wifiFlashToolRunner">
+    /// Overrides how the WINC flash tool is started. Null uses Core's
+    /// <see cref="ProcessExternalProcessRunner"/>; tests pass a fake so no process starts.
+    /// </param>
     public FirmwareUpdateCoordinator(
         IFirmwareUpdateHost host,
         IFirmwareUpdateService firmwareUpdateService,
@@ -191,7 +202,8 @@ public class FirmwareUpdateCoordinator
         TimeSpan? wifiUpdateModeSettleDelay = null,
         IBootloaderWatcher? watcher = null,
         bool? canFlashWifiModule = null,
-        Func<DaqifiDevice, CancellationToken, Task<string?>>? readPostRestartVersion = null)
+        Func<DaqifiDevice, CancellationToken, Task<string?>>? readPostRestartVersion = null,
+        IExternalProcessRunner? wifiFlashToolRunner = null)
     {
         _host = host ?? throw new ArgumentNullException(nameof(host));
         _firmwareUpdateService = firmwareUpdateService ?? throw new ArgumentNullException(nameof(firmwareUpdateService));
@@ -204,6 +216,7 @@ public class FirmwareUpdateCoordinator
         _canFlashWifiModule = canFlashWifiModule ?? CanFlashWifiModule;
         _readPostRestartVersion = readPostRestartVersion
             ?? ((device, token) => PostRestartFirmwareVersion.ReadAsync(device, cancellationToken: token));
+        _wifiFlashToolRunner = wifiFlashToolRunner ?? new ProcessExternalProcessRunner();
     }
     #endregion
 
@@ -468,9 +481,10 @@ public class FirmwareUpdateCoordinator
     /// finished write) for as long as GitHub takes to answer once the release cache has expired, and
     /// on a failure it would leave the old notification standing. The release list is refreshed
     /// separately, after the run has closed (see the end of <see cref="UploadFirmwareAsync"/>).
-    /// The decision is <see cref="IsOlderThan"/>, the one the full check uses (issue #569), so the
-    /// same installed version and release give the same answer here and there — including a
-    /// reported version that does not parse, which both count as older, and pre-release ordering.
+    /// The decision is <see cref="CompareWithRelease"/>, the one the full check uses (issue #569),
+    /// so the same installed version and release give the same answer here and there — including a
+    /// reported version that does not parse, which both treat as unknown (issue #583), and
+    /// pre-release ordering.
     /// </para>
     /// <para>
     /// The device's version is <paramref name="reportedVersion"/>: the version in a fresh status
@@ -513,28 +527,16 @@ public class FirmwareUpdateCoordinator
         }
 
         // The full check's own decision, on the release this coordinator recorded (issue #569).
-        var isOutdated = IsOlderThan(
+        // Recording it as the device's result matters: without it the drawer keeps the result from
+        // before the write — "3.8.0, outdated" for a device that now reports 3.9.0 — and shows no
+        // result at all until the refresh after the run answers, which it may never do while
+        // GitHub is unavailable.
+        ApplyFirmwareComparison(
+            serialStreamingDevice,
             restartedVersion,
-            new FirmwareReleaseInfo { Version = latest, TagName = _latestFirmwareTag, IsPreRelease = latest.IsPreRelease });
-        serialStreamingDevice.IsFirmwareOutdated = isOutdated;
-
-        // Record this comparison as the device's result (issue #569), with the values it used, the
-        // way the full check does. Without it the drawer keeps the result from before the write —
-        // "3.8.0, outdated" for a device that now reports 3.9.0 — and shows no result at all until
-        // the refresh after the run answers, which it may never do while GitHub is unavailable.
-        _host.RecordFirmwareComparison(serialStreamingDevice, restartedVersion, recordedRelease, isOutdated);
-
-        if (!string.IsNullOrWhiteSpace(serialStreamingDevice.DeviceSerialNo))
-        {
-            if (isOutdated)
-            {
-                AddNotification(serialStreamingDevice, restartedVersion, recordedRelease, _host.ConnectedDevices);
-            }
-            else
-            {
-                RemoveFirmwareNotification(serialStreamingDevice);
-            }
-        }
+            recordedRelease,
+            new FirmwareReleaseInfo { Version = latest, TagName = _latestFirmwareTag, IsPreRelease = latest.IsPreRelease },
+            _host.ConnectedDevices);
 
         // Announce, as every check does at its end, so an open drawer reads the result again. The
         // release is the one already recorded: no lookup, so nothing here waits on the network.
@@ -1046,7 +1048,8 @@ public class FirmwareUpdateCoordinator
 
     /// <summary>
     /// Flashes an already-available WINC firmware package (downloaded or local) to the WiFi
-    /// module, wrapping the flash in the required LAN-update-mode prep/reset serial sequence.
+    /// module. Core runs the whole sequence on the connected Core device: LAN update mode and
+    /// bridge entry, the port handover, the flash tool, the reconnect and the LAN restore.
     /// <paramref name="extractedBasePath"/> is the base directory the flash tool runs against;
     /// the tool selects the version sub-folder via the <c>/v {wifiVersion}</c> argument.
     /// </summary>
@@ -1064,109 +1067,73 @@ public class FirmwareUpdateCoordinator
         // byte that lands once the WINC is bridging corrupts the program and bricks the module.
         await _host.QuiesceWifiFirmwareProbeAsync(cancellationToken);
 
-        // Preserve the legacy serial prep/reset sequence now that the firmware flow uses the
-        // underlying Core device directly instead of routing through a desktop-shaped adapter.
-        var lanUpdateModeEnabled = false;
+        // The flash tool can only reach the WINC through a device that is connected now.
+        if (!serialStreamingDevice.IsConnected)
+        {
+            _host.FirmwareUpdateStatusText = "Failed to enter WiFi update mode. Reconnect the device and try again.";
+            _appLogger.Warning($"{serialStreamingDevice.PortName} is not connected; aborting WiFi flash.");
+            throw new InvalidOperationException(
+                $"Could not put {serialStreamingDevice.PortName} into WiFi update mode (device not connected?).");
+        }
+
+        // Core 1.10.0 enters the USB-to-WINC bridge itself (daqifi-core#877). Its prep step sends
+        // POWer:STATe 1, LAN:FWUpdate and LAN:APPLY through the device it is given, waits
+        // PostLanBridgeEntryDelay for the bridge, and disconnects that device so the tool can open
+        // the port. After the tool it reconnects the device, leaves transparent mode and restores
+        // the LAN settings; after a failure it runs its state-aware recovery (daqifi-core#853)
+        // through the same device. Every one of those steps needs the real, connected Core device,
+        // so it gets the same one the PIC32 flash gets.
+        //
+        // An earlier revision gave Core a BootloaderSessionStreamingDeviceAdapter, whose Send does
+        // nothing, after the app had sent POWer:STATe 1 and LAN:FWUpdate itself. Core's LAN:APPLY
+        // then never reached the board: it stayed in "update requested", and the tool found no
+        // bridge (review of PR #582). WifiBridgeEntryTransportTests pins the order on the wire.
+        var coreDevice = serialStreamingDevice.ConnectedCoreStreamingDevice;
+        var portName = serialStreamingDevice.PortName;
+
+        IFirmwareUpdateService wifiUpdateService = CreateWifiFirmwareUpdateService(wifiVersion, portName);
         try
         {
-            lanUpdateModeEnabled = serialStreamingDevice.EnableLanUpdateMode();
-
-            // If the device wouldn't enter LAN update mode (e.g. it disconnected), the flash tool
-            // can't reach the WINC — abort instead of running it against a device that isn't ready.
-            if (!lanUpdateModeEnabled)
+            // Core verifies the flash from the WINC tool's own output (it throws if the success
+            // marker never appears — e.g. the port wasn't released and the tool couldn't run).
+            //
+            // skipVersionCheck: the app has already decided to flash — from its own check against
+            // MinimumWifiFirmwareVersion, or because the user asked for it (force). Core's check
+            // compares the module with the latest WiFi release instead, and on a match it would
+            // skip a flash that the user asked for. The adapter used before did not implement
+            // ILanChipInfoProvider, so Core never ran that check; the real device does.
+            await wifiUpdateService.UpdateWifiModuleAsync(
+                coreDevice,
+                extractedBasePath,
+                progress,
+                cancellationToken,
+                skipVersionCheck: true);
+        }
+        catch
+        {
+            // Core's recovery reaches the board only after it reconnects. If it could not
+            // reconnect, it sent nothing, and the port is free; a raw write is then the last way to
+            // take the board out of transparent mode, where it answers nothing and drops out of the
+            // app. If Core did reconnect, its recovery ran and the port is in use, so nothing is
+            // sent here.
+            if (!coreDevice.IsConnected)
             {
-                _host.FirmwareUpdateStatusText = "Failed to enter WiFi update mode. Reconnect the device and try again.";
-                _appLogger.Warning($"Failed to enable LAN update mode for {serialStreamingDevice.PortName}; aborting WiFi flash.");
-                throw new InvalidOperationException(
-                    $"Could not put {serialStreamingDevice.PortName} into WiFi update mode (device not connected?).");
+                TrySendTransparentModeExit(portName);
             }
 
-            // Give the WINC time to come up in bridge mode before the flash tool opens the port,
-            // otherwise the first attempt runs too early and exits without programming.
-            _host.FirmwareUpdateStatusText = "Waiting for WiFi module to enter update mode...";
-            await Task.Delay(_wifiUpdateModeSettleDelay, cancellationToken);
-
-            // Release the desktop's managed serial connection so the external WINC flash tool can open
-            // the COM port. Verified from logs: on the WiFi-only path the established connection keeps
-            // holding the port, so the tool can't open it and returns in ~1s (false-success guard fires);
-            // the app's own raw open even gets "Access denied" until this Disconnect runs. The tool talks
-            // to the WINC over raw serial (the bridge-activation writes), and Core's device commands were
-            // already issued by EnableLanUpdateMode above — so hand Core a no-op device for the tool step
-            // (mirrors the bootloader flash) and let the freed port go to the tool. WifiPromptDelay-
-            // ProcessRunner's pre-launch wait gives Windows time to release the USB-CDC handle.
-            _appLogger.Information($"Releasing managed connection on {serialStreamingDevice.PortName} before the WINC flash tool.");
-            serialStreamingDevice.Disconnect();
-            var flashDevice = new BootloaderSessionStreamingDeviceAdapter(serialStreamingDevice.Name);
-
-            IFirmwareUpdateService wifiUpdateService = CreateWifiFirmwareUpdateService(wifiVersion, serialStreamingDevice.PortName);
-            try
-            {
-                // Core verifies the flash from the WINC tool's own output (it throws if the success
-                // marker never appears — e.g. the port wasn't released and the tool couldn't run),
-                // so the desktop's timed false-success guard is no longer needed.
-                await wifiUpdateService.UpdateWifiModuleAsync(
-                    flashDevice,
-                    extractedBasePath,
-                    progress,
-                    cancellationToken);
-            }
-            finally
-            {
-                (wifiUpdateService as IDisposable)?.Dispose();
-            }
+            throw;
         }
         finally
         {
-            if (lanUpdateModeEnabled)
-            {
-                // Bring the device back out of WiFi-update / USB-transparent (bridge) mode. First try
-                // the managed ResetLanAfterUpdate (restores LAN config while the device still answers
-                // protobuf). Then the raw exit, which guarantees the device leaves transparent mode even
-                // when the managed connection both holds the port AND is being ignored by the device.
-                try { serialStreamingDevice.ResetLanAfterUpdate(); }
-                catch (Exception ex)
-                {
-                    _appLogger.Warning($"ResetLanAfterUpdate failed for {serialStreamingDevice.PortName}: {ex.Message}");
-                }
-
-                ExitWifiTransparentModeRaw(serialStreamingDevice);
-            }
+            (wifiUpdateService as IDisposable)?.Dispose();
         }
-    }
-
-    /// <summary>
-    /// Brings the device out of USB-transparent / FW-update mode by sending
-    /// <c>SYSTem:USB:SetTransparentMode 0</c> over a raw serial write (while transparent the device
-    /// ignores the managed protobuf connection — only a raw write reaches the PIC32). If the port is
-    /// still held by the managed connection — which can't itself exit the mode — that connection is
-    /// disconnected to free the port and the exit is retried. A flash must never leave the device
-    /// stranded in transparent mode, where it stops answering and vanishes from the app.
-    /// </summary>
-    // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.ExitWifiTransparentModeRaw
-    private void ExitWifiTransparentModeRaw(SerialStreamingDevice device)
-    {
-        var portName = device.PortName;
-        if (TrySendTransparentModeExit(portName))
-        {
-            return;
-        }
-
-        // The raw open failed — almost always because the managed connection still holds the port (yet
-        // can't send the exit itself while the device is transparent). Release it, let the OS free the
-        // handle, then retry the raw exit.
-        _appLogger.Information($"Releasing managed connection on {portName} to send the transparent-mode exit.");
-        try { device.Disconnect(); }
-        catch (Exception ex)
-        {
-            _appLogger.Warning($"Disconnect before transparent-mode exit failed for {portName}: {ex.Message}");
-        }
-        Thread.Sleep(500);
-        TrySendTransparentModeExit(portName);
     }
 
     /// <summary>
     /// Opens <paramref name="portName"/> raw and sends the transparent-mode exit + LAN apply. Returns
-    /// false if the port can't be opened (e.g. still held by the managed connection).
+    /// false if the port can't be opened (e.g. still held by the managed connection). A raw write
+    /// is the only one that reaches the PIC32 while the board is transparent: the firmware forwards
+    /// every byte to the WINC except this exit (its canonical form or this legacy alias).
     /// </summary>
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.TrySendTransparentModeExit
     private bool TrySendTransparentModeExit(string portName)
@@ -1272,45 +1239,28 @@ public class FirmwareUpdateCoordinator
     }
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.CreateWifiFirmwareUpdateService
-    private FirmwareUpdateService CreateWifiFirmwareUpdateService(string wifiVersion, string portName)
-    {
-        // Bridge activation action: opened at the "Power cycle WINC" prompt to trigger the
-        // device's bridge-mode state machine right before the flash tool starts programming.
-        // By deferring APPLY (SYSTem:COMMunicate:LAN:APPLY) until this point we give the
-        // firmware a guaranteed promptResponseDelay window (2 s) to complete the WiFi
-        // deinit/reinit cycle and call wifi_serial_bridge_Init() before the flash tool
-        // issues its first serial bridge query.
-        Action bridgeActivationAction = () =>
-        {
-            _appLogger.Information($"Opening {portName} to send bridge activation commands.");
-            try
-            {
-                // USB CDC virtual ports ignore the baud rate; match the Core transport defaults.
-                using var port = new SerialPort(portName, 9600, Parity.None, 8, StopBits.One)
-                {
-                    DtrEnable = true,
-                    RtsEnable = false,
-                    WriteTimeout = 2000
-                };
-                port.Open();
-                // Brief pause to allow the DTR signal to be recognised by the firmware
-                // before we send commands (firmware checks isCdcHostConnected via DTR).
-                Thread.Sleep(200);
-                // Re-assert the FW-update-requested flag (idempotent; belt-and-suspenders).
-                port.Write("SYSTem:COMMUnicate:LAN:FWUpdate\n");
-                Thread.Sleep(100);
-                // Trigger the WiFi manager REINIT → bridge-mode state machine.
-                port.Write("SYSTem:COMMUnicate:LAN:APPLY\n");
-                // Give the firmware a moment to enqueue the APPLY before we close the port.
-                Thread.Sleep(300);
-                _appLogger.Information("Bridge activation commands sent successfully.");
-            }
-            catch (Exception ex)
-            {
-                _appLogger.Warning($"Bridge activation failed for {portName}: {ex.Message}");
-            }
-        };
+    private FirmwareUpdateService CreateWifiFirmwareUpdateService(string wifiVersion, string portName) =>
+        new(
+            FirmwareUpdateServiceConfig.CreateBootloaderHidTransport(),
+            _firmwareDownloadService,
+            _wifiFlashToolRunner,
+            _firmwareLogger,
+            options: CreateWifiOptions(wifiVersion, portName, _wifiUpdateModeSettleDelay));
 
+    /// <summary>
+    /// The options the WiFi-module flash runs with. Separate from
+    /// <see cref="CreateWifiFirmwareUpdateService"/> so a test can read them: Core does not expose
+    /// the options a <see cref="FirmwareUpdateService"/> holds.
+    /// </summary>
+    /// <param name="wifiVersion">The WINC release folder the tool flashes.</param>
+    /// <param name="portName">The serial port the tool opens.</param>
+    /// <param name="bridgeEntryDelay">
+    /// Core's <see cref="FirmwareUpdateServiceOptions.PostLanBridgeEntryDelay"/>. Null uses
+    /// <see cref="DefaultWifiUpdateModeSettleDelay"/>.
+    /// </param>
+    internal static FirmwareUpdateServiceOptions CreateWifiOptions(
+        string wifiVersion, string portName, TimeSpan? bridgeEntryDelay = null)
+    {
         // Start from the shared firmware config so the bootloader HID timeouts stay aligned with
         // the transport (keeps read and write windows symmetric), then layer on WiFi-specific
         // settings. The WiFi flow flashes via the external WINC tool rather than the HID loop, so
@@ -1321,28 +1271,37 @@ public class FirmwareUpdateCoordinator
         // Keep legacy argument profile used by shipped WINC tool bundle.
         wifiOptions.WifiFlashToolArgumentsTemplate = $"/p {{port}} /d WINC1500 /v {wifiVersion} /k /e /i aio /w";
         wifiOptions.WifiPortOverride = portName;
-        // After sending FWUpdate (flag-only, no APPLY), disconnect quickly so the
-        // COM port is free for the bridge activation raw write at the "Power cycle
-        // WINC" prompt.  The FWUpdate flag persists in firmware RAM until APPLY fires.
+        // The pause between LAN:FWUpdate and LAN:APPLY in Core's prep step (Core 1.10.0 sends
+        // both, daqifi-core#877; before that it sent FWUpdate alone and this was the pause before
+        // disconnecting). 100 ms is the pacing Core's own WifiBridgeActivator uses between the two.
         wifiOptions.PostLanFirmwareModeDelay = TimeSpan.FromMilliseconds(100);
+        // The wait after LAN:APPLY before Core hands the port to the tool. See
+        // _wifiUpdateModeSettleDelay for why this is 5 s and not Core's 2 s.
+        wifiOptions.PostLanBridgeEntryDelay = bridgeEntryDelay ?? DefaultWifiUpdateModeSettleDelay;
         // Give Windows a little more time to re-enumerate the UART before reconnect attempts.
         wifiOptions.PostWifiReconnectDelay = TimeSpan.FromSeconds(3);
 
-        // Core now owns the WiFi-flash lifecycle (port-release wait, WINC prompt handling +
-        // bridge activation, retry, and output-based success verification). Hand the bridge
-        // activation in as a callback and let Core's prompt responder drive it; the desktop keeps
-        // only the device-level prep (LAN update mode) and post-flash transparent-mode recovery.
-        wifiOptions.WifiBridgeActivationCallback = bridgeActivationAction;
+        // Core owns the WiFi-flash lifecycle: LAN update-mode prep AND bridge entry, port-release
+        // wait, WINC prompt handling, retry, output-based success verification, the reconnect and
+        // LAN restore, and recovery after a failure. It does all of it through the device the app
+        // gives it, which is why FlashWifiPackageAsync gives it the real Core device. The app keeps
+        // only a raw transparent-mode exit for a failed run that Core could not reconnect after.
+        //
+        // WifiBridgeActivationCallback is deliberately NOT set. Until Core 1.10.0 the prep step
+        // sent LAN:FWUpdate alone, and this app opened the port at the "Power cycle WINC" prompt
+        // to send LAN:FWUpdate and LAN:APPLY itself. Core 1.10.0 sends both in prep and waits
+        // PostLanBridgeEntryDelay (daqifi-core#877), so the bridge is up before the flash tool
+        // starts. Once the bridge is up the firmware is in USB transparent mode: UsbCdc_FinalizeRead
+        // bypasses the SCPI parser and forwards every byte to the WINC, except the
+        // "SYSTem:USB:TRANSparent:MODE 0" escape and its legacy alias (firmware v3.9.0, UsbCdc.c and
+        // wifi_serial_bridge_interface.c). The old callback's two SCPI lines therefore went onto
+        // the flash tool's programming link as ASCII, not to the SCPI parser (review of PR #582).
+        // Core's own documentation for the callback also says to leave it unset (issue #442).
         wifiOptions.WincBootPromptResponseDelay = TimeSpan.FromSeconds(2);
         // Let the OS free the COM handle after disconnect before the WINC tool opens the port.
         wifiOptions.PostLanDisconnectPortReleaseDelay = TimeSpan.FromSeconds(1.5);
 
-        return new FirmwareUpdateService(
-            FirmwareUpdateServiceConfig.CreateBootloaderHidTransport(),
-            _firmwareDownloadService,
-            new ProcessExternalProcessRunner(),
-            _firmwareLogger,
-            options: wifiOptions);
+        return wifiOptions;
     }
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.NormalizeWifiFirmwareVersion
@@ -1488,21 +1447,7 @@ public class FirmwareUpdateCoordinator
                 // release this check found — nothing is awaited between this read and the record
                 // below, so the result cannot be attached to a version it did not compare.
                 var installedVersion = device.DeviceVersion ?? string.Empty;
-                var isOutdated = IsOlderThan(installedVersion, latestRelease);
-                device.IsFirmwareOutdated = isOutdated;
-                _host.RecordFirmwareComparison(device, installedVersion, latestVersion, isOutdated);
-
-                if (!string.IsNullOrWhiteSpace(device.DeviceSerialNo))
-                {
-                    if (isOutdated)
-                    {
-                        AddNotification(device, installedVersion, latestVersion, connectedDevices);
-                    }
-                    else
-                    {
-                        RemoveFirmwareNotification(device);
-                    }
-                }
+                ApplyFirmwareComparison(device, installedVersion, latestVersion, latestRelease, connectedDevices);
             }
         }
         catch (Exception ex)
@@ -1523,19 +1468,76 @@ public class FirmwareUpdateCoordinator
 
     /// <summary>
     /// Whether <paramref name="installedVersion"/> is older than <paramref name="latestRelease"/>:
-    /// the rule of Core 1.9.1's <c>GitHubFirmwareDownloadService.CheckForUpdateAsync</c>, applied to
-    /// the release this check already holds.
+    /// <c>true</c> or <c>false</c>, or <c>null</c> when the installed version does not parse and so
+    /// cannot be compared. The rule of Core 1.10.0's <c>FirmwareUpdateCheckResult.Status</c>, applied
+    /// to the release this check already holds.
     /// </summary>
     /// <remarks>
-    /// Core's method takes only the installed version and looks the newest release up again (from a
-    /// cache with a 60-minute lifetime that <c>InvalidateCache</c> clears), so it can compare with a
-    /// different release than the one this check records and shows (review of PR #576). The rule is
-    /// the same as Core's: a version that does not parse counts as older (Core:
-    /// <c>!hasCurrent || latest.Version &gt; deviceVersion</c>), and pre-releases are ordered by
+    /// <para>
+    /// Core's <c>CheckForUpdateAsync</c> takes only the installed version and looks the newest
+    /// release up again (from a cache with a 60-minute lifetime that <c>InvalidateCache</c> clears),
+    /// so it can compare with a different release than the one this check records and shows (review
+    /// of PR #576). The rule is the same as Core's: <c>UpdateAvailable</c> only when the release is
+    /// newer than a version that parsed, and pre-releases are ordered by
     /// <see cref="FirmwareVersion"/>'s own comparison, which is what Core's <c>&gt;</c> uses.
+    /// </para>
+    /// <para>
+    /// A version that does not parse is <c>null</c>, Core's <c>DeviceVersionUnknown</c> (issue #583,
+    /// daqifi-core#910). Until Core 1.10.0 it counted as older, and the app offered a one-click
+    /// update for it. A flash is the one operation that can leave a board unbootable, and the
+    /// release offered can be older than a developer or pre-release build the parser cannot read.
+    /// A user can still flash such a device from the drawer, as a deliberate choice.
+    /// </para>
     /// </remarks>
-    internal static bool IsOlderThan(string installedVersion, FirmwareReleaseInfo latestRelease) =>
-        !FirmwareVersion.TryParse(installedVersion, out var installed) || latestRelease.Version > installed;
+    internal static bool? CompareWithRelease(string? installedVersion, FirmwareVersion latestRelease) =>
+        FirmwareVersion.TryParse(installedVersion, out var installed) ? latestRelease > installed : null;
+
+    /// <inheritdoc cref="CompareWithRelease(string?, FirmwareVersion)"/>
+    internal static bool? CompareWithRelease(string? installedVersion, FirmwareReleaseInfo latestRelease) =>
+        CompareWithRelease(installedVersion, latestRelease.Version);
+
+    /// <summary>
+    /// Applies one comparison result to <paramref name="device"/>: its outdated flag, the result the
+    /// drawer reads, and the outdated-firmware notification. Shared by the full check and the
+    /// recheck after a write, so the two can never apply a result two ways (issue #569).
+    /// </summary>
+    /// <remarks>
+    /// An installed version that cannot be compared records NO result, so the drawer shows the
+    /// installed version only, with neither "up to date" nor "available" (its "not compared"
+    /// state). The flag is cleared and the notification is removed, because no update is offered
+    /// for a version that is unknown (issue #583).
+    /// </remarks>
+    private void ApplyFirmwareComparison(
+        IStreamingDevice device, string installedVersion, string latestVersion,
+        FirmwareReleaseInfo latestRelease, IReadOnlyList<IStreamingDevice> connectedDevices)
+    {
+        var comparison = CompareWithRelease(installedVersion, latestRelease);
+        device.IsFirmwareOutdated = comparison == true;
+        if (comparison is { } isOutdated)
+        {
+            _host.RecordFirmwareComparison(device, installedVersion, latestVersion, isOutdated);
+        }
+        else
+        {
+            _appLogger.Information(
+                $"Firmware version '{installedVersion}' of {device.DevicePartNumber} cannot be compared with " +
+                $"release {latestVersion}; no update is offered.");
+        }
+
+        if (string.IsNullOrWhiteSpace(device.DeviceSerialNo))
+        {
+            return;
+        }
+
+        if (comparison == true)
+        {
+            AddNotification(device, installedVersion, latestVersion, connectedDevices);
+        }
+        else
+        {
+            RemoveFirmwareNotification(device);
+        }
+    }
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.AddNotification
     private void AddNotification(

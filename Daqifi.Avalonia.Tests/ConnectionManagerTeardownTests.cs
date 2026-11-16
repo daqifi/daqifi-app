@@ -3,7 +3,6 @@ using Daqifi.Core.Device;
 using Daqifi.Desktop;
 using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Device;
-using Daqifi.Desktop.Services.DeviceWatcher;
 using Xunit;
 
 namespace Daqifi.Avalonia.Tests;
@@ -47,9 +46,8 @@ public class ConnectionManagerTeardownTests
     }
 
     /// <summary>
-    /// A manager with its own device list, an inert watcher (so no background serial poller
-    /// starts), its logger replaced by <paramref name="subscriptions"/>, and its UI marshal run
-    /// inline (outside a running application, Avalonia's dispatcher queues onto a thread nothing
+    /// A manager with its own device list, its logger replaced by <paramref name="subscriptions"/>,
+    /// and its UI marshal run inline (outside a running application, Avalonia's dispatcher queues onto a thread nothing
     /// pumps). Everything else — the teardown, the firmware-update carve-out, the subscription
     /// bookkeeping, the notification — is the production code path.
     /// </summary>
@@ -58,8 +56,7 @@ public class ConnectionManagerTeardownTests
 
     /// <summary>The same manager, with its UI marshal supplied by the test.</summary>
     private static ConnectionManager NewManager(FakeSubscriptions subscriptions, Action<Action> postToUiThread) =>
-        new(new NoOpDeviceWatcher(),
-            () => subscriptions.Subscribed,
+        new(() => subscriptions.Subscribed,
             subscriptions.Unsubscribe,
             postToUiThread);
 
@@ -350,9 +347,10 @@ public class ConnectionManagerTeardownTests
     }
 
     /// <summary>
-    /// Core's own port-presence poll and this port's <c>IDeviceWatcher</c> both report a USB
-    /// unplug, so two teardowns can arrive for one drop. The second must find nothing to do rather
-    /// than disconnect a device already gone and raise a second notification.
+    /// A drop can be reported more than once — the app ran its own USB watcher beside Core's until
+    /// #441, and a transport can still report a loss after the device has gone. The second report
+    /// must find nothing to do rather than disconnect a device already gone and raise a second
+    /// notification.
     /// </summary>
     [Fact]
     public void A_second_report_for_the_same_drop_does_nothing()

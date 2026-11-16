@@ -6,11 +6,7 @@
 using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.Device;
-using Daqifi.Desktop.Device.SerialDevice;
 using Daqifi.Desktop.Logger;
-using Daqifi.Desktop.Services.DeviceWatcher;
-using System.ComponentModel;
-using System.IO.Ports;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Avalonia.Threading;
 using CoreDeviceErrorEventArgs = Daqifi.Core.Device.DeviceErrorEventArgs;
@@ -32,13 +28,6 @@ public partial class ConnectionManager : ObservableObject
     #endregion
 
     #region Private Variables
-    // The ONE watcher instance the device_watcher mechanism allows; the backend behind it is
-    // chosen per platform (WMI on Windows, serial-port polling on macOS/Linux, no-op elsewhere).
-    // Rooted by the singleton and never stopped, matching the lifetime the WMI watcher it replaces
-    // already had: it must observe removals for as long as the app can hold a device, which is the
-    // whole process lifetime.
-    private readonly IDeviceWatcher _deviceWatcher;
-
     /// <summary>
     /// The logger's own view of what it is holding, and how one entry is released. Null in the
     /// singleton, which resolves <see cref="LoggingManager"/> lazily through
@@ -191,7 +180,7 @@ public partial class ConnectionManager : ObservableObject
             // Post is deferred, so a NEW firmware update for this device may have started between the
             // clear that queued this and now (rapid consecutive updates). If so, defer to that update
             // rather than tearing down a device that is being flashed again — the same #738 invariant
-            // the WMI teardown path (CheckIfSerialDeviceWasRemoved) guards. Also nothing to do if it
+            // the ConnectionLost teardown (OnDeviceConnectionLost) guards. Also nothing to do if it
             // reconnected cleanly or was already removed by another path.
             if (IsDeviceBeingUpdated(device) || !ConnectedDevices.Contains(device) || device.IsConnected)
             {
@@ -240,100 +229,34 @@ public partial class ConnectionManager : ObservableObject
     {
         ConnectedDevices = new List<IStreamingDevice>();
 
-        // Upstream constructed the WMI watcher inline here, which threw PlatformNotSupportedException
-        // on every non-Windows head and left USB-removal detection dead (issue #90). The backend is
-        // now chosen per platform behind IDeviceWatcher; macOS and Linux get a real, working one.
-        //
-        // The catch stays load-bearing: this runs from a static field initializer, so an escaping
-        // exception would surface as a fatal TypeInitializationException at first access of Instance.
-        // Backend selection is inside it for that reason. What changes is that the degradation no
-        // longer ends here — it is recorded and shown to the user (see the property below).
-        IDeviceWatcher? watcher = null;
-        try
-        {
-            watcher = DeviceWatcherFactory.Create();
-            watcher.DeviceRemoved += (sender, eventArgs) => CheckIfSerialDeviceWasRemoved();
-            watcher.Start();
-            _deviceWatcher = watcher;
-
-            // Which backend a machine picked is the first thing to check when a support report says
-            // "unplugging did nothing", so record it rather than leaving it to be inferred.
-            AppLogger.Instance.Information(
-                "USB hotplug detection backend: " + _deviceWatcher.GetType().Name);
-        }
-        catch (Exception ex)
-        {
-            // Release whatever the failed backend managed to allocate before its Start() threw —
-            // WmiDeviceWatcher, for one, assigns its ManagementEventWatcher and hooks its event
-            // before the Start() call that can throw — then install the backend that is guaranteed
-            // inert, so every later use of the field is unconditional.
-            DisposeQuietly(watcher);
-            _deviceWatcher = new NoOpDeviceWatcher();
-
-            // Only a platform that actually has USB serial has something to lose here: a mobile
-            // head has no serial transport, so a watcher that never runs is not a user-facing
-            // degradation there and must not raise a notification the user cannot act on.
-            if (DeviceWatcherFactory.PlatformSupportsSerialHotplug)
-            {
-                HotplugDetectionUnavailableMessage = HotplugUnavailableUserMessage;
-            }
-
-            AppLogger.Instance.Error(ex, "Failed to start the USB hotplug watcher: " + ex.Message);
-        }
-    }
-
-    /// <summary>
-    /// Disposes a half-built watcher during singleton construction. The catch is empty on purpose
-    /// and for the same reason the surrounding one exists: this runs from a static field
-    /// initializer, so a cleanup failure escaping here would become a fatal
-    /// <see cref="TypeInitializationException"/> at first access of <see cref="Instance"/> — a far
-    /// worse outcome than an undisposed watcher that was already failing.
-    /// </summary>
-    private static void DisposeQuietly(IDeviceWatcher? watcher)
-    {
-        if (watcher == null)
-        {
-            return;
-        }
-
-        try
-        {
-            watcher.Dispose();
-        }
-        catch
-        {
-            // Intentionally ignored — see the summary above.
-        }
+        // Upstream constructed a WMI device watcher here to notice a USB unplug, and this port
+        // later chose a watcher per platform (#90). Both are gone (#441): Core's serial transport
+        // polls for its own port and reports a removal as ConnectionStatus.Lost, which reaches
+        // OnDeviceConnectionLost for every transport.
     }
 
     /// <summary>
     /// Test-only constructor: an isolated manager with its own <see cref="ConnectedDevices"/> list,
-    /// an inert device watcher, channel release routed somewhere a test can observe, and its UI
-    /// marshal run inline.
+    /// channel release routed somewhere a test can observe, and its UI marshal run inline.
     /// </summary>
     /// <remarks>
-    /// Three things about the singleton make it untestable, and this constructor replaces exactly
-    /// those three. Its device watcher is a real one — on macOS and Linux a serial-port poller that
-    /// starts a background timer inside a static field initializer; its teardown path calls
-    /// <c>LoggingManager.Instance</c>, whose constructor needs a running Avalonia application; and
-    /// its UI marshal queues onto a dispatcher nothing pumps outside the app. See
-    /// <see cref="_unsubscribeChannel"/> and <see cref="_postToUiThread"/>. Nothing else differs:
-    /// the teardown, the firmware-update carve-out, the subscription bookkeeping and the
-    /// notification are all the production code.
+    /// Two things about the singleton make it untestable, and this constructor replaces exactly
+    /// those two. Its teardown path calls <c>LoggingManager.Instance</c>, whose constructor needs a
+    /// running Avalonia application; and its UI marshal queues onto a dispatcher nothing pumps
+    /// outside the app. See <see cref="_unsubscribeChannel"/> and <see cref="_postToUiThread"/>.
+    /// Nothing else differs: the teardown, the firmware-update carve-out, the subscription
+    /// bookkeeping and the notification are all the production code.
     /// </remarks>
     internal ConnectionManager(
-        IDeviceWatcher watcher,
         Func<IReadOnlyList<IChannel>> subscribedChannels,
         Action<IChannel> unsubscribeChannel,
         Action<Action> postToUiThread)
     {
-        ArgumentNullException.ThrowIfNull(watcher);
         ArgumentNullException.ThrowIfNull(subscribedChannels);
         ArgumentNullException.ThrowIfNull(unsubscribeChannel);
         ArgumentNullException.ThrowIfNull(postToUiThread);
 
         ConnectedDevices = [];
-        _deviceWatcher = watcher;
         _subscribedChannels = subscribedChannels;
         _unsubscribeChannel = unsubscribeChannel;
         _postToUiThread = postToUiThread;
@@ -373,23 +296,6 @@ public partial class ConnectionManager : ObservableObject
     /// indirect rather than a direct <see cref="PostToUiThread"/> call.
     /// </summary>
     private void MarshalToUiThread(Action action) => (_postToUiThread ?? PostToUiThread)(action);
-
-    /// <summary>
-    /// Wording shown to the user when USB hotplug-removal detection is not running. Says what the
-    /// user will actually see happen, not which watcher failed.
-    /// </summary>
-    private const string HotplugUnavailableUserMessage =
-        "Automatic USB disconnect detection is not available on this system. " +
-        "If you unplug a connected device, the app will keep showing it as connected until you " +
-        "disconnect it yourself.";
-
-    /// <summary>
-    /// Null when USB hotplug-removal detection is working, or when the platform has no serial
-    /// hardware to detect (the mobile heads, which are WiFi/TCP only). Non-null when this platform
-    /// DOES have USB serial but the watcher is not running — the user needs to know that unplugging
-    /// a device will go unnoticed rather than being left to infer it (issue #90).
-    /// </summary>
-    public string? HotplugDetectionUnavailableMessage { get; }
 
     #endregion
 
@@ -874,13 +780,12 @@ public partial class ConnectionManager : ObservableObject
     /// </summary>
     /// <remarks>
     /// <para>
-    /// This runs <em>alongside</em> <see cref="_deviceWatcher"/>, not instead of it. The watcher is
-    /// what gives this port working USB hotplug detection on macOS and Linux, and it stays. The two
-    /// paths are redundant rather than conflicting: both converge on
-    /// <see cref="Disconnect(IStreamingDevice)"/>, both skip a device under firmware update, and
-    /// whichever arrives second finds the device already gone from <see cref="ConnectedDevices"/>
-    /// and returns. What this adds is the transports the watcher cannot see — every WiFi/TCP
-    /// device, which <see cref="CheckIfSerialDeviceWasRemoved"/> filters out by construction.
+    /// This is the one unplug detector for every transport (#441). For a USB device, Core's
+    /// <c>SerialStreamTransport</c> polls for its port every second and reports two consecutive
+    /// misses, or five consecutive I/O faults under traffic, as <c>ConnectionStatus.Lost</c>;
+    /// <c>AbstractStreamingDevice</c> turns that into <see cref="IDevice.ConnectionLost"/>. The app
+    /// used to run its own port watcher beside it (WMI on Windows, a port-list poll on macOS and
+    /// Linux), and the two raced to this same teardown.
     /// </para>
     /// </remarks>
     // @port: Daqifi.Desktop.ConnectionManager.OnDeviceConnectionLost
@@ -893,8 +798,8 @@ public partial class ConnectionManager : ObservableObject
 
         // Core raises this from its transport/reader thread. ConnectedDevices is mutated on the UI
         // thread by Connect/Disconnect, and NotifyConnection's change notification runs
-        // DaqifiViewModel.UpdateUi synchronously — so everything below has to be marshalled, for
-        // the same reasons CheckIfSerialDeviceWasRemoved marshals its own removal.
+        // DaqifiViewModel.UpdateUi synchronously, and done off-thread it can throw back into Core's
+        // thread — so everything below has to be marshalled.
         MarshalToUiThread(() =>
         {
             // The device being flashed drops its transport when it reboots mid-update — an expected
@@ -906,8 +811,7 @@ public partial class ConnectionManager : ObservableObject
                 return;
             }
 
-            // Already torn down via another path — an explicit user disconnect, or the device
-            // watcher's serial-removal sweep, racing this event.
+            // Already torn down via another path — an explicit user disconnect racing this event.
             if (!ConnectedDevices.Contains(device))
             {
                 return;
@@ -918,8 +822,8 @@ public partial class ConnectionManager : ObservableObject
     }
 
     /// <summary>
-    /// The teardown both spontaneous-drop paths share: release the device's channels, disconnect
-    /// and remove it, then raise the user-visible notification with a reason that names it.
+    /// The spontaneous-drop teardown: release the device's channels, disconnect and remove it,
+    /// then raise the user-visible notification with a reason that names it.
     /// </summary>
     /// <remarks>
     /// Releasing the channels is not optional bookkeeping: left subscribed they stay in
@@ -1170,16 +1074,14 @@ public partial class ConnectionManager : ObservableObject
     }
 
     /// <summary>
-    /// Marshals a UI-state change onto the UI thread from a watcher callback, without letting a
+    /// Marshals a UI-state change onto the UI thread from a device callback, without letting a
     /// dispatcher that is shutting down escape back into the caller.
     /// </summary>
     /// <remarks>
     /// <see cref="Dispatcher.Post"/> can throw once the dispatcher is going away, and this runs on
-    /// the watcher's own thread. On Windows that thread belongs to WMI, which invokes subscribers
-    /// with no protective catch, so an escaping exception would abort the removal before the worker
-    /// that performs it is even created. Same reasoning, and the same shape, as
-    /// <c>BootloaderWatcher</c>'s UI marshal: if the dispatcher is gone the update is simply
-    /// dropped, which is the right outcome at shutdown.
+    /// Core's transport thread. Same reasoning, and the same shape, as <c>BootloaderWatcher</c>'s UI
+    /// marshal: if the dispatcher is gone the update is simply dropped, which is the right outcome
+    /// at shutdown.
     /// </remarks>
     private static void PostToUiThread(Action action)
     {
@@ -1197,87 +1099,6 @@ public partial class ConnectionManager : ObservableObject
         {
             // Dispatcher unavailable / shutting down — drop the UI update.
         }
-    }
-
-    // @port: Daqifi.Desktop.ConnectionManager.CheckIfSerialDeviceWasRemoved
-    private void CheckIfSerialDeviceWasRemoved()
-    {
-        // Every backend raises the removal event from a thread-pool thread — WMI's EventArrived and
-        // the poller's timer callback alike — so nothing here may touch UI-bound state directly.
-        // NotifyConnection's change notification runs DaqifiViewModel.UpdateUi synchronously, and
-        // that mutates the notification collection the UI is bound to; done off-thread it can throw
-        // straight back into the watcher, which would swallow the removal before the worker below is
-        // even started. Post rather than Invoke: the reset and the notification raised at the end of
-        // this method then run in the order they were queued, and a host with no dispatcher pumping
-        // (a headless harness) cannot block the watcher thread. PostToUiThread also keeps a
-        // shutting-down dispatcher from throwing back into the watcher.
-        PostToUiThread(() => NotifyConnection = false);
-
-        var bw = new BackgroundWorker();
-        bw.DoWork += delegate
-        {
-            HashSet<string> availableSerialPorts;
-            try
-            {
-                availableSerialPorts = new HashSet<string>(
-                    SerialPort.GetPortNames(),
-                    StringComparer.OrdinalIgnoreCase);
-            }
-            catch (Exception ex)
-            {
-                AppLogger.Instance.Error(ex, "Failed to enumerate serial ports after device change.");
-                return;
-            }
-
-            // ConnectedDevices is a plain List mutated on the UI thread by Connect/Disconnect, so
-            // snapshot it there rather than enumerating it from this worker: a concurrent connect
-            // would otherwise throw "collection was modified" into BackgroundWorker's swallowing
-            // catch and lose the removal entirely. Port enumeration above stays off-thread, which is
-            // the part that is actually slow.
-            var connectedSerialDevices = Dispatcher.UIThread.Invoke(
-                () => ConnectedDevices.OfType<SerialStreamingDevice>().ToList());
-
-            var devicesToRemove = connectedSerialDevices
-                .Where(device =>
-                    string.IsNullOrWhiteSpace(device.Port?.PortName) ||
-                    !availableSerialPorts.Contains(device.Port.PortName))
-                .Cast<IStreamingDevice>()
-                .ToList();
-
-            foreach (var serialDevice in devicesToRemove)
-            {
-                Dispatcher.UIThread.Invoke(delegate
-                {
-                    // The device being flashed drops off the COM port when it reboots mid-update — an
-                    // expected part of the flash that Core reconnects itself. Tearing it down here would
-                    // dispose the Core device out from under Core's JumpingToApp reconnect and time the
-                    // update out (issue #738), so skip it entirely. The reconcile after the update ends
-                    // (see ReconcileDeviceAfterUpdate) handles a genuinely-failed reconnect.
-                    if (IsDeviceBeingUpdated(serialDevice))
-                    {
-                        return;
-                    }
-
-                    // Core's own port-presence poll reports the same unplug as ConnectionLost,
-                    // usually within three to four seconds, so this and OnDeviceConnectionLost race
-                    // for one removal. Whichever loses finds the device already gone from
-                    // ConnectedDevices and returns; add the same guard here so the losing side is
-                    // this one too, not a second Disconnect on a device already torn down.
-                    if (!ConnectedDevices.Contains(serialDevice))
-                    {
-                        return;
-                    }
-
-                    // The firmware-update case is handled by the early-return above, so this is the
-                    // ordinary spontaneous-disconnect teardown — the same one the ConnectionLost
-                    // path runs, so the two cannot drift apart.
-                    TearDownDroppedDevice(
-                        serialDevice, $"{serialDevice.DeviceDisplayName} was unplugged.");
-                });
-            }
-        };
-
-        bw.RunWorkerAsync();
     }
 
     /// <summary>

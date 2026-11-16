@@ -132,7 +132,7 @@
                     <Border x:Name="Bg"
                             Background="Transparent"
                             CornerRadius="11">
-                        <i:Icon Value="mdi-cog"
+                        <i:Icon Value="mdi-cog-outline"
                                 FontSize="11"
                                 Foreground="{DynamicResource TextTertiary}"
                                 HorizontalAlignment="Center"
@@ -193,7 +193,7 @@
                                      the bottom label stack when the device label is shown.
                                      Hidden while PWM runs — the hardware ignores digital
                                      state writes on a PWM-active channel (issue #664). -->
-                                <ToggleButton Theme="{StaticResource DarkToggleSwitch}"
+                                <ToggleButton AutomationProperties.Name="Digital output" Theme="{StaticResource DarkToggleSwitch}"
                                               AutomationProperties.AutomationId="OutputDriveToggle"
                                               IsChecked="{Binding Channel.IsDigitalOn}"
                                               Width="30" Height="16"
@@ -232,7 +232,7 @@
                                        FontSize="9"
                                        FontWeight="SemiBold"/>
                         </Border>
-                        <Button HorizontalAlignment="Right"
+                        <Button AutomationProperties.Name="Channel settings" HorizontalAlignment="Right"
                                 VerticalAlignment="Bottom"
                                 Width="22" Height="22"
                                 Padding="0"
@@ -591,7 +591,7 @@
                                        FontWeight="Medium"
                                        Foreground="{DynamicResource TextPrimary}"/>
                         </StackPanel>
-                        <Button Grid.Column="2"
+                        <Button AutomationProperties.Name="Close" Grid.Column="2"
                                 Width="28" Height="28"
                                 Background="Transparent"
                                 BorderThickness="0"
@@ -652,7 +652,7 @@
                                                 </Border.IsVisible>
                                             </Border>
                                             <!-- Swatch -->
-                                            <Button Width="28" Height="28"
+                                            <Button AutomationProperties.Name="{Binding StringFormat='Color {0}'}" Width="28" Height="28"
                                                     Cursor="Hand"
                                                     Theme="{StaticResource SwatchButton}"
                                                     Command="{Binding $parent[UserControl].DataContext.SetColorCommand}"
@@ -738,7 +738,7 @@
                                     <TextBlock Text="PWM OUTPUT"
                                                Classes="sectionLabel"
                                                VerticalAlignment="Center"/>
-                                    <ToggleButton AutomationProperties.AutomationId="PwmModeToggle"
+                                    <ToggleButton AutomationProperties.Name="PWM output" AutomationProperties.AutomationId="PwmModeToggle"
                                                   IsChecked="{Binding SelectedChannel.IsPwmEnabled}"
                                                   Theme="{StaticResource DarkToggleSwitch}"
                                                   HorizontalAlignment="Right"
@@ -757,7 +757,7 @@
                                                Foreground="{DynamicResource TextPrimary}"><Run Text="{Binding SelectedChannel.PwmDutyCyclePercent, Mode=OneWay}"/><Run Text=" %"/></TextBlock>
                                 </Grid>
                                 <!-- Delay=500 debounces SCPI writes while dragging (upstream parity). -->
-                                <Slider AutomationProperties.AutomationId="PwmDutyCycleSlider"
+                                <Slider AutomationProperties.Name="PWM duty cycle" AutomationProperties.AutomationId="PwmDutyCycleSlider"
                                         Minimum="1" Maximum="100"
                                         IsSnapToTickEnabled="True"
                                         TickFrequency="1"
@@ -800,7 +800,7 @@
                                            Foreground="{DynamicResource TextTertiary}"
                                            TextWrapping="Wrap"
                                            Margin="0,6,0,0"
-                                           Text="6–50,000 Hz. One hardware timer drives PWM, so this frequency is shared by every PWM channel on this device."/>
+                                           Text="{Binding SelectedDevice.PwmFrequencyFloorHz, StringFormat='{}{0:N0}–50,000 Hz. One hardware timer drives PWM, so this frequency is shared by every PWM channel on this device.'}"/>
                             </StackPanel>
 
                             <!-- SCALING (analog only) -->
@@ -809,7 +809,7 @@
                                     <TextBlock Text="SCALING"
                                                Classes="sectionLabel"
                                                VerticalAlignment="Center"/>
-                                    <ToggleButton IsChecked="{Binding SelectedChannel.IsScalingActive}"
+                                    <ToggleButton AutomationProperties.Name="Scaling" IsChecked="{Binding SelectedChannel.IsScalingActive}"
                                                   Theme="{StaticResource DarkToggleSwitch}"
                                                   HorizontalAlignment="Right"
                                                   VerticalAlignment="Center"/>

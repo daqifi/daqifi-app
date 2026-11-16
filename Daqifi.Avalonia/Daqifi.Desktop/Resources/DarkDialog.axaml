@@ -14,7 +14,8 @@
           HeaderedContentControl (Avalonia has no GroupBox; header-over-raised-panel
           visual reproduced from the upstream template).
         - DarkSecondaryButton → ControlTheme with pointerover/disabled pseudo-classes
-          replacing WPF triggers.
+          replacing WPF triggers. DarkPrimaryButton is its accent-filled partner
+          (#613), in place of the OS-coloured Fluent Classes="accent".
         - DarkComboBox / DarkComboBoxItem → brush-override themes BasedOn the Fluent
           defaults; the upstream self-contained template existed only to fix the
           light popup, which Fluent Dark already fixes.
@@ -51,7 +52,10 @@
 
     <!-- ── Secondary (non-accent) button ───────────────────────────────────
          SurfaceActive (the lightest surface token) so the button reads as a control
-         on both the root Surface and the raised SurfaceRaised GroupBox panels. -->
+         on both the root Surface and the raised SurfaceRaised GroupBox panels.
+         The Border binds Padding (#631). Without it a button with no fixed Width, such as
+         the Debug Console's Clear and Close or the export dialog's Browse, shrank to its
+         text and the text touched the border. TemplatePaddingTests guards the rule. -->
     <ControlTheme x:Key="DarkSecondaryButton" TargetType="Button">
         <Setter Property="Background"      Value="{DynamicResource SurfaceActive}"/>
         <Setter Property="BorderBrush"     Value="{DynamicResource BorderBright}"/>
@@ -66,6 +70,7 @@
                         Background="{TemplateBinding Background}"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
+                        Padding="{TemplateBinding Padding}"
                         CornerRadius="3">
                     <ContentPresenter Content="{TemplateBinding Content}"
                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -75,6 +80,67 @@
         <Style Selector="^:pointerover /template/ Border#Bg">
             <Setter Property="Background"  Value="#283143"/>
             <Setter Property="BorderBrush" Value="{DynamicResource Accent}"/>
+        </Style>
+        <Style Selector="^:pressed /template/ Border#Bg">
+            <Setter Property="Background"  Value="{DynamicResource SurfaceRaised}"/>
+        </Style>
+        <Style Selector="^:focus-visible /template/ Border#Bg">
+            <Setter Property="BorderBrush" Value="{DynamicResource TextPrimary}"/>
+        </Style>
+        <Style Selector="^:disabled">
+            <Setter Property="Opacity" Value="0.4"/>
+        </Style>
+    </ControlTheme>
+
+    <!-- ── Primary (accent) button ─────────────────────────────────────────
+         The dialog's one main action (Export, Done, Upload, OK), beside a
+         DarkSecondaryButton. Same shape, padding and centred content as the secondary
+         one, filled with the brand Accent token (#613). It replaces the stock Fluent
+         Classes="accent": that took its colour from the OS accent, and with the fixed
+         Width these buttons carry its template left the label at the left edge.
+         Hover lightens and pressed darkens the fill by a fixed step, so both states
+         stay inside the brand blue; keyboard focus draws a white rim.
+
+         The label is the dark Surface token, not white. 12px white on #119EDA is
+         3.03:1, below the 4.5:1 that small text needs, and no lighter hover shade
+         could pass with white. Dark on the brand blue keeps the fill exactly the
+         DAQiFi blue and passes in every enabled state (WCAG relative luminance):
+           rest     #0D0F12 on #119EDA  6.33:1
+           hover    #0D0F12 on #33AEE3  7.59:1
+           pressed  #0D0F12 on #0E8FC6  5.27:1
+         Disabled is 40 % opacity, which WCAG exempts. -->
+    <ControlTheme x:Key="DarkPrimaryButton" TargetType="Button">
+        <Setter Property="Background"      Value="{DynamicResource Accent}"/>
+        <Setter Property="BorderBrush"     Value="{DynamicResource Accent}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Foreground"      Value="{DynamicResource Surface}"/>
+        <Setter Property="Padding"         Value="16,6"/>
+        <Setter Property="FontSize"        Value="12"/>
+        <Setter Property="FontWeight"      Value="SemiBold"/>
+        <Setter Property="Cursor"          Value="Hand"/>
+        <Setter Property="Template">
+            <ControlTemplate>
+                <Border x:Name="Bg"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        Padding="{TemplateBinding Padding}"
+                        CornerRadius="3">
+                    <ContentPresenter Content="{TemplateBinding Content}"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+            </ControlTemplate>
+        </Setter>
+        <Style Selector="^:pointerover /template/ Border#Bg">
+            <Setter Property="Background"  Value="#33AEE3"/>
+            <Setter Property="BorderBrush" Value="#33AEE3"/>
+        </Style>
+        <Style Selector="^:pressed /template/ Border#Bg">
+            <Setter Property="Background"  Value="#0E8FC6"/>
+            <Setter Property="BorderBrush" Value="#0E8FC6"/>
+        </Style>
+        <Style Selector="^:focus-visible /template/ Border#Bg">
+            <Setter Property="BorderBrush" Value="{DynamicResource TextPrimary}"/>
         </Style>
         <Style Selector="^:disabled">
             <Setter Property="Opacity" Value="0.4"/>

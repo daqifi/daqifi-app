@@ -12,7 +12,7 @@
         DarkDialog styles come from the app-merged DarkDialog.axaml
         (GroupBox → HeaderedContentControl + DarkGroupBox theme);
         Visibility+BoolToVis → IsVisible; MetroProgressBar → ProgressBar;
-        PackIconMaterial → projektanker i:Icon; Square.Accent → Classes="accent".
+        PackIconMaterial → projektanker i:Icon; Square.Accent → DarkPrimaryButton (#613).
     -->
     <!--
         Both declarations above are load-bearing and neither works alone (issue #327).
@@ -88,7 +88,7 @@
             <!-- Actions -->
             <DockPanel Grid.Row="4" HorizontalAlignment="Right" Margin="0,8,0,0">
                 <Button Click="btnCancel_Click" Content="Cancel" Width="100" Height="32" Margin="0,0,10,0" Theme="{StaticResource DarkSecondaryButton}"/>
-                <Button Content="Export" Command="{Binding ExportLoggingSessionsCommand}" Width="100" Height="32" Classes="accent"/>
+                <Button Content="Export" Command="{Binding ExportLoggingSessionsCommand}" Width="100" Height="32" Theme="{StaticResource DarkPrimaryButton}"/>
             </DockPanel>
         </Grid>
 
@@ -121,7 +121,7 @@
                 <Button Content="Try Again" Command="{Binding RetryExportCommand}" Width="120" Height="32" Margin="0,0,10,0"
                         Theme="{StaticResource DarkSecondaryButton}"
                         IsVisible="{Binding !ExportSucceeded}"/>
-                <Button Content="Done" Click="btnDone_Click" Width="120" Height="32" Classes="accent"/>
+                <Button Content="Done" Click="btnDone_Click" Width="120" Height="32" Theme="{StaticResource DarkPrimaryButton}"/>
             </StackPanel>
         </StackPanel>
 

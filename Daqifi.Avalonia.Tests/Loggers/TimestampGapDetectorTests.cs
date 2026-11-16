@@ -8,7 +8,7 @@ namespace Daqifi.Avalonia.Tests.Loggers;
 /// the live plot breaks its line between two samples.
 ///
 /// <para>
-/// It runs on the streaming hot path: <c>PlotLogger.Log</c> calls <see cref="TimestampGapDetector.IsGap"/>
+/// It runs on the streaming hot path: the live plot calls <see cref="TimestampGapDetector.IsGap"/>
 /// once per sample per channel. It had no coverage at all, and its failure modes are both silent —
 /// too eager and the plot is chopped into fragments on a healthy device; too lax and real data loss
 /// renders as a straight line through the missing samples.
@@ -34,7 +34,7 @@ public class TimestampGapDetectorTests
     {
         var detector = new TimestampGapDetector();
 
-        // Null is what ProcessStreamMessage passes for the first message of a session: there is no
+        // Null is what PublishCoreSample passes for the first frame of a session: there is no
         // previous frame to measure against, so no gap is knowable.
         Assert.False(detector.IsGap(ChannelA, null));
     }

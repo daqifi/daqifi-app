@@ -281,6 +281,7 @@
                     <StackPanel Orientation="Horizontal">
                         <Button Theme="{StaticResource PlotIconButton}"
                                 Command="{Binding Plotter.ZoomOutXCommand}"
+                                AutomationProperties.Name="Zoom out (time)"
                                 ToolTip.Tip="Zoom out (time)">
                             <i:Icon Value="mdi-magnify-minus-outline"
                                     FontSize="14"
@@ -288,6 +289,7 @@
                         </Button>
                         <Button Theme="{StaticResource PlotIconButton}"
                                 Command="{Binding Plotter.ZoomInXCommand}"
+                                AutomationProperties.Name="Zoom in (time)"
                                 ToolTip.Tip="Zoom in (time)">
                             <i:Icon Value="mdi-magnify-plus-outline"
                                     FontSize="14"
@@ -300,6 +302,7 @@
 
                         <Button Theme="{StaticResource PlotIconButton}"
                                 Command="{Binding Plotter.ZoomOutYCommand}"
+                                AutomationProperties.Name="Zoom out (analog)"
                                 ToolTip.Tip="Zoom out (analog)">
                             <i:Icon Value="mdi-arrow-expand-vertical"
                                     FontSize="14"
@@ -307,6 +310,7 @@
                         </Button>
                         <Button Theme="{StaticResource PlotIconButton}"
                                 Command="{Binding Plotter.ZoomInYCommand}"
+                                AutomationProperties.Name="Zoom in (analog)"
                                 ToolTip.Tip="Zoom in (analog)">
                             <i:Icon Value="mdi-arrow-collapse-vertical"
                                     FontSize="14"
@@ -319,6 +323,7 @@
 
                         <Button Theme="{StaticResource PlotIconButton}"
                                 Command="{Binding Plotter.ResetZoomLiveGraphCommand}"
+                                AutomationProperties.Name="Reset zoom"
                                 ToolTip.Tip="Reset zoom">
                             <i:Icon Value="mdi-crosshairs"
                                     FontSize="14"
@@ -332,6 +337,7 @@
                         <Button Theme="{StaticResource PlotIconButton}"
                                 Command="{Binding Plotter.SaveLiveGraphCommand}"
                                 CommandParameter="{Binding}"
+                                AutomationProperties.Name="Save as image"
                                 ToolTip.Tip="Save as image">
                             <i:Icon Value="mdi-image-outline"
                                     FontSize="14"
@@ -339,15 +345,20 @@
                         </Button>
                         <Button Theme="{StaticResource PlotIconButton}"
                                 Command="{Binding OpenLiveGraphSettingsCommand}"
+                                AutomationProperties.Name="Plot settings"
                                 ToolTip.Tip="Plot settings">
-                            <i:Icon Value="mdi-cog"
+                            <!-- Own glyphs for Plot settings and Log summary (#618): they
+                                 were the gear and the bug, which the top bar 300 px above
+                                 already uses for app Settings and Debug mode. -->
+                            <i:Icon Value="mdi-chart-box-outline"
                                     FontSize="14"
                                     Foreground="{DynamicResource TextSecondary}"/>
                         </Button>
                         <Button Theme="{StaticResource PlotIconButton}"
                                 Command="{Binding OpenLogSummaryCommand}"
+                                AutomationProperties.Name="Log summary (debug)"
                                 ToolTip.Tip="Log summary (debug)">
-                            <i:Icon Value="mdi-bug"
+                            <i:Icon Value="mdi-clipboard-pulse-outline"
                                     FontSize="14"
                                     Foreground="{DynamicResource TextSecondary}"/>
                         </Button>
@@ -369,6 +380,7 @@
                                   AutomationProperties.AutomationId="StartLoggingToggle"
                                   IsEnabled="{Binding CanToggleLogging, Mode=OneWay}"
                                   Theme="{StaticResource LoggingToggle}"
+                                  AutomationProperties.Name="Logging"
                                   ToolTip.Tip="Toggle logging"/>
                 </StackPanel>
             </Grid>

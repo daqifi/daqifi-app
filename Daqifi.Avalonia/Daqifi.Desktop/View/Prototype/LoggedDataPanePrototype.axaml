@@ -431,25 +431,25 @@
                                 <StackPanel Grid.Column="1"
                                             Orientation="Horizontal"
                                             VerticalAlignment="Center">
-                                    <Button Theme="{StaticResource PlotIconButton}"
+                                    <Button AutomationProperties.Name="Zoom out (time)" Theme="{StaticResource PlotIconButton}"
                                             Command="{Binding DbLogger.ZoomOutXCommand}"
                                             ToolTip.Tip="Zoom out (time)">
                                         <i:Icon Value="mdi-magnify-minus-outline" FontSize="14"
                                                 Foreground="{DynamicResource TextSecondary}"/>
                                     </Button>
-                                    <Button Theme="{StaticResource PlotIconButton}"
+                                    <Button AutomationProperties.Name="Zoom in (time)" Theme="{StaticResource PlotIconButton}"
                                             Command="{Binding DbLogger.ZoomInXCommand}"
                                             ToolTip.Tip="Zoom in (time)">
                                         <i:Icon Value="mdi-magnify-plus-outline" FontSize="14"
                                                 Foreground="{DynamicResource TextSecondary}"/>
                                     </Button>
-                                    <Button Theme="{StaticResource PlotIconButton}"
+                                    <Button AutomationProperties.Name="Zoom out (analog)" Theme="{StaticResource PlotIconButton}"
                                             Command="{Binding DbLogger.ZoomOutYCommand}"
                                             ToolTip.Tip="Zoom out (analog)">
                                         <i:Icon Value="mdi-arrow-expand-vertical" FontSize="14"
                                                 Foreground="{DynamicResource TextSecondary}"/>
                                     </Button>
-                                    <Button Theme="{StaticResource PlotIconButton}"
+                                    <Button AutomationProperties.Name="Zoom in (analog)" Theme="{StaticResource PlotIconButton}"
                                             Command="{Binding DbLogger.ZoomInYCommand}"
                                             ToolTip.Tip="Zoom in (analog)">
                                         <i:Icon Value="mdi-arrow-collapse-vertical" FontSize="14"
@@ -458,14 +458,14 @@
                                     <Rectangle Width="1" Height="16" Margin="4,0"
                                                Fill="{DynamicResource BorderDim}"
                                                VerticalAlignment="Center"/>
-                                    <Button Theme="{StaticResource PlotIconButton}"
+                                    <Button AutomationProperties.Name="Reset zoom" Theme="{StaticResource PlotIconButton}"
                                             Command="{Binding DbLogger.ResetZoomCommand}"
                                             CommandParameter="{Binding}"
                                             ToolTip.Tip="Reset zoom">
                                         <i:Icon Value="mdi-crosshairs" FontSize="14"
                                                 Foreground="{DynamicResource TextSecondary}"/>
                                     </Button>
-                                    <Button Theme="{StaticResource PlotIconButton}"
+                                    <Button AutomationProperties.Name="Save as image" Theme="{StaticResource PlotIconButton}"
                                             Command="{Binding DbLogger.SaveGraphCommand}"
                                             CommandParameter="{Binding}"
                                             ToolTip.Tip="Save as image">
@@ -481,7 +481,7 @@
                              port collapsed it, so with nothing plotted the region was blank. The
                              model is built with its three labelled axes in DatabaseLogger's
                              constructor and holds no series until DisplayLoggingSession runs, so
-                             leaving the view visible draws the same empty Analog (V) / Time (ms) /
+                             leaving the view visible draws the same empty Analog (V) / Elapsed time /
                              Digital frame LiveGraphPane already draws in this state, with the
                              empty-state card below overlaid on it exactly as it is there. -->
                         <oxy:PlotView Grid.Row="1"
@@ -610,7 +610,7 @@
 
                         <!-- Collapse/expand toggle (upstream DataTrigger swapped the icon Kind;
                              here two icons toggle IsVisible on the same state). -->
-                        <Button Theme="{StaticResource PlotIconButton}"
+                        <Button AutomationProperties.Name="Toggle legend" Theme="{StaticResource PlotIconButton}"
                                 VerticalAlignment="Top"
                                 Margin="0,8,0,0"
                                 Command="{Binding DbLogger.ToggleLegendPanelCommand}"
@@ -821,14 +821,14 @@
                                                             Orientation="Horizontal"
                                                             VerticalAlignment="Center"
                                                             Margin="0,0,12,0">
-                                                    <Button Theme="{StaticResource TileIconButton}"
+                                                    <Button AutomationProperties.Name="Session settings" Theme="{StaticResource TileIconButton}"
                                                             ToolTip.Tip="Session settings"
                                                             Command="{Binding $parent[UserControl].DataContext.OpenLoggingSessionSettingsCommand}"
                                                             CommandParameter="{Binding}">
-                                                        <i:Icon Value="mdi-cog" FontSize="13"
+                                                        <i:Icon Value="mdi-cog-outline" FontSize="13"
                                                                 Foreground="{DynamicResource TextTertiary}"/>
                                                     </Button>
-                                                    <Button Theme="{StaticResource TileIconButton}"
+                                                    <Button AutomationProperties.Name="Export session" Theme="{StaticResource TileIconButton}"
                                                             AutomationProperties.AutomationId="ExportSessionButton"
                                                             ToolTip.Tip="Export session"
                                                             Command="{Binding $parent[UserControl].DataContext.ExportLoggingSessionCommand}"
@@ -836,7 +836,7 @@
                                                         <i:Icon Value="mdi-download-circle-outline" FontSize="13"
                                                                 Foreground="{DynamicResource TextTertiary}"/>
                                                     </Button>
-                                                    <Button Theme="{StaticResource TileIconButton}"
+                                                    <Button AutomationProperties.Name="Delete session" Theme="{StaticResource TileIconButton}"
                                                             AutomationProperties.AutomationId="DeleteSessionButton"
                                                             ToolTip.Tip="Delete session"
                                                             Command="{Binding $parent[UserControl].DataContext.DeleteLoggingSessionCommand}"
@@ -923,7 +923,7 @@
               ColumnDefinitions="*,380">
 
             <!-- Scrim (WPF MouseBinding → transparent command Button) -->
-            <Button Grid.Column="0"
+            <Button AutomationProperties.AccessibilityView="Raw" Grid.Column="0"
                     Theme="{StaticResource TransparentHitButton}"
                     Focusable="False"
                     Command="{Binding CloseLoggedSessionSettingsCommand}">
@@ -954,7 +954,7 @@
                                        FontWeight="Medium"
                                        Foreground="{DynamicResource TextPrimary}"/>
                         </StackPanel>
-                        <Button Grid.Column="2"
+                        <Button AutomationProperties.Name="Close" Grid.Column="2"
                                 Theme="{StaticResource RoundCloseButton}"
                                 Width="28" Height="28"
                                 Foreground="{DynamicResource TextSecondary}"
@@ -1078,7 +1078,7 @@
               Focusable="True"
               KeyboardNavigation.TabNavigation="Cycle">
             <!-- Scrim. Click = cancel (same pattern as the drawer). -->
-            <Button Theme="{StaticResource TransparentHitButton}"
+            <Button AutomationProperties.AccessibilityView="Raw" Theme="{StaticResource TransparentHitButton}"
                     Focusable="False"
                     Command="{Binding ConfirmOverlay.NegativeCommand}">
                 <Rectangle Fill="#A0000000"/>

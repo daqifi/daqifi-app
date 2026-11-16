@@ -2,7 +2,6 @@ using Daqifi.Avalonia.Tests.Device;
 using Daqifi.Desktop;
 using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Device;
-using Daqifi.Desktop.Services.DeviceWatcher;
 using Xunit;
 
 namespace Daqifi.Avalonia.Tests;
@@ -22,8 +21,7 @@ namespace Daqifi.Avalonia.Tests;
 public class ConnectionManagerFirmwareUpdateGuardTests
 {
     private static ConnectionManager NewManager() =>
-        new(new NoOpDeviceWatcher(),
-            () => new List<IChannel>(),
+        new(() => new List<IChannel>(),
             _ => { },
             action => action());
 

@@ -48,9 +48,9 @@
       },
       "Daqifi.Core": {
         "type": "Direct",
-        "requested": "[1.9.1, )",
-        "resolved": "1.9.1",
-        "contentHash": "eW1ReLnEcBc5A0keB6Bxux0ypAOgbj8boVLosYDBHU+V9Xg0AIKAkdVUhaS+KQc2WUYJnq/cOOJA0RqggX1c0Q==",
+        "requested": "[1.10.0, )",
+        "resolved": "1.10.0",
+        "contentHash": "Ev2u4pUuuJ/r7hqkisGBjSdE4SJuco2fsVZr+186ViTgfJUbV7rZqmCQAVMSYoecte46BfXiLzLwPPFdco/cpA==",
         "dependencies": {
           "Google.Protobuf": "3.36.2",
           "HidSharp": "2.6.4",
@@ -200,15 +200,6 @@
         "contentHash": "70Jq6HRBQT0iMM/D8hVTo8nYLnDFf7xluPPn2S+brVRc8uExUUYh3lGO4nzsK2nc4nIVH3pVIphI0Jm8zZZ4jQ==",
         "dependencies": {
           "runtime.native.System.IO.Ports": "10.0.14"
-        }
-      },
-      "System.Management": {
-        "type": "Direct",
-        "requested": "[10.0.14, )",
-        "resolved": "10.0.14",
-        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
-        "dependencies": {
-          "System.CodeDom": "10.0.14"
         }
       },
       "Xaml.Behaviors.Avalonia": {
@@ -781,6 +772,14 @@
         "resolved": "10.0.14",
         "contentHash": "O/RzNwWoDzehkLlAG9hR8xooY5L41U7VUaYlcKvE3+FhHohBJqF10oLUzuv0v59VeJ62hv3uw9VoeX12zej7Sg=="
       },
+      "System.Management": {
+        "type": "Transitive",
+        "resolved": "10.0.14",
+        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
+        "dependencies": {
+          "System.CodeDom": "10.0.14"
+        }
+      },
       "System.Security.Cryptography.ProtectedData": {
         "type": "Transitive",
         "resolved": "10.0.14",
@@ -875,15 +874,6 @@
           "runtime.native.System.IO.Ports": "10.0.14"
         }
       },
-      "System.Management": {
-        "type": "Direct",
-        "requested": "[10.0.14, )",
-        "resolved": "10.0.14",
-        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
-        "dependencies": {
-          "System.CodeDom": "10.0.14"
-        }
-      },
       "runtime.android-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
         "resolved": "10.0.14",
@@ -973,6 +963,14 @@
         "type": "Transitive",
         "resolved": "10.0.14",
         "contentHash": "O/RzNwWoDzehkLlAG9hR8xooY5L41U7VUaYlcKvE3+FhHohBJqF10oLUzuv0v59VeJ62hv3uw9VoeX12zej7Sg=="
+      },
+      "System.Management": {
+        "type": "Transitive",
+        "resolved": "10.0.14",
+        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
+        "dependencies": {
+          "System.CodeDom": "10.0.14"
+        }
       }
     },
     "net10.0/android-x64": {
@@ -985,15 +983,6 @@
           "runtime.native.System.IO.Ports": "10.0.14"
         }
       },
-      "System.Management": {
-        "type": "Direct",
-        "requested": "[10.0.14, )",
-        "resolved": "10.0.14",
-        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
-        "dependencies": {
-          "System.CodeDom": "10.0.14"
-        }
-      },
       "runtime.android-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
         "resolved": "10.0.14",
@@ -1083,6 +1072,14 @@
         "type": "Transitive",
         "resolved": "10.0.14",
         "contentHash": "O/RzNwWoDzehkLlAG9hR8xooY5L41U7VUaYlcKvE3+FhHohBJqF10oLUzuv0v59VeJ62hv3uw9VoeX12zej7Sg=="
+      },
+      "System.Management": {
+        "type": "Transitive",
+        "resolved": "10.0.14",
+        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
+        "dependencies": {
+          "System.CodeDom": "10.0.14"
+        }
       }
     },
     "net10.0/linux-x64": {
@@ -1095,15 +1092,6 @@
           "runtime.native.System.IO.Ports": "10.0.14"
         }
       },
-      "System.Management": {
-        "type": "Direct",
-        "requested": "[10.0.14, )",
-        "resolved": "10.0.14",
-        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
-        "dependencies": {
-          "System.CodeDom": "10.0.14"
-        }
-      },
       "runtime.android-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
         "resolved": "10.0.14",
@@ -1193,6 +1181,14 @@
         "type": "Transitive",
         "resolved": "10.0.14",
         "contentHash": "O/RzNwWoDzehkLlAG9hR8xooY5L41U7VUaYlcKvE3+FhHohBJqF10oLUzuv0v59VeJ62hv3uw9VoeX12zej7Sg=="
+      },
+      "System.Management": {
+        "type": "Transitive",
+        "resolved": "10.0.14",
+        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
+        "dependencies": {
+          "System.CodeDom": "10.0.14"
+        }
       }
     },
     "net10.0/osx-arm64": {
@@ -1205,15 +1201,6 @@
           "runtime.native.System.IO.Ports": "10.0.14"
         }
       },
-      "System.Management": {
-        "type": "Direct",
-        "requested": "[10.0.14, )",
-        "resolved": "10.0.14",
-        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
-        "dependencies": {
-          "System.CodeDom": "10.0.14"
-        }
-      },
       "runtime.android-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
         "resolved": "10.0.14",
@@ -1303,6 +1290,14 @@
         "type": "Transitive",
         "resolved": "10.0.14",
         "contentHash": "O/RzNwWoDzehkLlAG9hR8xooY5L41U7VUaYlcKvE3+FhHohBJqF10oLUzuv0v59VeJ62hv3uw9VoeX12zej7Sg=="
+      },
+      "System.Management": {
+        "type": "Transitive",
+        "resolved": "10.0.14",
+        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
+        "dependencies": {
+          "System.CodeDom": "10.0.14"
+        }
       }
     },
     "net10.0/osx-x64": {
@@ -1315,15 +1310,6 @@
           "runtime.native.System.IO.Ports": "10.0.14"
         }
       },
-      "System.Management": {
-        "type": "Direct",
-        "requested": "[10.0.14, )",
-        "resolved": "10.0.14",
-        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
-        "dependencies": {
-          "System.CodeDom": "10.0.14"
-        }
-      },
       "runtime.android-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
         "resolved": "10.0.14",
@@ -1413,6 +1399,14 @@
         "type": "Transitive",
         "resolved": "10.0.14",
         "contentHash": "O/RzNwWoDzehkLlAG9hR8xooY5L41U7VUaYlcKvE3+FhHohBJqF10oLUzuv0v59VeJ62hv3uw9VoeX12zej7Sg=="
+      },
+      "System.Management": {
+        "type": "Transitive",
+        "resolved": "10.0.14",
+        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
+        "dependencies": {
+          "System.CodeDom": "10.0.14"
+        }
       }
     },
     "net10.0/win-x64": {
@@ -1425,15 +1419,6 @@
           "runtime.native.System.IO.Ports": "10.0.14"
         }
       },
-      "System.Management": {
-        "type": "Direct",
-        "requested": "[10.0.14, )",
-        "resolved": "10.0.14",
-        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
-        "dependencies": {
-          "System.CodeDom": "10.0.14"
-        }
-      },
       "runtime.android-arm.runtime.native.System.IO.Ports": {
         "type": "Transitive",
         "resolved": "10.0.14",
@@ -1523,6 +1508,14 @@
         "type": "Transitive",
         "resolved": "10.0.14",
         "contentHash": "O/RzNwWoDzehkLlAG9hR8xooY5L41U7VUaYlcKvE3+FhHohBJqF10oLUzuv0v59VeJ62hv3uw9VoeX12zej7Sg=="
+      },
+      "System.Management": {
+        "type": "Transitive",
+        "resolved": "10.0.14",
+        "contentHash": "ywAltakc72Oe7liNatclpyq8oiLYx0VMSjQvphlsbPbiQ9glrV3JKvn5M2xFbsOzzh8sV3QAiUdmu2AV/ffN7Q==",
+        "dependencies": {
+          "System.CodeDom": "10.0.14"
+        }
       }
     }
   }

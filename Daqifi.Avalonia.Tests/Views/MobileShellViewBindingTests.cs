@@ -214,6 +214,8 @@ public class MobileShellViewBindingTests
     [InlineData("IsVisible=\"{Binding ShowDeviceList}\"")]
     [InlineData("IsVisible=\"{Binding IsUsbAvailable}\"")]
     [InlineData("IsVisible=\"{Binding IsConnected}\"")]
+    [InlineData("IsVisible=\"{Binding !IsConnected}\"")]
+    [InlineData("Command=\"{Binding DisconnectCommand}\"")]
     public void The_bindings_feed_the_attributes_they_are_supposed_to(string binding) =>
         BindingFacts.AssertBinds(View, binding);
 

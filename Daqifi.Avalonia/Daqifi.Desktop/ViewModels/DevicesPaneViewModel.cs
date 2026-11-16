@@ -8,6 +8,7 @@ using System.ComponentModel;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Daqifi.Core.Firmware;
 using Daqifi.Desktop.Device;
 
 namespace Daqifi.Desktop.ViewModels;
@@ -152,9 +153,15 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         get
         {
             if (SelectedDevice == null) return string.Empty;
-            var installed = string.IsNullOrWhiteSpace(SelectedDevice.DeviceVersion)
+            var reported = SelectedDevice.DeviceVersion;
+            // A version the app cannot read is unknown, whether the device reported nothing or
+            // reported text that is not a version (issue #583). The raw text stays as detail.
+            // The firmware check compares neither, so neither gets "up to date" or "available".
+            var installed = string.IsNullOrWhiteSpace(reported)
                 ? "Installed version unknown."
-                : $"Installed {SelectedDevice.DeviceVersion}.";
+                : !FirmwareVersion.TryParse(reported, out _)
+                    ? $"Installed version unknown (the device reports \"{reported}\")."
+                    : $"Installed {reported}.";
             if (SelectedDeviceHasFirmwareUpdate) return $"{installed} Version {LatestFirmwareVersion} is available.";
             if (SelectedDeviceFirmwareIsCurrent) return $"{installed} Firmware is up to date.";
             return installed;

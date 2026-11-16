@@ -249,6 +249,18 @@ public interface IStreamingDevice : IDevice
     // @port: Daqifi.Desktop.Device.IStreamingDevice.PwmFrequencyHz
     int PwmFrequencyHz { get; set; }
 
+    /// <summary>
+    /// The lowest PWM frequency, in hertz, that this device accepts. <see cref="PwmFrequencyHz"/>
+    /// is held to it, and the channel drawer states it.
+    /// </summary>
+    /// <remarks>
+    /// Core's <c>DaqifiStreamingDevice.PwmFrequencyFloorHz</c>: the floor the device advertises on
+    /// firmware 3.9.0 and later, and <c>MinPwmFrequencyHz</c> (6 Hz) otherwise. Core 1.10.0 refuses
+    /// a frequency below it (daqifi-core#963, issue #584).
+    /// </remarks>
+    // Downstream-only: no upstream counterpart.
+    int PwmFrequencyFloorHz { get; }
+
     // @port: Daqifi.Desktop.Device.IStreamingDevice.UpdateNetworkConfiguration
     Task UpdateNetworkConfiguration();
 

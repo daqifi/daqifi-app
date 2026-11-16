@@ -9,6 +9,9 @@ using Daqifi.Desktop.ViewModels;
 using System;
 using System.Reflection;
 using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.Threading;
 
 namespace Daqifi.Desktop;
 
@@ -55,5 +58,42 @@ public partial class MainWindow : Window
         }
 
         DataContext = new DaqifiViewModel();
+    }
+
+    /// <summary>
+    /// The drawer pane closes itself on a click outside it and on Escape (#615). It does that with
+    /// SetCurrentValue, which leaves the view-model flags true: the pane would close on screen while
+    /// the flags still said "open", and the next click on that same panel's button would set a flag
+    /// that is already set and open nothing. So a close the view did not ask for is cancelled here
+    /// and turned into the flag change, which closes the pane through its binding. A close that the
+    /// flags asked for finds them already false and goes ahead.
+    /// </summary>
+    // Downstream-only: upstream's MahApps flyouts had no shared host.
+    /// <summary>
+    /// Escape closes the open right-side panel wherever focus is (#615). The SplitView handles
+    /// Escape itself only when the key reaches it, which it does not when focus stays on the
+    /// top-bar button that opened the panel, so the window takes it on the way up. A key the
+    /// pane (or a control inside it, such as an open dropdown) already handled never gets here.
+    /// </summary>
+    // Downstream-only: upstream's MahApps flyouts closed on their own.
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (!e.Handled && e.Key == Key.Escape && DataContext is DaqifiViewModel viewModel
+            && viewModel.DismissDrawer())
+        {
+            e.Handled = true;
+        }
+
+        base.OnKeyDown(e);
+    }
+
+    private void OnPaneClosing(object? sender, CancelRoutedEventArgs e)
+    {
+        if (DataContext is DaqifiViewModel viewModel && viewModel.IsAnyDrawerOpen)
+        {
+            e.Cancel = true;
+            // Posted, not inline: this runs inside the pane's IsPaneOpen coercion.
+            Dispatcher.UIThread.Post(viewModel.CloseDrawers);
+        }
     }
 }

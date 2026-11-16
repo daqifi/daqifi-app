@@ -15,7 +15,7 @@
         Ported from the MahApps MetroWindow original. MahApps theme brushes map to
         DesignTokens: Brushes.Accent → Accent, Gray10 (panel header) → SurfaceRaised,
         Gray9 (value chips) → SurfaceActive, Gray7 (splitter) → BorderDim.
-        Dialogs.Accent buttons → Classes="accent"; PackIconMaterial → i:Icon;
+        Dialogs.Accent buttons → DarkSecondaryButton; PackIconMaterial → i:Icon;
         WPF DataGrid → Avalonia.Controls.DataGrid (theme included from App.axaml).
 
         Width stays at upstream's 1000. A 1200 was tried for less scrolling, but the
@@ -40,7 +40,7 @@
             <Grid ColumnDefinitions="*,Auto,Auto">
 
                 <StackPanel Grid.Column="0" Orientation="Horizontal">
-                    <i:Icon Value="mdi-bug"
+                    <i:Icon Value="mdi-bug-outline"
                             Foreground="White"
                             FontSize="24"
                             VerticalAlignment="Center"/>
@@ -52,16 +52,19 @@
                                VerticalAlignment="Center"/>
                 </StackPanel>
 
+                <!-- DarkSecondaryButton, not an accent fill (#613): this header bar IS the
+                     Accent colour, so once the Fluent accent follows the brand blue an
+                     accent button here is blue on blue and disappears. -->
                 <Button Grid.Column="1"
                         Content="Clear"
                         Command="{Binding ClearDebugDataCommand}"
-                        Classes="accent"
+                        Theme="{StaticResource DarkSecondaryButton}"
                         Margin="0,0,10,0"/>
 
                 <Button Grid.Column="2"
                         Content="Close"
                         Click="CloseButton_Click"
-                        Classes="accent"/>
+                        Theme="{StaticResource DarkSecondaryButton}"/>
             </Grid>
         </Border>
 

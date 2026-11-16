@@ -1,5 +1,7 @@
 <ResourceDictionary xmlns="https://github.com/avaloniaui"
-                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:i="https://github.com/projektanker/icons.avalonia"
+                    xmlns:flyouts="using:Daqifi.Desktop.View.Flyouts">
     <!--
         Shared shell chrome — the desktop's navigation rail + segmented toggle,
         promoted out of MainWindow.axaml so BOTH the desktop MainWindow AND the
@@ -110,6 +112,67 @@
         <Setter Property="Margin" Value="0,6,0,0"/>
     </ControlTheme>
 
+    <!-- Round hover-highlight close button (upstream inline Button template). App-wide
+         since #613: the settings drawer and the three flyouts all close through it, so
+         no close action shows a filled, "checked" accent square. -->
+    <ControlTheme x:Key="RoundCloseButton" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <ControlTemplate>
+                <Border x:Name="Bg" Background="Transparent" CornerRadius="14">
+                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                      Content="{TemplateBinding Content}"/>
+                </Border>
+            </ControlTemplate>
+        </Setter>
+        <Style Selector="^:pointerover /template/ Border#Bg">
+            <Setter Property="Background" Value="#1FFFFFFF"/>
+        </Style>
+        <Style Selector="^:pressed /template/ Border#Bg">
+            <Setter Property="Background" Value="#33FFFFFF"/>
+        </Style>
+        <Style Selector="^:focus-visible /template/ Border#Bg">
+            <Setter Property="Background" Value="#1FFFFFFF"/>
+        </Style>
+    </ControlTheme>
+
+    <!-- Right-side panel header (#615): overline, title and round close button, for the
+         settings drawer and the three SplitView flyouts alike. The values are the settings
+         drawer's, which was the most finished of the two designs: 9px bold TextTertiary
+         overline, 22px light title, a 28px RoundCloseButton. The margin puts the title text
+         at the 24px column that every panel body below it uses. -->
+    <ControlTheme x:Key="{x:Type flyouts:DrawerHeader}" TargetType="flyouts:DrawerHeader">
+        <Setter Property="Margin" Value="24,22,16,18"/>
+        <Setter Property="Template">
+            <ControlTemplate>
+                <Grid ColumnDefinitions="*,Auto">
+                    <StackPanel Grid.Column="0">
+                        <TextBlock Text="{TemplateBinding Overline}"
+                                   FontSize="9"
+                                   FontWeight="Bold"
+                                   Foreground="{DynamicResource TextTertiary}"/>
+                        <TextBlock Text="{TemplateBinding Title}"
+                                   FontSize="22"
+                                   FontWeight="Light"
+                                   Foreground="{DynamicResource TextPrimary}"
+                                   Margin="0,2,0,0"/>
+                    </StackPanel>
+                    <Button Grid.Column="1"
+                            Width="28" Height="28"
+                            Theme="{StaticResource RoundCloseButton}"
+                            Foreground="{DynamicResource TextSecondary}"
+                            ToolTip.Tip="Close"
+                            AutomationProperties.Name="Close"
+                            Command="{TemplateBinding CloseCommand}">
+                        <i:Icon Value="mdi-close" FontSize="16"/>
+                    </Button>
+                </Grid>
+            </ControlTemplate>
+        </Setter>
+    </ControlTheme>
+
     <!-- Pill buttons — promoted from the prototype views so desktop + mobile share
          one definition. Ghost (outline) / Accent (filled) / Danger (red). -->
     <ControlTheme x:Key="PillButton" TargetType="Button">
@@ -137,6 +200,19 @@
             <Setter Property="BorderBrush" Value="{DynamicResource BorderBright}"/>
             <Setter Property="Background" Value="{DynamicResource SurfaceHover}"/>
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+        </Style>
+        <!-- Pressed, focus and disabled (#613). The template replaces Fluent's, so
+             without these a pill showed no press feedback, no keyboard focus, and a
+             disabled pill looked exactly like an enabled one. They apply to the
+             Accent and Danger variants too, which are BasedOn this theme. -->
+        <Style Selector="^:pressed">
+            <Setter Property="Opacity" Value="0.8"/>
+        </Style>
+        <Style Selector="^:focus-visible">
+            <Setter Property="BorderBrush" Value="{DynamicResource TextPrimary}"/>
+        </Style>
+        <Style Selector="^:disabled">
+            <Setter Property="Opacity" Value="0.4"/>
         </Style>
     </ControlTheme>
 

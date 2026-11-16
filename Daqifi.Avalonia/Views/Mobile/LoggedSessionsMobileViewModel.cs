@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Media;
 using Avalonia.Media.Immutable;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -40,13 +41,17 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
 {
     private readonly IAppLogger _appLogger = AppLogger.Instance;
 
-    /// <summary>Set by the view (which owns the TopLevel): resolves a save FILE path
-    /// for a single-session export given a suggested filename, or null if cancelled.</summary>
-    public Func<string, Task<string?>>? SavePathResolver { get; set; }
+    /// <summary>Set by the view (which owns the TopLevel): shows the save picker for a
+    /// single-session export, given a suggested name WITHOUT an extension (the picker adds
+    /// it), and returns the picked file, or null if cancelled.</summary>
+    /// <remarks>A storage item, not a path: on Android the pick is a <c>content://</c> URI
+    /// that has no path at all (issue #587). <see cref="StorageExportWriter"/> writes through
+    /// the item's own stream.</remarks>
+    public Func<string, Task<IStorageFile?>>? SaveFileResolver { get; set; }
 
-    /// <summary>Set by the view: resolves a destination FOLDER for a multi-session
-    /// "Export all" (one CSV per session), or null if cancelled.</summary>
-    public Func<Task<string?>>? SaveFolderResolver { get; set; }
+    /// <summary>Set by the view: shows the folder picker for a multi-session "Export all"
+    /// (one CSV per session) and returns the picked folder, or null if cancelled.</summary>
+    public Func<Task<IStorageFolder?>>? SaveFolderResolver { get; set; }
 
     public ObservableCollection<LoggingSession> Sessions { get; } = new();
 
@@ -200,7 +205,7 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
         // Guard re-entrancy: no overlapping export/reload, and no second picker while one
         // is open. IsBusy is held for the WHOLE operation (picker + write).
         if (IsBusy) { return; }
-        if (single is not null ? SavePathResolver is null : SaveFolderResolver is null) { return; }
+        if (single is not null ? SaveFileResolver is null : SaveFolderResolver is null) { return; }
 
         var toExport = single is not null ? new[] { single } : Sessions.ToArray();
         if (toExport.Length == 0) { return; }
@@ -209,13 +214,14 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
         try
         {
             StatusMessage = "Exporting…";
+            var writer = new StorageExportWriter(_appLogger);
             if (single is not null)
             {
                 // Single session → one picked file.
-                string? path;
+                IStorageFile? file;
                 try
                 {
-                    path = await SavePathResolver!($"{ExportFileNamer.SafeName(single.Name, single.ID)}.csv");
+                    file = await SaveFileResolver!(SuggestedSaveName(single.Name, single.ID));
                 }
                 catch (Exception ex)
                 {
@@ -223,23 +229,30 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
                     StatusMessage = "Unable to open the export picker.";
                     return;
                 }
-                if (string.IsNullOrEmpty(path)) { StatusMessage = string.Empty; return; }
+                // Null is only ever a cancel now: no picked file is refused for lacking a path.
+                if (file is null) { StatusMessage = string.Empty; return; }
 
-                // One exporter for the operation captures the CSV delimiter ONCE (its ctor
-                // reads DaqifiSettings.CsvDelimiter), so toggling the delimiter in Settings
-                // mid-export can't change it under us.
-                var exporter = new OptimizedLoggingSessionExporter();
-                var wrote = await Task.Run(() => ExportOne(exporter, single, path!, sessionIndex: 0, totalSessions: 1));
-                // A listed session always has samples, so a false result here means the export
-                // FAILED (locked/unwritable destination, disk full) — not that it was "empty".
-                StatusMessage = wrote ? "Exported 1 session." : "Couldn't export that session — see logs.";
+                using (file)
+                {
+                    // One exporter for the operation captures the CSV delimiter ONCE (its ctor
+                    // reads DaqifiSettings.CsvDelimiter), so toggling the delimiter in Settings
+                    // mid-export can't change it under us.
+                    var exporter = new OptimizedLoggingSessionExporter();
+                    var wrote = await writer.WriteAsync(file,
+                        staging => ExportOne(exporter, single, staging, sessionIndex: 0, totalSessions: 1));
+                    // A listed session always has samples, so a false result here means the export
+                    // FAILED (unwritable destination, disk full) — not that it was "empty".
+                    StatusMessage = wrote
+                        ? $"Exported 1 session to {file.Name}."
+                        : $"Couldn't export to {file.Name}. Nothing was saved — see logs.";
+                }
             }
             else
             {
                 // Export all → one CSV per session into a picked folder. Each session must
                 // get its OWN file: a completed export REPLACES its destination, so writing
-                // every session to a single path would leave only the last one.
-                string? folder;
+                // every session to a single name would leave only the last one.
+                IStorageFolder? folder;
                 try
                 {
                     folder = await SaveFolderResolver!();
@@ -250,31 +263,30 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
                     StatusMessage = "Unable to open the folder picker.";
                     return;
                 }
-                if (string.IsNullOrEmpty(folder)) { StatusMessage = string.Empty; return; }
+                if (folder is null) { StatusMessage = string.Empty; return; }
 
-                // One exporter for the WHOLE batch captures the CSV delimiter once (its ctor
-                // reads DaqifiSettings.CsvDelimiter), so toggling the delimiter in Settings
-                // mid-"Export all" can't produce a folder of mixed-delimiter CSVs.
-                var exporter = new OptimizedLoggingSessionExporter();
-                var written = await Task.Run(() =>
+                using (folder)
                 {
+                    // One exporter for the WHOLE batch captures the CSV delimiter once (its ctor
+                    // reads DaqifiSettings.CsvDelimiter), so toggling the delimiter in Settings
+                    // mid-"Export all" can't produce a folder of mixed-delimiter CSVs.
+                    var exporter = new OptimizedLoggingSessionExporter();
                     // Disambiguate duplicate / sanitization-colliding names so two sessions never
-                    // target the same file (the exporter truncates, losing the earlier). Shared with
-                    // the desktop Export dialog, which has to make the same promise.
+                    // target the same file. Shared with the desktop Export dialog, which has to
+                    // make the same promise.
                     var namer = new ExportFileNamer();
-                    var count = 0;
+                    var written = new List<string>();
                     for (var i = 0; i < toExport.Length; i++)
                     {
-                        var filepath = namer.NextCsvPath(folder!, toExport[i].Name, toExport[i].ID);
-                        if (ExportOne(exporter, toExport[i], filepath, sessionIndex: i, totalSessions: toExport.Length)) { count++; }
+                        var session = toExport[i];
+                        var index = i;
+                        var name = await writer.WriteNewAsync(folder, namer.NextCsvName(session.Name, session.ID),
+                            staging => ExportOne(exporter, session, staging, sessionIndex: index, totalSessions: toExport.Length));
+                        if (name is not null) { written.Add(name); }
                     }
-                    return count;
-                });
-                StatusMessage = written == 0
-                    ? "Nothing was exported."
-                    : written == toExport.Length
-                        ? $"Exported {written} sessions."
-                        : $"Exported {written} of {toExport.Length} sessions.";
+
+                    StatusMessage = ExportAllStatus(written, toExport.Length, folder.Name);
+                }
             }
         }
         catch (Exception ex)
@@ -618,6 +630,28 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
     /// The exporter is passed in (one per batch) so the CSV delimiter it captured at construction
     /// stays fixed across a whole "Export all" even if Settings is toggled.
     /// </remarks>
+    /// <summary>The name the save picker suggests for a single-session export: the session's
+    /// safe file name WITHOUT an extension. The picker adds <c>.csv</c> itself (the view sets
+    /// <c>DefaultExtension</c> to <see cref="ExportFileNamer.CsvExtension"/>, and the Android
+    /// picker appends it to this name), so adding it here as well gave <c>.csv.csv</c> (#587).</summary>
+    internal static string SuggestedSaveName(string? sessionName, int sessionId) =>
+        ExportFileNamer.SafeName(sessionName, sessionId);
+
+    /// <summary>The status line after "Export all": names the file when there is one, and the
+    /// folder in every case, so the user knows where to look.</summary>
+    internal static string ExportAllStatus(IReadOnlyList<string> written, int total, string folderName)
+    {
+        if (written.Count == 0)
+        {
+            return $"Couldn't export to {folderName}. Nothing was saved — see logs.";
+        }
+
+        var what = written.Count == 1 ? written[0] : $"{written.Count} files";
+        return written.Count == total
+            ? $"Exported {total} {(total == 1 ? "session" : "sessions")} to {folderName}: {what}."
+            : $"Exported {written.Count} of {total} sessions to {folderName}: {what}. The others failed — see logs.";
+    }
+
     private static bool ExportOne(OptimizedLoggingSessionExporter exporter, LoggingSession session, string filepath, int sessionIndex, int totalSessions) =>
         exporter.TryExportLoggingSession(
             session, filepath, exportRelativeTime: false,

@@ -70,7 +70,6 @@
 
     <Window.Resources>
 
-        <converters:BoolOrConverter x:Key="BoolOr"/>
 
         <!--
             Navigation rail — uses canonical design tokens from
@@ -149,35 +148,8 @@
             </Setter>
         </ControlTheme>
 
-        <ControlTheme x:Key="TransparentButtonStyle" TargetType="Button">
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-            <Setter Property="VerticalContentAlignment" Value="Stretch"/>
-            <Setter Property="Padding" Value="0"/>
-            <Setter Property="Template">
-                <ControlTemplate>
-                    <ContentPresenter Content="{TemplateBinding Content}"/>
-                </ControlTemplate>
-            </Setter>
-        </ControlTheme>
-
-        <!-- Round hover-highlight close button (upstream inline Button template) -->
-        <ControlTheme x:Key="RoundCloseButton" TargetType="Button">
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Template">
-                <ControlTemplate>
-                    <Border x:Name="Bg" Background="Transparent" CornerRadius="14">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
-                                          Content="{TemplateBinding Content}"/>
-                    </Border>
-                </ControlTemplate>
-            </Setter>
-            <Style Selector="^:pointerover /template/ Border#Bg">
-                <Setter Property="Background" Value="#1FFFFFFF"/>
-            </Style>
-        </ControlTheme>
+        <!-- RoundCloseButton moved to Resources/Shell.axaml (#613) so the three
+             SplitView flyouts, which are separate UserControls, can use it too. -->
 
         <!-- Segmented toggle (upstream AppSettings.SegmentedToggle RadioButton template) -->
         <ControlTheme x:Key="SegmentedToggle" TargetType="RadioButton">
@@ -223,6 +195,15 @@
             <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
             <Setter Property="Padding" Value="10,6"/>
         </Style>
+        <!-- Top-bar labels (#618): capitals in the caption style the rest of the shell
+             uses for its own labels (LOGGING OFF, IMPORT SD LOG, + ADD DEVICE), not
+             lower case. -->
+        <Style Selector="TextBlock.windowCommandLabel">
+            <Setter Property="Margin" Value="6,0,0,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
         <Style Selector="Button.windowCommand:pointerover, ToggleButton.windowCommand:pointerover">
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         </Style>
@@ -237,17 +218,6 @@
             <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
         </Style>
 
-        <Style Selector="TextBlock.appSettingsSectionLabel">
-            <Setter Property="FontSize" Value="11"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
-            <Setter Property="VerticalAlignment" Value="Center"/>
-        </Style>
-        <Style Selector="TextBlock.appSettingsRowLabel">
-            <Setter Property="FontSize" Value="11"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
-        </Style>
         <Style Selector="TextBlock.appSettingsHelpText">
             <Setter Property="FontSize" Value="11"/>
             <Setter Property="Foreground" Value="{DynamicResource TextTertiary}"/>
@@ -266,36 +236,43 @@
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <ToggleButton Classes="windowCommand"
                               IsChecked="{Binding IsAppSettingsOpen}"
+                              AutomationProperties.Name="Settings"
                               ToolTip.Tip="Settings">
                     <StackPanel Orientation="Horizontal">
-                        <i:Icon Value="mdi-cog" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
-                        <TextBlock Margin="4 0 0 0" VerticalAlignment="Center" Text="settings"/>
+                        <i:Icon Value="mdi-cog-outline" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                        <TextBlock Classes="windowCommandLabel" Text="SETTINGS"/>
                     </StackPanel>
                 </ToggleButton>
                 <ToggleButton Classes="windowCommand"
                               IsChecked="{Binding IsDebugModeEnabled}"
+                              AutomationProperties.Name="Debug mode"
                               ToolTip.Tip="Toggle Debug Mode">
                     <StackPanel Orientation="Horizontal">
-                        <i:Icon Value="mdi-bug" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
-                        <TextBlock Margin="4 0 0 0" VerticalAlignment="Center" Text="debug"/>
+                        <i:Icon Value="mdi-bug-outline" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+                        <TextBlock Classes="windowCommandLabel" Text="DEBUG"/>
                     </StackPanel>
                 </ToggleButton>
                 <Button Classes="windowCommand"
                         Command="{Binding OpenDebugWindowCommand}"
+                        AutomationProperties.Name="Debug console"
                         ToolTip.Tip="Open Debug Console"
                         IsVisible="{Binding IsDebugModeEnabled}">
                     <StackPanel Orientation="Horizontal">
                         <i:Icon Value="mdi-console" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
-                        <TextBlock Margin="4 0 0 0" VerticalAlignment="Center" Text="console"/>
+                        <TextBlock Classes="windowCommandLabel" Text="CONSOLE"/>
                     </StackPanel>
                 </Button>
-                <Button Classes="windowCommand" Command="{Binding OpenHelpCommand}">
+                <Button Classes="windowCommand" Command="{Binding OpenHelpCommand}"
+                        AutomationProperties.Name="Help"
+                        ToolTip.Tip="Help">
                     <StackPanel Orientation="Horizontal">
                         <i:Icon Value="mdi-help-circle-outline" FontSize="20" HorizontalAlignment="Center"/>
-                        <TextBlock Margin="4 0 0 0" VerticalAlignment="Center" Text="help"/>
+                        <TextBlock Classes="windowCommandLabel" Text="HELP"/>
                     </StackPanel>
                 </Button>
-                <Button Classes="windowCommand" Command="{Binding OpenNotificationsCommand}">
+                <Button Classes="windowCommand" Command="{Binding OpenNotificationsCommand}"
+                        AutomationProperties.Name="{Binding NotificationsButtonName}"
+                        ToolTip.Tip="Notifications">
                     <Grid>
                         <i:Icon Value="mdi-bell-outline" FontSize="20" VerticalAlignment="Center" HorizontalAlignment="Center"/>
                         <Border Background="{DynamicResource StatusRed}"
@@ -325,21 +302,104 @@
              (The ported VM FlyoutWidth = Width - SidePanelWidth is near-full-width; a
              SplitView consumes OpenPaneLength literally, unlike a MahApps Flyout, so
              binding it produced a full-bleed panel that hid the pane — see #5.) -->
-        <SplitView Grid.Row="1"
+        <!--
+            All four right-side panels live in this one pane since #615 — the settings drawer
+            used to be a separate Grid overlay with its own scrim and no motion, so it looked and
+            moved unlike the three flyouts. Now they share one header (DrawerHeader), one
+            200 ms ease-out slide (the Fluent SplitView width transition, 100 ms to close), one
+            scrim (UseLightDismissOverlayMode, tinted to the settings drawer's old 63 % black)
+            and one hairline along the left edge. A click on the scrim, or Escape, closes the
+            open panel; OnPaneClosing in the code-behind turns that into the view-model flag, and
+            OnKeyDown takes Escape when focus is outside the pane (the top-bar button that opened
+            it, for example), where the SplitView never sees the key.
+        -->
+        <SplitView x:Name="DrawerHost"
+                   Grid.Row="1"
                    PanePlacement="Right"
                    DisplayMode="Overlay"
                    OpenPaneLength="380"
+                   UseLightDismissOverlayMode="True"
+                   PaneClosing="OnPaneClosing"
                    PaneBackground="{DynamicResource SurfaceRaised}">
+            <SplitView.Resources>
+                <SolidColorBrush x:Key="SplitViewLightDismissOverlayBackground" Color="#A0000000"/>
+            </SplitView.Resources>
+            <!-- One computed flag, not a MultiBinding over the four: see IsAnyDrawerOpen. -->
             <SplitView.IsPaneOpen>
-                <MultiBinding Converter="{StaticResource BoolOr}" Mode="OneWay">
-                    <Binding Path="IsNotificationsOpen"/>
-                    <Binding Path="IsLiveGraphSettingsOpen"/>
-                    <Binding Path="IsLogSummaryOpen"/>
-                </MultiBinding>
+                <Binding Path="IsAnyDrawerOpen" Mode="OneWay"/>
             </SplitView.IsPaneOpen>
 
             <SplitView.Pane>
+                <Border BorderBrush="{DynamicResource BorderDim}" BorderThickness="1,0,0,0">
                 <Panel>
+                    <!-- ========== APP SETTINGS DRAWER ========== -->
+                    <Grid IsVisible="{Binding IsAppSettingsOpen}" RowDefinitions="Auto,*">
+                        <flyouts:DrawerHeader Grid.Row="0"
+                                              Overline="PREFERENCES"
+                                              Title="Settings"
+                                              CloseCommand="{Binding CloseAppSettingsCommand}"/>
+                        <ScrollViewer Grid.Row="1"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel>
+                                <!-- Recovery notice (#193). Shown once, the first time this
+                                     drawer is opened after startup found DAQifiConfiguration.xml
+                                     unreadable and moved it aside. Without it the delimiter has
+                                     silently reverted to a comma with nothing saying why. Absent
+                                     on every ordinary launch. -->
+                                <Border Margin="24,0,24,16"
+                                        Padding="10,8"
+                                        CornerRadius="3"
+                                        Background="#3D2A0A"
+                                        BorderBrush="{DynamicResource StatusAmber}"
+                                        BorderThickness="1"
+                                        IsVisible="{Binding AppSettings.HasRecoveryNotice}">
+                                    <TextBlock Text="{Binding AppSettings.RecoveryNotice}"
+                                               FontSize="11"
+                                               TextWrapping="Wrap"
+                                               Foreground="{DynamicResource StatusAmber}"/>
+                                </Border>
+
+                                <!-- EXPORT section: the same full-bleed section, caps label and row
+                                     label as the flyouts (#615), in place of a label over a rule. -->
+                                <Border Classes="drawerSection">
+                                <StackPanel>
+                                <TextBlock Text="EXPORT" Classes="drawerSectionLabel"/>
+
+                                <StackPanel>
+                                    <TextBlock Text="CSV DELIMITER"
+                                               Classes="drawerRowLabel"/>
+                                    <TextBlock Text="Separates columns when exporting logged sessions to CSV."
+                                               Classes="appSettingsHelpText"/>
+                                    <Border Background="{DynamicResource Surface}"
+                                            BorderBrush="{DynamicResource BorderDim}"
+                                            BorderThickness="1"
+                                            CornerRadius="3"
+                                            Padding="3"
+                                            HorizontalAlignment="Left"
+                                            Margin="0,10,0,0">
+                                        <Grid ColumnDefinitions="Auto,Auto">
+                                            <RadioButton Grid.Column="0"
+                                                         GroupName="CsvDelimiter"
+                                                         Content="COMMA  ,"
+                                                         IsChecked="{Binding AppSettings.IsCommaDelimiter, Mode=TwoWay}"
+                                                         Theme="{StaticResource SegmentedToggle}"
+                                                         ToolTip.Tip="Standard CSV — compatible with most spreadsheets."/>
+                                            <RadioButton Grid.Column="1"
+                                                         GroupName="CsvDelimiter"
+                                                         Content="SEMICOLON  ;"
+                                                         IsChecked="{Binding AppSettings.IsSemicolonDelimiter, Mode=TwoWay}"
+                                                         Theme="{StaticResource SegmentedToggle}"
+                                                         ToolTip.Tip="Use when locale treats comma as decimal separator."/>
+                                        </Grid>
+                                    </Border>
+                                </StackPanel>
+                                </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+
                     <!--NotificationsFlyout-->
                     <flyouts:NotificationsFlyout IsVisible="{Binding IsNotificationsOpen}"/>
 
@@ -349,6 +409,7 @@
                     <!-- Summary Logger Flyout-->
                     <flyouts:SummaryFlyout IsVisible="{Binding IsLogSummaryOpen}"/>
                 </Panel>
+                </Border>
             </SplitView.Pane>
 
             <Grid>
@@ -357,13 +418,13 @@
                             SelectedIndex="{Binding SelectedIndex}">
 
                     <!-- Live Graph -->
-                    <TabItem>
-                        <TabItem.Header>
+                    <local:InvokableTabItem AutomationProperties.Name="Live Graph">
+                        <local:InvokableTabItem.Header>
                             <StackPanel Width="76" Margin="0,14,0,14">
                                 <i:Icon Value="mdi-chart-timeline-variant" FontSize="24" HorizontalAlignment="Center"/>
                                 <TextBlock Text="Live Graph" Classes="navTabHeaderLabel"/>
                             </StackPanel>
-                        </TabItem.Header>
+                        </local:InvokableTabItem.Header>
                         <ContentControl Content="{Binding}">
                             <ContentControl.ContentTemplate>
                                 <DataTemplate>
@@ -371,16 +432,16 @@
                                 </DataTemplate>
                             </ContentControl.ContentTemplate>
                         </ContentControl>
-                    </TabItem>
+                    </local:InvokableTabItem>
 
                     <!-- Logged Data -->
-                    <TabItem>
-                        <TabItem.Header>
+                    <local:InvokableTabItem AutomationProperties.Name="Logged Data">
+                        <local:InvokableTabItem.Header>
                             <StackPanel Width="76" Margin="0,14,0,14">
                                 <i:Icon Value="mdi-database-outline" FontSize="24" HorizontalAlignment="Center"/>
                                 <TextBlock Text="Logged Data" Classes="navTabHeaderLabel"/>
                             </StackPanel>
-                        </TabItem.Header>
+                        </local:InvokableTabItem.Header>
                         <ContentControl Content="{Binding}">
                             <ContentControl.ContentTemplate>
                                 <DataTemplate>
@@ -388,16 +449,16 @@
                                 </DataTemplate>
                             </ContentControl.ContentTemplate>
                         </ContentControl>
-                    </TabItem>
+                    </local:InvokableTabItem>
 
                     <!-- Channels -->
-                    <TabItem>
-                        <TabItem.Header>
+                    <local:InvokableTabItem AutomationProperties.Name="Channels">
+                        <local:InvokableTabItem.Header>
                             <StackPanel Width="76" Margin="0,14,0,14">
                                 <i:Icon Value="mdi-hub-outline" FontSize="24" HorizontalAlignment="Center"/>
                                 <TextBlock Text="Channels" Classes="navTabHeaderLabel"/>
                             </StackPanel>
-                        </TabItem.Header>
+                        </local:InvokableTabItem.Header>
                         <ContentControl Content="{Binding}">
                             <ContentControl.ContentTemplate>
                                 <DataTemplate>
@@ -405,16 +466,16 @@
                                 </DataTemplate>
                             </ContentControl.ContentTemplate>
                         </ContentControl>
-                    </TabItem>
+                    </local:InvokableTabItem>
 
                     <!-- Devices -->
-                    <TabItem>
-                        <TabItem.Header>
+                    <local:InvokableTabItem AutomationProperties.Name="Devices">
+                        <local:InvokableTabItem.Header>
                             <StackPanel Width="76" Margin="0,14,0,14">
                                 <i:Icon Value="mdi-chip" FontSize="24" HorizontalAlignment="Center"/>
                                 <TextBlock Text="Devices" Classes="navTabHeaderLabel"/>
                             </StackPanel>
-                        </TabItem.Header>
+                        </local:InvokableTabItem.Header>
                         <ContentControl Content="{Binding}">
                             <ContentControl.ContentTemplate>
                                 <DataTemplate>
@@ -422,16 +483,16 @@
                                 </DataTemplate>
                             </ContentControl.ContentTemplate>
                         </ContentControl>
-                    </TabItem>
+                    </local:InvokableTabItem>
 
                     <!--profile-->
-                    <TabItem>
-                        <TabItem.Header>
+                    <local:InvokableTabItem AutomationProperties.Name="Profiles">
+                        <local:InvokableTabItem.Header>
                             <StackPanel Width="76" Margin="0,14,0,14">
                                 <i:Icon Value="mdi-tune-variant" FontSize="24" HorizontalAlignment="Center"/>
                                 <TextBlock Text="Profiles" Classes="navTabHeaderLabel"/>
                             </StackPanel>
-                        </TabItem.Header>
+                        </local:InvokableTabItem.Header>
                         <ContentControl Content="{Binding}">
                             <ContentControl.ContentTemplate>
                                 <DataTemplate>
@@ -439,7 +500,7 @@
                                 </DataTemplate>
                             </ContentControl.ContentTemplate>
                         </ContentControl>
-                    </TabItem>
+                    </local:InvokableTabItem>
 
                 </TabControl>
 
@@ -449,116 +510,6 @@
                                  Width="200" VerticalAlignment="Center" HorizontalAlignment="Center"/>
                 </Grid>
 
-                <!-- ========== APP SETTINGS DRAWER ========== -->
-                <Grid IsVisible="{Binding IsAppSettingsOpen}"
-                      ZIndex="20"
-                      ColumnDefinitions="*,380">
-                    <!-- Brushes (Surface, SurfaceRaised, …) come from /Daqifi.Desktop/Resources/DesignTokens.axaml. -->
-
-                    <!-- Scrim (WPF MouseBinding → transparent command Button) -->
-                    <Button Grid.Column="0"
-                            Theme="{StaticResource TransparentButtonStyle}"
-                            Command="{Binding CloseAppSettingsCommand}">
-                        <Rectangle Fill="#A0000000"/>
-                    </Button>
-
-                    <!-- Drawer -->
-                    <Border Grid.Column="1"
-                            Background="{DynamicResource SurfaceRaised}"
-                            BorderBrush="{DynamicResource BorderDim}"
-                            BorderThickness="1,0,0,0">
-                        <Grid RowDefinitions="Auto,*">
-
-                            <!-- Header -->
-                            <Grid Grid.Row="0" Margin="24,22,16,18" ColumnDefinitions="*,Auto">
-                                <StackPanel Grid.Column="0">
-                                    <TextBlock Text="PREFERENCES"
-                                               FontSize="9"
-                                               FontWeight="Bold"
-                                               Foreground="{DynamicResource TextTertiary}"/>
-                                    <TextBlock Text="Settings"
-                                               FontSize="22"
-                                               FontWeight="Light"
-                                               Foreground="{DynamicResource TextPrimary}"
-                                               Margin="0,2,0,0"/>
-                                </StackPanel>
-                                <Button Grid.Column="1"
-                                        Width="28" Height="28"
-                                        Theme="{StaticResource RoundCloseButton}"
-                                        Foreground="{DynamicResource TextSecondary}"
-                                        FontSize="16"
-                                        Cursor="Hand"
-                                        Content="&#xD7;"
-                                        Command="{Binding CloseAppSettingsCommand}"/>
-                            </Grid>
-
-                            <!-- Body -->
-                            <ScrollViewer Grid.Row="1"
-                                          VerticalScrollBarVisibility="Auto"
-                                          HorizontalScrollBarVisibility="Disabled"
-                                          Padding="24,0,24,24">
-                                <StackPanel>
-
-                                    <!-- Recovery notice (#193). Shown once, the first time this
-                                         drawer is opened after startup found DAQifiConfiguration.xml
-                                         unreadable and moved it aside. Without it the delimiter has
-                                         silently reverted to a comma with nothing saying why. Absent
-                                         on every ordinary launch. -->
-                                    <Border Margin="0,4,0,16"
-                                            Padding="10,8"
-                                            CornerRadius="3"
-                                            Background="#3D2A0A"
-                                            BorderBrush="{DynamicResource StatusAmber}"
-                                            BorderThickness="1"
-                                            IsVisible="{Binding AppSettings.HasRecoveryNotice}">
-                                        <TextBlock Text="{Binding AppSettings.RecoveryNotice}"
-                                                   FontSize="11"
-                                                   TextWrapping="Wrap"
-                                                   Foreground="{DynamicResource StatusAmber}"/>
-                                    </Border>
-
-                                    <!-- EXPORT section -->
-                                    <TextBlock Text="EXPORT"
-                                               Classes="appSettingsSectionLabel"
-                                               Margin="0,4,0,10"/>
-                                    <Rectangle Height="1"
-                                               Fill="{DynamicResource BorderDim}"
-                                               Margin="0,0,0,18"/>
-
-                                    <StackPanel Margin="0,0,0,12">
-                                        <TextBlock Text="CSV DELIMITER"
-                                                   Classes="appSettingsRowLabel"/>
-                                        <TextBlock Text="Separates columns when exporting logged sessions to CSV."
-                                                   Classes="appSettingsHelpText"/>
-                                        <Border Background="{DynamicResource Surface}"
-                                                BorderBrush="{DynamicResource BorderDim}"
-                                                BorderThickness="1"
-                                                CornerRadius="3"
-                                                Padding="3"
-                                                HorizontalAlignment="Left"
-                                                Margin="0,10,0,0">
-                                            <Grid ColumnDefinitions="Auto,Auto">
-                                                <RadioButton Grid.Column="0"
-                                                             GroupName="CsvDelimiter"
-                                                             Content="COMMA  ,"
-                                                             IsChecked="{Binding AppSettings.IsCommaDelimiter, Mode=TwoWay}"
-                                                             Theme="{StaticResource SegmentedToggle}"
-                                                             ToolTip.Tip="Standard CSV — compatible with most spreadsheets."/>
-                                                <RadioButton Grid.Column="1"
-                                                             GroupName="CsvDelimiter"
-                                                             Content="SEMICOLON  ;"
-                                                             IsChecked="{Binding AppSettings.IsSemicolonDelimiter, Mode=TwoWay}"
-                                                             Theme="{StaticResource SegmentedToggle}"
-                                                             ToolTip.Tip="Use when locale treats comma as decimal separator."/>
-                                            </Grid>
-                                        </Border>
-                                    </StackPanel>
-
-                                </StackPanel>
-                            </ScrollViewer>
-                        </Grid>
-                    </Border>
-                </Grid>
             </Grid>
         </SplitView>
     </Grid>

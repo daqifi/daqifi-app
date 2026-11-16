@@ -7,6 +7,33 @@
         Merged into App.Styles; keyed pill ControlThemes live in Shell.axaml.
     -->
 
+    <!--
+        Icons (#618). One family, Material Design Icons (mdi-*), and one style: OUTLINE.
+        Use the -outline glyph whenever MDI has one; a glyph with no outline form (chip,
+        sd, console, import, close, crosshairs) is drawn as a line icon already. One glyph
+        means one action, app-wide:
+
+          Action                          Glyph
+          Live Graph (nav)                mdi-chart-timeline-variant
+          Logged Data (nav)               mdi-database-outline
+          Channels (nav)                  mdi-hub-outline
+          Devices (nav)                   mdi-chip
+          Profiles (nav)                  mdi-tune-variant
+          App settings (top bar)          mdi-cog-outline
+          Debug mode (top bar)            mdi-bug-outline
+          Debug console (top bar)         mdi-console
+          Help (top bar)                  mdi-help-circle-outline
+          Notifications (top bar)         mdi-bell-outline
+          Plot settings (graph toolbar)   mdi-chart-box-outline
+          Log summary (graph toolbar)     mdi-clipboard-pulse-outline
+          Save plot as image              mdi-image-outline
+          Settings of one row             mdi-cog-outline (small, inside the row)
+          Delete                          mdi-trash-can-outline
+          Close a panel                   mdi-close
+
+        Search the .axaml files for a glyph before you give it a second meaning.
+    -->
+
     <!-- Pane content column: caps width + centers so a wide landscape / tablet
          window shows a readable centered column (like the desktop content area)
          instead of edge-to-edge-stretched fields and full-width buttons. In
@@ -62,6 +89,35 @@
         <Setter Property="Foreground" Value="{DynamicResource TextTertiary}"/>
         <Setter Property="VerticalAlignment" Value="Center"/>
         <Setter Property="Margin" Value="8,0,0,0"/>
+    </Style>
+
+    <!--
+        Right-side panel body (#615). The settings drawer and the three SplitView flyouts
+        (Notifications, Plot Settings, Log Summary) use these, so their sections read the same:
+        a full-bleed section with a hairline along its bottom edge, a small grey caps label,
+        grey row labels, and the on/off text of a switch as a secondary label rather than white
+        body text. 24px horizontal padding matches the DrawerHeader title column above.
+    -->
+    <Style Selector="Border.drawerSection">
+        <Setter Property="BorderBrush" Value="{DynamicResource BorderDim}"/>
+        <Setter Property="BorderThickness" Value="0,0,0,1"/>
+        <Setter Property="Padding" Value="24,16"/>
+    </Style>
+    <Style Selector="TextBlock.drawerSectionLabel">
+        <Setter Property="FontSize" Value="11"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+        <Setter Property="Margin" Value="0,0,0,12"/>
+    </Style>
+    <Style Selector="TextBlock.drawerRowLabel">
+        <Setter Property="FontSize" Value="11"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+    <Style Selector="ToggleSwitch.drawerToggle">
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+        <Setter Property="FontSize" Value="11"/>
     </Style>
 
     <!-- Monospace data / session / serial names (desktop uses mono for these). -->

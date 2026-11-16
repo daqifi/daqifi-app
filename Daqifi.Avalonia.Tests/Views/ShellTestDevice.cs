@@ -29,6 +29,24 @@ internal sealed class ShellTestDevice : AbstractStreamingDevice
 
     public void AttachCore(DaqifiStreamingDevice coreDevice) => CoreDevice = coreDevice;
 
+    private int _disconnectCalls;
+
+    /// <summary>How many times anything called <see cref="Disconnect"/> on this device.</summary>
+    public int DisconnectCalls => Volatile.Read(ref _disconnectCalls);
+
+    /// <summary>
+    /// When set, <see cref="Disconnect"/> blocks on it after counting the call, so a test can hold
+    /// one device's close open the way a board that never answers the close would.
+    /// </summary>
+    public ManualResetEventSlim? DisconnectGate { get; set; }
+
+    public override bool Disconnect()
+    {
+        Interlocked.Increment(ref _disconnectCalls);
+        DisconnectGate?.Wait(TimeSpan.FromSeconds(30));
+        return base.Disconnect();
+    }
+
     public void SyncFromCore(DaqifiDevice coreDevice) => SyncFromCoreDevice(coreDevice);
 
     /// <summary>

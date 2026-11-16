@@ -215,8 +215,9 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
     /// <summary>
     /// One rule (issue #569): the write's comparison and the full check decide the same way for the
     /// same inputs. A reported version that does not parse is the case where a second rule would
-    /// differ; <c>IsOlderThan</c> counts it as older. Here the refresh after the run compares the same
-    /// installed value with the same release, and both record the same result.
+    /// differ. Since Core 1.10.0 both treat it as unknown (issue #583): no update is offered, so the
+    /// notification the device had before the write goes, the outdated flag is down, and neither
+    /// path records a result for the drawer, which then shows the installed version only.
     /// </summary>
     [Fact]
     public async Task A_version_that_does_not_parse_is_decided_as_the_full_check_decides()
@@ -229,21 +230,17 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
 
         await RunUpdate();
 
-        var expected = FirmwareUpdateCoordinator.IsOlderThan(
-            unparseable,
-            new FirmwareReleaseInfo { Version = ParseVersion(Latest), TagName = "v" + Latest, IsPreRelease = false });
-        Assert.True(expected);
+        Assert.Null(FirmwareUpdateCoordinator.CompareWithRelease(unparseable, ParseVersion(Latest)));
 
-        // The write's comparison, recorded before the dialog ...
-        Assert.Equal(comparisonsBefore + 1, _host.ComparisonsWhenSucceeded);
-        var fromTheWrite = _host.Comparisons[comparisonsBefore];
-        Assert.Equal((unparseable, Latest, expected), fromTheWrite);
-        Assert.Equal(1, _host.FirmwareNotificationsWhenSucceeded);
+        // The write records nothing and removes the notification, before the dialog ...
+        Assert.Equal(comparisonsBefore, _host.ComparisonsWhenSucceeded);
+        Assert.Equal(0, _host.FirmwareNotificationsWhenSucceeded);
 
-        // ... and the full check's, after the run: the same.
-        var fromTheRefresh = Assert.Single(_host.Comparisons.Skip(comparisonsBefore + 1));
-        Assert.Equal(fromTheWrite, fromTheRefresh);
-        Assert.True(_device.IsFirmwareOutdated);
+        // ... and the full check, after the run, does the same.
+        Assert.Equal(comparisonsBefore, _host.Comparisons.Count);
+        Assert.DoesNotContain(_host.Notifications, n => n.IsFirmwareUpdate);
+        Assert.False(_device.IsFirmwareOutdated);
+        Assert.Equal(unparseable, _device.DeviceVersion);
     }
 
     /// <summary>

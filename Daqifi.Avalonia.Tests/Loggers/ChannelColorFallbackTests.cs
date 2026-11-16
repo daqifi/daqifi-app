@@ -351,8 +351,11 @@ public class ChannelColorLivePlotTests
         var plotter = new PlotLogger();
 
         plotter.Log(Sample("not a colour"));
+        plotter.DrainPendingSamples();
         plotter.Log(Sample("not a colour"));
+        plotter.DrainPendingSamples();
         plotter.Log(Sample("not a colour"));
+        plotter.DrainPendingSamples();
 
         var series = Assert.Single(plotter.LoggedChannels.Values);
         Assert.Equal(Fallback, series.Color);
@@ -372,10 +375,12 @@ public class ChannelColorLivePlotTests
         var plotter = new PlotLogger();
 
         plotter.Log(Sample("#FFD32F2F"));
+        plotter.DrainPendingSamples();
         var series = Assert.Single(plotter.LoggedChannels.Values);
         Assert.Equal(OxyColor.Parse("#FFD32F2F"), series.Color);
 
         plotter.Log(Sample("#FF1976D2"));
+        plotter.DrainPendingSamples();
 
         Assert.Equal(OxyColor.Parse("#FF1976D2"), series.Color);
     }
@@ -402,10 +407,12 @@ public class ChannelColorLivePlotTests
         var plotter = new PlotLogger();
 
         plotter.Log(Sample(first));
+        plotter.DrainPendingSamples();
         var series = Assert.Single(plotter.LoggedChannels.Values);
         var afterFirst = series.Color;
 
         plotter.Log(Sample(second));
+        plotter.DrainPendingSamples();
 
         Assert.Equal(afterFirst, series.Color);
     }
@@ -421,8 +428,10 @@ public class ChannelColorLivePlotTests
         var plotter = new PlotLogger();
 
         plotter.Log(Sample("#FFD32F2F"));
+        plotter.DrainPendingSamples();
         plotter.ClearPlot();
         plotter.Log(Sample("#FFD32F2F"));
+        plotter.DrainPendingSamples();
 
         var series = Assert.Single(plotter.LoggedChannels.Values);
         Assert.Equal(OxyColor.Parse("#FFD32F2F"), series.Color);

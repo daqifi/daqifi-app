@@ -43,8 +43,8 @@ namespace Daqifi.Avalonia.Tests.Views;
 /// shape exists in the desktop views under <c>Daqifi.Desktop/View</c> — 42 controls at the time of
 /// writing, most of them icon-only toolbar buttons carrying a <c>ToolTip.Tip</c> — and is reported
 /// in the pull request rather than fixed here, because a tooltip feeds <c>HelpText</c>, not
-/// <c>Name</c>, and none of it can be proven on this repo's phone rig. Widening the array below is
-/// the whole change needed to bring those under the same guard.
+/// <c>Name</c>, and none of it can be proven on this repo's phone rig. #630 fixed the desktop main
+/// views, under a stricter rule of their own: see <see cref="DesktopAutomationNameTests"/>.
 /// </para>
 /// </summary>
 public class MobileAutomationNameTests
@@ -66,7 +66,6 @@ public class MobileAutomationNameTests
         "Daqifi.Avalonia/Views/MobileShellView.axaml",
         "Daqifi.Avalonia/Views/Mobile/ChannelsMobileView.axaml",
         "Daqifi.Avalonia/Views/Mobile/DeviceLogsMobileView.axaml",
-        "Daqifi.Avalonia/Views/Mobile/DevicesMobileView.axaml",
         "Daqifi.Avalonia/Views/Mobile/LoggedSessionsMobileView.axaml",
         "Daqifi.Avalonia/Views/Mobile/ProfilesMobileView.axaml",
         "Daqifi.Avalonia/Views/Mobile/StorageMobileView.axaml",
