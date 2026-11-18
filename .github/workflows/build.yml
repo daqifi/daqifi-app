@@ -29,8 +29,10 @@ on:
   # main carries merge_queue with max_entries_to_merge 1 and SQUASH, so the
   # merge_group run below builds main-plus-that-one-PR — which is byte-for-byte the
   # commit that then lands. Over one week that was 13 push runs against 13 merge_group
-  # runs, perfectly paired, each one re-spending ~10 minutes of macOS at this
-  # repository's 10x private-repo billing for no new information.
+  # runs, perfectly paired, each one re-spending ~10 minutes of macOS for no new
+  # information. (The repository was private then, and macOS billed at 10x. It is public
+  # now, so the minutes are free. The real limit is the org's 5 concurrent macOS jobs:
+  # see the note on the ios job.)
   #
   # What makes this safe is specifically that NOTHING can reach main except through
   # that queue. The same ruleset requires a pull request, forbids non-fast-forward,
@@ -482,14 +484,14 @@ jobs:
     #
     # Deliberately NOT covered, so the green tick does not imply more than it means:
     #   * osx-x64. The head declares it; nobody builds or ships it. macos-latest is
-    #     Apple silicon, and a second RID would double a 10x-billed job for a target
+    #     Apple silicon, and a second RID would double a scarce macOS job for a target
     #     with no users.
     #   * Running the app. The macOS QA list (RUNBOOK §1.2) is a human checklist.
     #   * The unit suite. #88 asked whether this job should run it and the honest
     #     answer then was that no test project existed; one does now, and the ubuntu
     #     `desktop` job runs it. It is deliberately NOT repeated here. Every test in
     #     Daqifi.Avalonia.Tests today is host-independent arithmetic over OxyPlot
-    #     DataPoints, so a second run on a 10x-billed runner would assert the same
+    #     DataPoints, so a second run on a scarce macOS runner would assert the same
     #     thing twice and buy nothing. The trigger to move it is concrete rather than
     #     a matter of taste: the first test whose VERDICT can differ by host — a path
     #     separator, a native asset, a culture or filesystem-case assumption — is the
@@ -502,7 +504,7 @@ jobs:
     #   * A dependency-graph upload for `avalonia-graph`. That gate reads the
     #     `libraries` section, which comes from a RID-LESS restore and so is
     #     byte-identical to the one `desktop` already uploads. Uploading it would add
-    #     a 10x job to that gate's critical path in exchange for no new information —
+    #     a macOS job to that gate's critical path in exchange for no new information —
     #     and, because the download step takes every artifact in the run rather than
     #     a named list, an upload without a matching `needs:` entry would be a race.
     #
@@ -1039,10 +1041,20 @@ jobs:
     # Daqifi.Avalonia.slnx and in nobody's build — a change that broke it landed green
     # (#105).
     #
-    # This repo is private, so macOS minutes bill at 10x Linux. That is the cost of the
-    # job and it is deliberate: the alternative on offer was a path filter, and a gate
-    # that only runs when someone remembers to touch the right directory is not a gate.
-    # If the bill ever argues otherwise, narrow it on evidence, not on the assumption
+    # What this job costs is macOS capacity, not money. When this comment was first
+    # written the repo was private and macOS billed at 10x Linux. It is public now, so
+    # GitHub-hosted minutes are free. The binding limit is the org's Free plan, which
+    # allows 5 concurrent macOS jobs across every daqifi repository. Each run of this
+    # workflow takes 2 of them (this job and `Desktop head on macOS`). Measured
+    # 2026-11-07..16: 68 of 402 macOS jobs waited more than a minute for a runner, and
+    # 46 of those waited while 5 of THIS repo's macOS jobs were already running. That
+    # wait is the whole gap between the PR p50 (4.5 min) and p90 (9.0 min).
+    #
+    # The job is deliberate anyway. The alternative on offer was a path filter, and a
+    # gate that only runs when someone remembers to touch the right directory is not a
+    # gate. It would also buy almost nothing: 62 of 63 PRs in that window touched
+    # Daqifi.Avalonia/, which this head compiles, and none was docs-only. If capacity ever argues otherwise,
+    # narrow it on evidence, not on the assumption
     # that shared-library changes cannot break a platform head — that assumption is
     # exactly what #88 records going wrong on macOS.
     #
