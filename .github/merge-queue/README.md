@@ -50,6 +50,43 @@ Require only checks that run on `merge_group`. From `build.yml`:
 | `iOS head` | macOS runner |
 | `Avalonia version lockstep` | needs the three head jobs |
 
+Two more jobs in `build.yml` are **not** to be required, and neither needs to be:
+`Merge-queue reuse check` runs on `merge_group` only, and `Record the green tree` runs on
+`pull_request` only. Both report as skipped (a pass) on the other event. See below.
+
+## Reusing a green PR run of the same tree
+
+A queue entry builds `main` plus one PR, squashed. When `main` has not moved since that
+PR's last green run, the entry is byte-for-byte the tree the PR run already built. Over
+2026-11-07..16 that was **18 of 53 queue entries (34%)**. Each one was a full rebuild,
+with two macOS jobs and about 4 minutes added to the time to merge.
+
+So on `merge_group`, the `Merge-queue reuse check` job looks for a green PR run of the
+entry's exact git tree. If it finds and verifies one, it skips the four heavy jobs. The
+required checks still report: a job skipped by its `if:` counts as Success. The
+mechanism:
+
+- A PR run in which **every** job passed uploads an artifact `green-tree-<tree>`, kept 1
+  day. That is the `Record the green tree` job. `<tree>` is the tree of the commit that
+  run checked out, which on `pull_request` is the test merge with `main`.
+- `.github/scripts/merge_queue_reuse.py` accepts a candidate only if all of these hold:
+  it is the same workflow file; the event is `pull_request`; the run is
+  completed/success; it ran from a branch of this repository (never a fork, because a
+  fork's run executes the fork's workflow and could name an artifact after someone
+  else's tree); it finished within 24 h; and every job succeeded, other than the reuse
+  check itself. Its self-test (`test_merge_queue_reuse.py`, run by `CI script
+  self-tests`) has one case per refusal.
+- **Every failure mode gives a full build.** That covers a script error, an API error, a
+  timeout and a missing token. The heavy jobs use `!cancelled() && reuse != 'true'`,
+  not the implicit `success()`. With `success()`, a failed reuse check would skip them,
+  and skipped required checks pass, so the queue would merge an unbuilt tree. Keep
+  that condition as it is.
+- **Kill switch:** set the repository variable `CI_QUEUE_REUSE` to `off`.
+
+If you add a required check, add it to the `--required` list in the `queue-reuse` job
+too. The script already refuses any run in which some job did not succeed, so a missed
+entry costs nothing in safety. The list makes the check say which job was missing.
+
 **Do not require `Claimed bumps are actually applied`** (`dependabot-claims-check.yml`).
 It verifies a Dependabot PR's description against its diff, and a merge group has no
 single PR body to verify — it cannot be made merge-queue-aware, so it stays a

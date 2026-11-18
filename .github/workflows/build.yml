@@ -105,8 +105,74 @@ jobs:
             echo "::endgroup::"
           done
 
+  # ---- Merge-queue reuse (measured, 2026-11-17) ----
+  #
+  # A queue entry builds main plus one PR, squashed. When main has not moved since that
+  # PR's last green run, the entry is byte-for-byte the tree the PR run already built.
+  # Over 2026-11-07..16 that was 18 of 53 queue entries (34%), each a full rebuild with
+  # two macOS jobs and ~4 minutes added to the time to merge.
+  #
+  # So on merge_group ONLY, this job looks for a green pull-request run of this exact
+  # git tree. A tree hash covers every file, this workflow included, so a match is the
+  # same sources built by the same workflow. A PR run records its tree in the
+  # record-tree job at the end of this file, and only when every job passed.
+  # merge_queue_reuse.py lists what it verifies before it accepts a run: same workflow,
+  # pull_request event, a branch of this repo and not a fork, finished within 24 h, and
+  # every job green.
+  #
+  # How the required checks stay intact. The four heavy jobs below skip ONLY when this
+  # job outputs reuse == 'true'. A job skipped by its `if:` reports as Success, so the
+  # six required checks still report on the queue entry. Everything else gives a full
+  # build: this job failing, erroring, timing out, or being skipped (every
+  # pull_request run, and a merge_group run with the switch below set). That is why
+  # those jobs use `!cancelled()` and not the implicit `success()`. With `success()`, a
+  # failed or skipped reuse check would SKIP the heavy jobs, and skipped required checks
+  # pass. That is the one way this could merge an unbuilt tree.
+  #
+  # Kill switch: set the repository variable CI_QUEUE_REUSE to 'off' and every queue
+  # entry builds in full again. No code change is needed.
+  #
+  # What reuse gives up: the queue entry does not re-run on a runner image newer than
+  # the one the PR used, up to 24 h older. The next PR picks up an image change anyway.
+  queue-reuse:
+    name: Merge-queue reuse check
+    if: ${{ github.event_name == 'merge_group' && vars.CI_QUEUE_REUSE != 'off' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      reuse: ${{ steps.decide.outputs.reuse }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Look for a green pull-request run of this exact tree
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tree=$(git rev-parse 'HEAD^{tree}')
+          echo "queue entry ${GITHUB_SHA} has tree ${tree}"
+          # The six required checks (.github/merge-queue/README.md). The script also
+          # refuses any run in which a job other than this one did not succeed.
+          python3 .github/scripts/merge_queue_reuse.py \
+            --repo "${GITHUB_REPOSITORY}" --tree "${tree}" \
+            --workflow-path .github/workflows/build.yml \
+            --skip-job "Merge-queue reuse check" \
+            --required "CI script self-tests" \
+            --required "Library + Desktop head + capture harness" \
+            --required "Desktop head on macOS" \
+            --required "Android head" \
+            --required "iOS head" \
+            --required "Avalonia version lockstep"
+
   desktop:
     name: Library + Desktop head + capture harness
+    needs: queue-reuse
+    # See the queue-reuse job: `!cancelled()`, never the implicit `success()`.
+    if: ${{ !cancelled() && needs.queue-reuse.outputs.reuse != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -508,6 +574,9 @@ jobs:
     # macos-latest, matching the ios job, because this repo pins no macOS image.
     # Unlike that job nothing here depends on which one arrives: the Desktop head is
     # plain net10.0, so there is no workload to install and no Xcode to select.
+    needs: queue-reuse
+    # See the queue-reuse job: `!cancelled()`, never the implicit `success()`.
+    if: ${{ !cancelled() && needs.queue-reuse.outputs.reuse != 'true' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -941,6 +1010,9 @@ jobs:
 
   android:
     name: Android head
+    needs: queue-reuse
+    # See the queue-reuse job: `!cancelled()`, never the implicit `success()`.
+    if: ${{ !cancelled() && needs.queue-reuse.outputs.reuse != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -1054,6 +1126,9 @@ jobs:
     # the pinned SDK's workload wants, and a stale pin does not help with that — an
     # image carries only one Xcode major. When the label moves and the majors diverge,
     # the Xcode step below says so by name instead of failing 200 lines into a build.
+    needs: queue-reuse
+    # See the queue-reuse job: `!cancelled()`, never the implicit `success()`.
+    if: ${{ !cancelled() && needs.queue-reuse.outputs.reuse != 'true' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -1349,6 +1424,12 @@ jobs:
     # Avalonia.iOS by hand; a head whose graph nobody uploads is a head this gate does
     # not actually cover.
     needs: [desktop, android, ios]
+    # Explicit results rather than the implicit `success()`, which also looks at the
+    # skipped queue-reuse job further up the chain. Skipped here when the heads were
+    # skipped by a verified reuse, and when any head failed (as before).
+    if: >-
+      ${{ !cancelled() && needs.desktop.result == 'success'
+          && needs.android.result == 'success' && needs.ios.result == 'success' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -1382,3 +1463,41 @@ jobs:
           fi
           printf 'checking %s\n' "${assets[@]}"
           python3 .github/scripts/check_avalonia_versions.py "${assets[@]}"
+
+  # The other half of the queue-reuse job: a pull-request run in which EVERY job passed
+  # records the tree it built, as an artifact named green-tree-<tree>. On pull_request,
+  # checkout gives the test-merge commit of the PR with main, which is exactly what the
+  # jobs above built. One day of retention, because a queue entry reuses nothing older.
+  # Not a required check, and it runs after all six report, so it adds nothing to the
+  # time to a green PR.
+  record-tree:
+    name: Record the green tree
+    needs: [scripts, desktop, macos, android, ios, avalonia-graph]
+    if: >-
+      ${{ github.event_name == 'pull_request' && !cancelled()
+          && needs.scripts.result == 'success' && needs.desktop.result == 'success'
+          && needs.macos.result == 'success' && needs.android.result == 'success'
+          && needs.ios.result == 'success' && needs.avalonia-graph.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Name the tree
+        id: tree
+        run: |
+          set -euo pipefail
+          tree=$(git rev-parse 'HEAD^{tree}')
+          echo "tree=${tree}" >> "$GITHUB_OUTPUT"
+          mkdir -p "${RUNNER_TEMP}/green-tree"
+          printf '{"tree": "%s", "sha": "%s", "run_id": %s}\n' \
+            "${tree}" "${GITHUB_SHA}" "${GITHUB_RUN_ID}" > "${RUNNER_TEMP}/green-tree/tree.json"
+          echo "commit ${GITHUB_SHA} has tree ${tree}; every job passed"
+
+      - name: Record it
+        uses: actions/upload-artifact@v4
+        with:
+          name: green-tree-${{ steps.tree.outputs.tree }}
+          path: ${{ runner.temp }}/green-tree/tree.json
+          retention-days: 1
+          if-no-files-found: error
