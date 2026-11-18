@@ -29,8 +29,10 @@ on:
   # main carries merge_queue with max_entries_to_merge 1 and SQUASH, so the
   # merge_group run below builds main-plus-that-one-PR — which is byte-for-byte the
   # commit that then lands. Over one week that was 13 push runs against 13 merge_group
-  # runs, perfectly paired, each one re-spending ~10 minutes of macOS at this
-  # repository's 10x private-repo billing for no new information.
+  # runs, perfectly paired, each one re-spending ~10 minutes of macOS for no new
+  # information. (The repository was private then, and macOS billed at 10x. It is public
+  # now, so the minutes are free. The real limit is the org's 5 concurrent macOS jobs:
+  # see the note on the ios job.)
   #
   # What makes this safe is specifically that NOTHING can reach main except through
   # that queue. The same ruleset requires a pull request, forbids non-fast-forward,
@@ -119,22 +121,23 @@ jobs:
       # floated across a whole feature band (to 10.0.400, runtime 10.0.11) and broke
       # restore with NU1004 on a repo nobody had touched in 12 days. See #107.
       #
-      # The cache is the global packages folder, keyed on every committed lock file.
-      # Nothing in this repo was cached before, so all four jobs re-downloaded the
-      # whole graph on every run — and the macos and ios jobs do it TWICE, because
-      # their "must equal a from-scratch derivation" step restores a second time with
-      # --force-evaluate.
+      # NO package cache, on any job, and that is measured rather than forgotten. This
+      # step used to set `cache: true` keyed on '**/packages.lock.json'. Once the `push`
+      # trigger went (see `on:` above) nothing ever wrote a cache on main, and a cache
+      # written on refs/pull/N/merge is readable by that one PR only. Each entry was
+      # ~2 GB, so the 10 GB repository limit held five and evicted the rest. Over 120
+      # runs (2026-11-07..16) the four .NET jobs hit 14% of the time. On a miss the
+      # post-job save spent 10-27 s tarring 2 GB, and usually failed anyway ("another
+      # job may be creating this cache"). A hit was no faster than a cold restore: the
+      # 2 GB download cost what the nuget.org restore it skipped did. Median
+      # setup + restore + post-save, iOS job: hit 47 s, miss 54 s, no cache ~27 s.
       #
-      # Keying on '**/packages.lock.json' rather than the csproj files is what makes
-      # this exact rather than approximate: locked mode already pins every resolved
-      # version to those files, so a key derived from them cannot serve a cache that
-      # disagrees with what restore is about to ask for. A lock-file change misses the
-      # cache and repopulates it, which is the correct behaviour.
+      # Do not re-add it as-is. A cache only pays here if it is (a) written from main,
+      # so every PR can read it, AND (b) much smaller than the whole global packages
+      # folder, so its download costs less than the restore. Measure both first.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
 
       # Fail loudly if the locked-mode gate is NOT actually armed. Without this the
       # whole workflow could go green while restores silently ran unlocked — the
@@ -481,14 +484,14 @@ jobs:
     #
     # Deliberately NOT covered, so the green tick does not imply more than it means:
     #   * osx-x64. The head declares it; nobody builds or ships it. macos-latest is
-    #     Apple silicon, and a second RID would double a 10x-billed job for a target
+    #     Apple silicon, and a second RID would double a scarce macOS job for a target
     #     with no users.
     #   * Running the app. The macOS QA list (RUNBOOK §1.2) is a human checklist.
     #   * The unit suite. #88 asked whether this job should run it and the honest
     #     answer then was that no test project existed; one does now, and the ubuntu
     #     `desktop` job runs it. It is deliberately NOT repeated here. Every test in
     #     Daqifi.Avalonia.Tests today is host-independent arithmetic over OxyPlot
-    #     DataPoints, so a second run on a 10x-billed runner would assert the same
+    #     DataPoints, so a second run on a scarce macOS runner would assert the same
     #     thing twice and buy nothing. The trigger to move it is concrete rather than
     #     a matter of taste: the first test whose VERDICT can differ by host — a path
     #     separator, a native asset, a culture or filesystem-case assumption — is the
@@ -501,7 +504,7 @@ jobs:
     #   * A dependency-graph upload for `avalonia-graph`. That gate reads the
     #     `libraries` section, which comes from a RID-LESS restore and so is
     #     byte-identical to the one `desktop` already uploads. Uploading it would add
-    #     a 10x job to that gate's critical path in exchange for no new information —
+    #     a macOS job to that gate's critical path in exchange for no new information —
     #     and, because the download step takes every artifact in the run rather than
     #     a named list, an upload without a matching `needs:` entry would be a race.
     #
@@ -514,12 +517,10 @@ jobs:
 
       # Same pin as every other job — see the comment on the desktop job, and #107.
       #
-      # Same package cache as the desktop job — see the comment there.
+      # No package cache, deliberately — see the comment on the desktop job.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
 
       # No -r, for the reason the ios job gives at length and Directory.Build.props
       # gives at more: an explicit-RID restore REWRITES the lock file to hold only
@@ -949,12 +950,10 @@ jobs:
       # the drift actually bit: the Android head trims, so it carries the implicit
       # Microsoft.NET.ILLink.Tasks reference whose version the SDK's bundled runtime picks.
       #
-      # Same package cache as the desktop job — see the comment there.
+      # No package cache, deliberately — see the comment on the desktop job.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
 
       # Not preinstalled with the SDK; the Android SDK itself ships on the runner
       # image and is pointed at by ANDROID_HOME.
@@ -1042,10 +1041,20 @@ jobs:
     # Daqifi.Avalonia.slnx and in nobody's build — a change that broke it landed green
     # (#105).
     #
-    # This repo is private, so macOS minutes bill at 10x Linux. That is the cost of the
-    # job and it is deliberate: the alternative on offer was a path filter, and a gate
-    # that only runs when someone remembers to touch the right directory is not a gate.
-    # If the bill ever argues otherwise, narrow it on evidence, not on the assumption
+    # What this job costs is macOS capacity, not money. When this comment was first
+    # written the repo was private and macOS billed at 10x Linux. It is public now, so
+    # GitHub-hosted minutes are free. The binding limit is the org's Free plan, which
+    # allows 5 concurrent macOS jobs across every daqifi repository. Each run of this
+    # workflow takes 2 of them (this job and `Desktop head on macOS`). Measured
+    # 2026-11-07..16: 68 of 402 macOS jobs waited more than a minute for a runner, and
+    # 46 of those waited while 5 of THIS repo's macOS jobs were already running. That
+    # wait is the whole gap between the PR p50 (4.5 min) and p90 (9.0 min).
+    #
+    # The job is deliberate anyway. The alternative on offer was a path filter, and a
+    # gate that only runs when someone remembers to touch the right directory is not a
+    # gate. It would also buy almost nothing: 62 of 63 PRs in that window touched
+    # Daqifi.Avalonia/, which this head compiles, and none was docs-only. If capacity ever argues otherwise,
+    # narrow it on evidence, not on the assumption
     # that shared-library changes cannot break a platform head — that assumption is
     # exactly what #88 records going wrong on macOS.
     #
@@ -1062,12 +1071,10 @@ jobs:
       # It matters more here than anywhere: the SDK band also decides which iOS workload
       # is installed below, and therefore which Xcode this job has to select.
       #
-      # Same package cache as the desktop job — see the comment there.
+      # No package cache, deliberately — see the comment on the desktop job.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
 
       # Mirrors the android job's workload step. Not preinstalled with the SDK, and
       # setup-dotnet installs into its own prefix, so whatever the runner image ships

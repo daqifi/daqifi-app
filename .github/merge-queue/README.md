@@ -94,10 +94,19 @@ own, then — once the queue arrived — the `merge_group` entry, then a `push` 
 two are perfectly paired because they are the same tree.
 
 That mattered because `build.yml` has two `macos-latest` jobs (`Desktop head on macOS`,
-`iOS head`) and macOS runners bill at **10×** on private repositories, so each redundant
-run was roughly 10 minutes of wall clock at 10× — about a third of this workflow's spend
-for no new information. Dropping the `push` trigger removed it.
+`iOS head`). At the time the repository was private, and macOS runners billed at **10×**
+there. Each redundant run was about 10 minutes of wall clock at 10×, roughly a third of
+this workflow's spend, for no new information. Dropping the `push` trigger removed it.
 
 The queue still rebuilds *per entry*, so N queued PRs cost roughly N full builds. That
-is why concurrency is 2 rather than the default 5; if the repository ever goes public,
-Actions minutes become free and this stops mattering.
+is why concurrency is 2 rather than the default 5.
+
+**Update, 2026-11-17: the repository is public now, so the money argument is gone.**
+GitHub-hosted minutes cost nothing on a public repository. What is still scarce is
+**macOS capacity**. The `daqifi` org is on the Free plan, which allows 5 concurrent
+macOS jobs across all of its repositories. Each `build.yml` run takes 2 of them. Two
+building queue entries therefore hold 4, which leaves 1 for every open PR. Over
+2026-11-07..16, 68 of 402 macOS jobs waited more than a minute for a runner, and the PR
+p90 time to green (9.0 min) was double the p50 (4.5 min). So concurrency 2 is still
+right, now for capacity reasons. Measure before you change it:
+`python3 tools/ci-metrics/ci_metrics.py --since <date>` prints these numbers.
