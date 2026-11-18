@@ -119,22 +119,23 @@ jobs:
       # floated across a whole feature band (to 10.0.400, runtime 10.0.11) and broke
       # restore with NU1004 on a repo nobody had touched in 12 days. See #107.
       #
-      # The cache is the global packages folder, keyed on every committed lock file.
-      # Nothing in this repo was cached before, so all four jobs re-downloaded the
-      # whole graph on every run — and the macos and ios jobs do it TWICE, because
-      # their "must equal a from-scratch derivation" step restores a second time with
-      # --force-evaluate.
+      # NO package cache, on any job, and that is measured rather than forgotten. This
+      # step used to set `cache: true` keyed on '**/packages.lock.json'. Once the `push`
+      # trigger went (see `on:` above) nothing ever wrote a cache on main, and a cache
+      # written on refs/pull/N/merge is readable by that one PR only. Each entry was
+      # ~2 GB, so the 10 GB repository limit held five and evicted the rest. Over 120
+      # runs (2026-11-07..16) the four .NET jobs hit 14% of the time. On a miss the
+      # post-job save spent 10-27 s tarring 2 GB, and usually failed anyway ("another
+      # job may be creating this cache"). A hit was no faster than a cold restore: the
+      # 2 GB download cost what the nuget.org restore it skipped did. Median
+      # setup + restore + post-save, iOS job: hit 47 s, miss 54 s, no cache ~27 s.
       #
-      # Keying on '**/packages.lock.json' rather than the csproj files is what makes
-      # this exact rather than approximate: locked mode already pins every resolved
-      # version to those files, so a key derived from them cannot serve a cache that
-      # disagrees with what restore is about to ask for. A lock-file change misses the
-      # cache and repopulates it, which is the correct behaviour.
+      # Do not re-add it as-is. A cache only pays here if it is (a) written from main,
+      # so every PR can read it, AND (b) much smaller than the whole global packages
+      # folder, so its download costs less than the restore. Measure both first.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
 
       # Fail loudly if the locked-mode gate is NOT actually armed. Without this the
       # whole workflow could go green while restores silently ran unlocked — the
@@ -514,12 +515,10 @@ jobs:
 
       # Same pin as every other job — see the comment on the desktop job, and #107.
       #
-      # Same package cache as the desktop job — see the comment there.
+      # No package cache, deliberately — see the comment on the desktop job.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
 
       # No -r, for the reason the ios job gives at length and Directory.Build.props
       # gives at more: an explicit-RID restore REWRITES the lock file to hold only
@@ -949,12 +948,10 @@ jobs:
       # the drift actually bit: the Android head trims, so it carries the implicit
       # Microsoft.NET.ILLink.Tasks reference whose version the SDK's bundled runtime picks.
       #
-      # Same package cache as the desktop job — see the comment there.
+      # No package cache, deliberately — see the comment on the desktop job.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
 
       # Not preinstalled with the SDK; the Android SDK itself ships on the runner
       # image and is pointed at by ANDROID_HOME.
@@ -1062,12 +1059,10 @@ jobs:
       # It matters more here than anywhere: the SDK band also decides which iOS workload
       # is installed below, and therefore which Xcode this job has to select.
       #
-      # Same package cache as the desktop job — see the comment there.
+      # No package cache, deliberately — see the comment on the desktop job.
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
 
       # Mirrors the android job's workload step. Not preinstalled with the SDK, and
       # setup-dotnet installs into its own prefix, so whatever the runner image ships
