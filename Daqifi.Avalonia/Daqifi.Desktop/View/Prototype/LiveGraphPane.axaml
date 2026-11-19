@@ -391,13 +391,22 @@
 
             <!-- Plot area -->
             <Grid Grid.Column="0">
-                <!-- Chart host (hal: chart_plot_host); WPF InvertedBoolToVis →
-                     Avalonia `!` binding negation. -->
+                <!-- Chart host (hal: chart_plot_host). Drawn only when an input channel is
+                     active and the device is not logging to its own SD card (#616). With no
+                     channel the model has no series, so OxyPlot falls back to its default 0 to
+                     100 range, and the pane drew a "0 to 100 V" grid that no device measures.
+                     The empty state below takes the plot's place; `!!Count` is true when the
+                     collection has an item. -->
                 <oxy:PlotView x:Name="DataLog"
                               Model="{Binding Plotter.PlotModel}"
                               Background="{DynamicResource Surface}"
-                              TabIndex="0"
-                              IsVisible="{Binding !IsSdCardLoggingActive}">
+                              TabIndex="0">
+                    <oxy:PlotView.IsVisible>
+                        <MultiBinding Converter="{StaticResource BoolAndToVis}">
+                            <Binding Path="!!ActiveInputChannels.Count"/>
+                            <Binding Path="!IsSdCardLoggingActive"/>
+                        </MultiBinding>
+                    </oxy:PlotView.IsVisible>
                     <oxy:PlotView.DefaultTrackerTemplate>
                         <ControlTemplate x:DataType="oxycore:TrackerHitResult">
                             <oxy:TrackerControl Position="{Binding Position}"
@@ -418,43 +427,34 @@
                     </oxy:PlotView.DefaultTrackerTemplate>
                 </oxy:PlotView>
 
-                <!-- Empty-state overlay: shown when no channels are streaming
-                     AND we're not in SD-card logging mode (otherwise the
-                     "Logging to Device" panel below covers this state). -->
-                <Border IsHitTestVisible="False"
-                        HorizontalAlignment="Center"
-                        VerticalAlignment="Center"
-                        Padding="24,16"
-                        Background="{DynamicResource SurfaceRaised}"
-                        BorderBrush="{DynamicResource BorderDim}"
-                        BorderThickness="1"
-                        CornerRadius="6">
-                    <!-- Upstream MultiDataTrigger → BoolAndToVis MultiBinding;
-                         `!Count` is true only when the collection is empty. -->
-                    <Border.IsVisible>
+                <!-- Empty state: no input channel is active AND the device is not logging to
+                     its SD card (that state has its own panel below). The app-wide
+                     emptyBadge / emptyTitle / emptyBody design from Resources/Components.axaml,
+                     the same as Devices, Channels and Profiles (#616). Upstream MultiDataTrigger
+                     → BoolAndToVis MultiBinding; `!Count` is true only when the collection is
+                     empty. -->
+                <StackPanel HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            MaxWidth="420">
+                    <StackPanel.IsVisible>
                         <MultiBinding Converter="{StaticResource BoolAndToVis}">
                             <Binding Path="!ActiveInputChannels.Count"/>
                             <Binding Path="!IsSdCardLoggingActive"/>
                         </MultiBinding>
-                    </Border.IsVisible>
-                    <StackPanel HorizontalAlignment="Center">
+                    </StackPanel.IsVisible>
+                    <Border Classes="emptyBadge" Margin="0,0,0,28">
                         <i:Icon Value="mdi-chart-line-variant"
-                                FontSize="28"
+                                FontSize="40"
                                 Foreground="{DynamicResource TextTertiary}"
                                 HorizontalAlignment="Center"
-                                Margin="0,0,0,10"/>
-                        <TextBlock Text="No channels streaming"
-                                   FontSize="13"
-                                   FontWeight="SemiBold"
-                                   Foreground="{DynamicResource TextSecondary}"
-                                   HorizontalAlignment="Center"/>
-                        <TextBlock Text="Enable channels in the Channels tab to see live data."
-                                   FontSize="11"
-                                   Foreground="{DynamicResource TextTertiary}"
-                                   HorizontalAlignment="Center"
-                                   Margin="0,4,0,0"/>
-                    </StackPanel>
-                </Border>
+                                VerticalAlignment="Center"/>
+                    </Border>
+                    <TextBlock Text="NO CHANNELS STREAMING"
+                               Classes="emptyTitle"
+                               Margin="0,0,0,10"/>
+                    <TextBlock Text="Enable channels in the Channels tab to see live data."
+                               Classes="emptyBody"/>
+                </StackPanel>
 
                 <!-- SD-card logging overlay: replaces the (necessarily empty)
                      plot when the device is recording to its own SD card. A bare

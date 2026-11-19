@@ -337,8 +337,10 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <!-- ── Plot area ── -->
-                <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
+                <!-- ── Plot area ── (with no sessions at all, the pane-wide empty state below
+                     replaces it, the separator and the list) -->
+                <Grid Grid.Row="0" ColumnDefinitions="*,Auto"
+                      IsVisible="{Binding HasLoggingSessions}">
 
                     <Grid Grid.Column="0" RowDefinitions="Auto,*,Auto,Auto">
 
@@ -476,18 +478,17 @@
                             </Grid>
                         </Border>
 
-                        <!-- Main plot -->
-                        <!-- divergence (#251): upstream hid this until a session was loaded and the
-                             port collapsed it, so with nothing plotted the region was blank. The
-                             model is built with its three labelled axes in DatabaseLogger's
-                             constructor and holds no series until DisplayLoggingSession runs, so
-                             leaving the view visible draws the same empty Analog (V) / Elapsed time /
-                             Digital frame LiveGraphPane already draws in this state, with the
-                             empty-state card below overlaid on it exactly as it is there. -->
+                        <!-- Main plot. Drawn only when the open session has data to draw (#616).
+                             The model holds no series until DisplayLoggingSession runs, so OxyPlot
+                             falls back to its default 0 to 100 range and the view drew an invented
+                             "0 to 100 V" grid. #251 made this view always visible because the
+                             region was a blank rectangle with no copy; the empty state below now
+                             fills that region with the app-wide design instead. -->
                         <oxy:PlotView Grid.Row="1"
                                       Model="{Binding DbLogger.PlotModel}"
                                       Background="{DynamicResource Surface}"
-                                      Margin="16,8,16,0">
+                                      Margin="16,8,16,0"
+                                      IsVisible="{Binding DbLogger.HasSessionData}">
                             <oxy:PlotView.DefaultTrackerTemplate>
                                 <ControlTemplate x:DataType="oxycore:TrackerHitResult">
                                     <oxy:TrackerControl Position="{Binding Position}"
@@ -528,57 +529,47 @@
                                    Opacity="0"
                                    IsHitTestVisible="False"/>
 
-                        <!-- Empty state: shown whenever nothing is plotted (#251). Upstream's
-                             MultiDataTrigger also required HasLoggingSessions, which suppressed the
-                             card in the one state that needed it most — a fresh install with no
-                             sessions at all, where the region then explained itself not at all.
+                        <!-- Empty state: nothing is plotted, and there are sessions in the list (with
+                             none, this whole plot area is hidden and the pane-wide state below
+                             shows). The app-wide emptyBadge / emptyTitle / emptyBody design (#616).
 
                              Two states reach it, and #262 is what happened while only one of them
                              had copy: HasSessionData is false BOTH when no session is open and when
                              an open session has nothing to plot, so an empty session was told "No
                              session selected" directly above its own highlighted row. IsSessionOpen
-                             picks the variant; each names its state the way LiveGraphPane's card
-                             does, and only the not-open one carries a call to action. -->
+                             picks the variant. -->
                         <StackPanel Grid.Row="1"
                                     IsVisible="{Binding !DbLogger.HasSessionData}"
                                     HorizontalAlignment="Center"
-                                    VerticalAlignment="Center">
-                            <i:Icon Value="mdi-chart-line"
-                                    FontSize="48"
-                                    HorizontalAlignment="Center"
-                                    Foreground="{DynamicResource TextTertiary}"
-                                    Opacity="0.5"
-                                    Margin="0,0,0,16"/>
+                                    VerticalAlignment="Center"
+                                    MaxWidth="420">
+                            <Border Classes="emptyBadge" Margin="0,0,0,28">
+                                <i:Icon Value="mdi-chart-line"
+                                        FontSize="40"
+                                        Foreground="{DynamicResource TextTertiary}"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center"/>
+                            </Border>
                             <!-- Open, and empty. "No data" rather than "no samples" because a
                                  session whose every sample carries a tick value no date can hold
                                  (#237) is dropped to the same empty load with its rows still in the
-                                 database — it HAS samples, and none of them can be drawn. No second
-                                 line: the header strip above already names the session, and there is
-                                 no action to offer. -->
-                            <TextBlock Text="This session has no data"
-                                       IsVisible="{Binding DbLogger.IsSessionOpen}"
-                                       FontSize="15"
-                                       FontWeight="Light"
-                                       Foreground="{DynamicResource TextPrimary}"
-                                       HorizontalAlignment="Center"/>
-                            <!-- Nothing open. Grouped so the call to action cannot outlive the line
-                                 it belongs to — it is the only part of the card that needs a
-                                 non-empty list, and with no sessions the list directly below already
-                                 says NO SESSIONS / "Start logging or import an SD card log to get
-                                 started.", so showing it there would point at an empty list and
-                                 repeat guidance the pane already gives. -->
+                                 database — it HAS samples, and none of them can be drawn. The
+                                 header strip above already names the session, and there is no
+                                 action to offer. -->
+                            <StackPanel IsVisible="{Binding DbLogger.IsSessionOpen}">
+                                <TextBlock Text="EMPTY SESSION"
+                                           Classes="emptyTitle"
+                                           Margin="0,0,0,10"/>
+                                <TextBlock Text="This session has no data."
+                                           Classes="emptyBody"/>
+                            </StackPanel>
+                            <!-- Nothing open. -->
                             <StackPanel IsVisible="{Binding !DbLogger.IsSessionOpen}">
-                                <TextBlock Text="No session selected"
-                                           FontSize="15"
-                                           FontWeight="Light"
-                                           Foreground="{DynamicResource TextPrimary}"
-                                           HorizontalAlignment="Center"/>
-                                <TextBlock Text="Choose a session from the list below"
-                                           IsVisible="{Binding HasLoggingSessions}"
-                                           FontSize="11"
-                                           Foreground="{DynamicResource TextTertiary}"
-                                           HorizontalAlignment="Center"
-                                           Margin="0,6,0,0"/>
+                                <TextBlock Text="NO SESSION SELECTED"
+                                           Classes="emptyTitle"
+                                           Margin="0,0,0,10"/>
+                                <TextBlock Text="Choose a session from the list below."
+                                           Classes="emptyBody"/>
                             </StackPanel>
                         </StackPanel>
 
@@ -682,7 +673,8 @@
                 </Grid>
 
                 <!-- Separator line between plot and session list -->
-                <Rectangle Grid.Row="1" Fill="{DynamicResource BorderDim}"/>
+                <Rectangle Grid.Row="1" Fill="{DynamicResource BorderDim}"
+                           IsVisible="{Binding HasLoggingSessions}"/>
 
                 <!-- ── Session list ── -->
                 <Grid Grid.Row="2">
@@ -865,19 +857,33 @@
                             </ControlTheme>
                         </ListBox.ItemContainerTheme>
                     </ListBox>
-
-                    <!-- Empty state (no sessions). upstream DataTrigger LoggingSessions.Count == 0;
-                         HasLoggingSessions is the VM's equivalent (Count > 0) and change-notifies. -->
-                    <StackPanel HorizontalAlignment="Center"
-                                VerticalAlignment="Center"
-                                IsVisible="{Binding !HasLoggingSessions}">
-                        <TextBlock Text="NO SESSIONS"
-                                   Classes="emptyTitle"
-                                   Margin="0,0,0,8"/>
-                        <TextBlock Text="Start logging or import an SD card log to get started."
-                                   Classes="emptyBody"/>
-                    </StackPanel>
                 </Grid>
+
+                <!-- Empty state (no sessions): ONE state for the whole pane above the status bar
+                     (#616). It used to sit in the list row while the plot row above it drew a
+                     second message over an invented 0 to 100 grid. It spans the plot, separator
+                     and list rows, which are hidden in this state; the status bar keeps IMPORT SD
+                     LOG. upstream DataTrigger LoggingSessions.Count == 0; HasLoggingSessions is the
+                     VM's equivalent (Count > 0) and change-notifies. -->
+                <StackPanel Grid.Row="0"
+                            Grid.RowSpan="3"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            MaxWidth="420"
+                            IsVisible="{Binding !HasLoggingSessions}">
+                    <Border Classes="emptyBadge" Margin="0,0,0,28">
+                        <i:Icon Value="mdi-database-outline"
+                                FontSize="40"
+                                Foreground="{DynamicResource TextTertiary}"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"/>
+                    </Border>
+                    <TextBlock Text="NO SESSIONS"
+                               Classes="emptyTitle"
+                               Margin="0,0,0,10"/>
+                    <TextBlock Text="Start logging or import an SD card log to get started."
+                               Classes="emptyBody"/>
+                </StackPanel>
 
                 <!-- ── Status bar ── -->
                 <Border Grid.Row="3"
