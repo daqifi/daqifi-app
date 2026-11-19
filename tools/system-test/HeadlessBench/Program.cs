@@ -1442,6 +1442,11 @@ internal static partial class HeadlessBench
         // range, which is what every viewport-driven redraw below is computed from.
         shell.SelectedIndex = LoggedDataTabIndex;
         PumpFor(TimeSpan.FromMilliseconds(500));
+        // Issue #616: with sessions in the list but none open, the plot view is hidden and the
+        // empty state shows; it must come back once the session loads. Read both sides, because a
+        // dead IsVisible binding leaves the view at its default, visible, and "shown after" alone
+        // would pass on it.
+        var plotShownBefore = PlotShown(main, shell.DbLogger.PlotModel);
 
         var sw = Stopwatch.StartNew();
         var plotting = shell.DisplayLoggingSessionCommand.ExecuteAsync(session);
@@ -1471,14 +1476,17 @@ internal static partial class HeadlessBench
         // under "Time (ms)"; any label with an exponent fails the row.
         var timeLabels = TimeLabels(db.PlotModel);
         var scientific = timeLabels.Any(l => l.Contains('e', StringComparison.OrdinalIgnoreCase));
+        var plotShownAfter = PlotShown(main, db.PlotModel);
 
         Step(1, "LOGGED-PLOT", "limits",
              db.IsSessionOpen && db.HasSessionData && drawn.Count > 0
                  && Math.Abs(spanHours - expectedHours) < 0.1
                  && db.CurrentSessionSampleCount == TenHourSampleCount
-                 && timeLabels.Count > 0 && !scientific,
+                 && timeLabels.Count > 0 && !scientific
+                 && plotShownBefore == false && plotShownAfter == true,
              $"{TenHourSampleCount} samples at {TenHourRateHz} Hz loaded in {sw.Elapsed.TotalSeconds:F1} s; " +
              $"IsSessionOpen={db.IsSessionOpen} HasSessionData={db.HasSessionData}; " +
+             $"plot view shown before the load={Shown(plotShownBefore)}, after={Shown(plotShownAfter)}; " +
              $"{db.PlotModel.Series.Count} series drawing {drawn.Count} downsampled point(s) " +
              $"(minimap {minimap}) spanning {spanHours:F2} h of the seeded {expectedHours:F2} h; " +
              $"time axis {AxisRange(db.PlotModel)}; " +
@@ -1495,6 +1503,16 @@ internal static partial class HeadlessBench
     private static IEnumerable<DataPoint> Drawn(PlotModel model) =>
         model.Series.OfType<LineSeries>()
             .SelectMany(s => s.ItemsSource?.OfType<DataPoint>() ?? s.Points);
+
+    /// <summary>Whether the plot view that draws <paramref name="model"/> is on screen (#616: a plot
+    /// with nothing to draw is hidden, and the pane's empty state shows in its place). Null when no
+    /// view in the window draws that model, so a "hidden" check cannot pass on a view that was
+    /// never built.</summary>
+    private static bool? PlotShown(Window main, PlotModel model) =>
+        main.GetVisualDescendants().OfType<OxyPlot.Avalonia.PlotView>()
+            .FirstOrDefault(v => ReferenceEquals(v.Model, model))?.IsEffectivelyVisible;
+
+    private static string Shown(bool? shown) => shown?.ToString() ?? "NO VIEW FOUND";
 
     /// <summary>The horizontal window the plot is showing, in hours. Reported alongside the point
     /// count because the two answer different questions: a plot can hold the whole session and be
@@ -1974,6 +1992,13 @@ internal static partial class HeadlessBench
 
         try
         {
+            // Issue #616: with no input channel active, the Live Graph pane hides its plot and shows
+            // the empty state, so it does not draw an invented 0 to 100 V grid. Read here, before
+            // the channel is enabled; the mid-stream read below is the other side.
+            shell.SelectedIndex = LiveGraphTabIndex;
+            PumpFor(TimeSpan.FromMilliseconds(300));
+            var plotShownBefore = PlotShown(main, shell.Plotter.PlotModel);
+
             // Clicking the channel's tile: ToggleChannelCommand both enables the channel on the
             // device AND subscribes it in LoggingManager, and only the second half is what the drop
             // teardown has to release. The pane is built the way ChannelsPanePrototype.axaml.cs
@@ -1985,8 +2010,6 @@ internal static partial class HeadlessBench
             Pump();
 
             // The LOGGING toggle — disk-space check, session creation, LoggingFleet.Start.
-            shell.SelectedIndex = LiveGraphTabIndex;
-            PumpFor(TimeSpan.FromMilliseconds(300));
             shell.IsLogging = true;
             PumpUntil(() => LoggingManager.Instance.Active, TimeSpan.FromSeconds(15));
 
@@ -2007,6 +2030,7 @@ internal static partial class HeadlessBench
             var plottedBefore = shell.Plotter?.LoggedPoints?.Values.Sum(l => l.Count) ?? -1;
             var subscribedBefore = LoggingManager.Instance.SubscribedChannels.Count;
             var activeBefore = LoggingManager.Instance.Active;
+            var plotShownMidStream = PlotShown(main, shell.Plotter.PlotModel);
             var midStream = activeBefore && plottedBefore > 0 && subscribedBefore > 0;
             Capture(main, "t1-connlost-streaming");
 
@@ -2045,13 +2069,19 @@ internal static partial class HeadlessBench
             var sessionClosed = PumpUntil(
                 () => !shell.IsLogging && !LoggingManager.Instance.Active,
                 TimeSpan.FromSeconds(5));
+            // The channel the drop released was the only one, so the empty state is back (#616).
+            var plotShownAfterDrop = PlotShown(main, shell.Plotter.PlotModel);
             var shot = Capture(main, "t1-connlost-dropped");
 
             Step(1, "CONN-LOST", "works",
                  midStream && removed && subscribedAfter == 0
-                     && raisedByDrop == ChangesPerNotification && consumed && sessionClosed,
+                     && raisedByDrop == ChangesPerNotification && consumed && sessionClosed
+                     && plotShownBefore == false && plotShownMidStream == true
+                     && plotShownAfterDrop == false,
                  $"streaming when the link went: LoggingManager.Active={activeBefore}, " +
                  $"{subscribedBefore} subscribed channel(s), {plottedBefore} live plot point(s); " +
+                 $"live plot view shown with no channel={Shown(plotShownBefore)}, " +
+                 $"mid-stream={Shown(plotShownMidStream)}, after the drop={Shown(plotShownAfterDrop)}; " +
                  $"after the drop the device left both lists in {sw.Elapsed.TotalSeconds:F1} s " +
                  $"(shell.ConnectedDevices={shell.ConnectedDevices.Count}, " +
                  $"manager.ConnectedDevices={ConnectionManager.Instance.ConnectedDevices.Count}) and " +
