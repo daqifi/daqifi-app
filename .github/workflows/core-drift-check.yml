@@ -46,7 +46,7 @@ jobs:
     name: Daqifi.Core pin vs nuget.org
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Run the guard's own tests before trusting its verdict. Its value is
       # entirely in FAILING while the pin is stale; a watcher that silently only
@@ -211,7 +211,7 @@ jobs:
       DRIFT_MARKER: ios-pin-drift-${{ matrix.package }}
       MANIFEST: Daqifi.Avalonia.iOS/Daqifi.Avalonia.iOS.csproj
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Same reasoning as the Core job: a watcher that can only ever pass reads as
       # coverage while providing none.
