@@ -44,10 +44,10 @@ jobs:
       issue_number: ${{ steps.publish.outputs.issue_number }}
     steps:
       - name: Check out the port repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check out upstream (read-only)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ env.UPSTREAM_REPO }}
           ref: ${{ env.UPSTREAM_BRANCH }}

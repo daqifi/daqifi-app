@@ -29,8 +29,10 @@ on:
   # main carries merge_queue with max_entries_to_merge 1 and SQUASH, so the
   # merge_group run below builds main-plus-that-one-PR — which is byte-for-byte the
   # commit that then lands. Over one week that was 13 push runs against 13 merge_group
-  # runs, perfectly paired, each one re-spending ~10 minutes of macOS at this
-  # repository's 10x private-repo billing for no new information.
+  # runs, perfectly paired, each one re-spending ~10 minutes of macOS for no new
+  # information. (The repository was private then, and macOS billed at 10x. It is public
+  # now, so the minutes are free. The real limit is the org's 5 concurrent macOS jobs:
+  # see the note on the ios job.)
   #
   # What makes this safe is specifically that NOTHING can reach main except through
   # that queue. The same ruleset requires a pull request, forbids non-fast-forward,
@@ -87,7 +89,7 @@ jobs:
     name: CI script self-tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Run every guard's self-test
         run: |
@@ -105,11 +107,77 @@ jobs:
             echo "::endgroup::"
           done
 
+  # ---- Merge-queue reuse (measured, 2026-11-17) ----
+  #
+  # A queue entry builds main plus one PR, squashed. When main has not moved since that
+  # PR's last green run, the entry is byte-for-byte the tree the PR run already built.
+  # Over 2026-11-07..16 that was 18 of 53 queue entries (34%), each a full rebuild with
+  # two macOS jobs and ~4 minutes added to the time to merge.
+  #
+  # So on merge_group ONLY, this job looks for a green pull-request run of this exact
+  # git tree. A tree hash covers every file, this workflow included, so a match is the
+  # same sources built by the same workflow. A PR run records its tree in the
+  # record-tree job at the end of this file, and only when every job passed.
+  # merge_queue_reuse.py lists what it verifies before it accepts a run: same workflow,
+  # pull_request event, a branch of this repo and not a fork, finished within 24 h, and
+  # every job green.
+  #
+  # How the required checks stay intact. The four heavy jobs below skip ONLY when this
+  # job outputs reuse == 'true'. A job skipped by its `if:` reports as Success, so the
+  # six required checks still report on the queue entry. Everything else gives a full
+  # build: this job failing, erroring, timing out, or being skipped (every
+  # pull_request run, and a merge_group run with the switch below set). That is why
+  # those jobs use `!cancelled()` and not the implicit `success()`. With `success()`, a
+  # failed or skipped reuse check would SKIP the heavy jobs, and skipped required checks
+  # pass. That is the one way this could merge an unbuilt tree.
+  #
+  # Kill switch: set the repository variable CI_QUEUE_REUSE to 'off' and every queue
+  # entry builds in full again. No code change is needed.
+  #
+  # What reuse gives up: the queue entry does not re-run on a runner image newer than
+  # the one the PR used, up to 24 h older. The next PR picks up an image change anyway.
+  queue-reuse:
+    name: Merge-queue reuse check
+    if: ${{ github.event_name == 'merge_group' && vars.CI_QUEUE_REUSE != 'off' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      reuse: ${{ steps.decide.outputs.reuse }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Look for a green pull-request run of this exact tree
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tree=$(git rev-parse 'HEAD^{tree}')
+          echo "queue entry ${GITHUB_SHA} has tree ${tree}"
+          # The six required checks (.github/merge-queue/README.md). The script also
+          # refuses any run in which a job other than this one did not succeed.
+          python3 .github/scripts/merge_queue_reuse.py \
+            --repo "${GITHUB_REPOSITORY}" --tree "${tree}" \
+            --workflow-path .github/workflows/build.yml \
+            --skip-job "Merge-queue reuse check" \
+            --required "CI script self-tests" \
+            --required "Library + Desktop head + capture harness" \
+            --required "Desktop head on macOS" \
+            --required "Android head" \
+            --required "iOS head" \
+            --required "Avalonia version lockstep"
+
   desktop:
     name: Library + Desktop head + capture harness
+    needs: queue-reuse
+    # See the queue-reuse job: `!cancelled()`, never the implicit `success()`.
+    if: ${{ !cancelled() && needs.queue-reuse.outputs.reuse != 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Resolve the SDK from global.json, NOT a floating '10.0.x'.
       # Microsoft.NET.ILLink.Tasks is an IMPLICIT PackageReference on the trimming heads,
@@ -119,22 +187,23 @@ jobs:
       # floated across a whole feature band (to 10.0.400, runtime 10.0.11) and broke
       # restore with NU1004 on a repo nobody had touched in 12 days. See #107.
       #
-      # The cache is the global packages folder, keyed on every committed lock file.
-      # Nothing in this repo was cached before, so all four jobs re-downloaded the
-      # whole graph on every run — and the macos and ios jobs do it TWICE, because
-      # their "must equal a from-scratch derivation" step restores a second time with
-      # --force-evaluate.
+      # NO package cache, on any job, and that is measured rather than forgotten. This
+      # step used to set `cache: true` keyed on '**/packages.lock.json'. Once the `push`
+      # trigger went (see `on:` above) nothing ever wrote a cache on main, and a cache
+      # written on refs/pull/N/merge is readable by that one PR only. Each entry was
+      # ~2 GB, so the 10 GB repository limit held five and evicted the rest. Over 120
+      # runs (2026-11-07..16) the four .NET jobs hit 14% of the time. On a miss the
+      # post-job save spent 10-27 s tarring 2 GB, and usually failed anyway ("another
+      # job may be creating this cache"). A hit was no faster than a cold restore: the
+      # 2 GB download cost what the nuget.org restore it skipped did. Median
+      # setup + restore + post-save, iOS job: hit 47 s, miss 54 s, no cache ~27 s.
       #
-      # Keying on '**/packages.lock.json' rather than the csproj files is what makes
-      # this exact rather than approximate: locked mode already pins every resolved
-      # version to those files, so a key derived from them cannot serve a cache that
-      # disagrees with what restore is about to ask for. A lock-file change misses the
-      # cache and repopulates it, which is the correct behaviour.
-      - uses: actions/setup-dotnet@v4
+      # Do not re-add it as-is. A cache only pays here if it is (a) written from main,
+      # so every PR can read it, AND (b) much smaller than the whole global packages
+      # folder, so its download costs less than the restore. Measure both first.
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
 
       # Fail loudly if the locked-mode gate is NOT actually armed. Without this the
       # whole workflow could go green while restores silently ran unlocked — the
@@ -377,14 +446,14 @@ jobs:
       # at are what say whether ubuntu rendered the app at all.
       - name: Upload the --scripted run directories
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: headlessbench-scripted
           path: ${{ runner.temp }}/headlessbench
           if-no-files-found: ignore
 
       - name: Upload dependency graphs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: assets-desktop
           path: '**/obj/project.assets.json'
@@ -481,14 +550,14 @@ jobs:
     #
     # Deliberately NOT covered, so the green tick does not imply more than it means:
     #   * osx-x64. The head declares it; nobody builds or ships it. macos-latest is
-    #     Apple silicon, and a second RID would double a 10x-billed job for a target
+    #     Apple silicon, and a second RID would double a scarce macOS job for a target
     #     with no users.
     #   * Running the app. The macOS QA list (RUNBOOK §1.2) is a human checklist.
     #   * The unit suite. #88 asked whether this job should run it and the honest
     #     answer then was that no test project existed; one does now, and the ubuntu
     #     `desktop` job runs it. It is deliberately NOT repeated here. Every test in
     #     Daqifi.Avalonia.Tests today is host-independent arithmetic over OxyPlot
-    #     DataPoints, so a second run on a 10x-billed runner would assert the same
+    #     DataPoints, so a second run on a scarce macOS runner would assert the same
     #     thing twice and buy nothing. The trigger to move it is concrete rather than
     #     a matter of taste: the first test whose VERDICT can differ by host — a path
     #     separator, a native asset, a culture or filesystem-case assumption — is the
@@ -501,25 +570,26 @@ jobs:
     #   * A dependency-graph upload for `avalonia-graph`. That gate reads the
     #     `libraries` section, which comes from a RID-LESS restore and so is
     #     byte-identical to the one `desktop` already uploads. Uploading it would add
-    #     a 10x job to that gate's critical path in exchange for no new information —
+    #     a macOS job to that gate's critical path in exchange for no new information —
     #     and, because the download step takes every artifact in the run rather than
     #     a named list, an upload without a matching `needs:` entry would be a race.
     #
     # macos-latest, matching the ios job, because this repo pins no macOS image.
     # Unlike that job nothing here depends on which one arrives: the Desktop head is
     # plain net10.0, so there is no workload to install and no Xcode to select.
+    needs: queue-reuse
+    # See the queue-reuse job: `!cancelled()`, never the implicit `success()`.
+    if: ${{ !cancelled() && needs.queue-reuse.outputs.reuse != 'true' }}
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Same pin as every other job — see the comment on the desktop job, and #107.
       #
-      # Same package cache as the desktop job — see the comment there.
-      - uses: actions/setup-dotnet@v4
+      # No package cache, deliberately — see the comment on the desktop job.
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
 
       # No -r, for the reason the ios job gives at length and Directory.Build.props
       # gives at more: an explicit-RID restore REWRITES the lock file to hold only
@@ -933,7 +1003,7 @@ jobs:
       # keeps each run's throwaway .appdata (SQLite DB + logs) out of the artifact.
       - name: Upload the determinism captures
         if: ${{ failure() && (steps.determinism.outcome == 'failure' || steps.baseline.outcome == 'failure') }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: parity-determinism-macos
           path: ${{ runner.temp }}/parity-audit/determinism
@@ -941,20 +1011,21 @@ jobs:
 
   android:
     name: Android head
+    needs: queue-reuse
+    # See the queue-reuse job: `!cancelled()`, never the implicit `success()`.
+    if: ${{ !cancelled() && needs.queue-reuse.outputs.reuse != 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Same pin as the desktop job — see the comment there, and #107. This job is where
       # the drift actually bit: the Android head trims, so it carries the implicit
       # Microsoft.NET.ILLink.Tasks reference whose version the SDK's bundled runtime picks.
       #
-      # Same package cache as the desktop job — see the comment there.
-      - uses: actions/setup-dotnet@v4
+      # No package cache, deliberately — see the comment on the desktop job.
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
 
       # Not preinstalled with the SDK; the Android SDK itself ships on the runner
       # image and is pointed at by ANDROID_HOME.
@@ -1006,7 +1077,7 @@ jobs:
             -c Release --no-restore -p:AndroidSdkDirectory="$ANDROID_HOME"
 
       - name: Upload dependency graph
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: assets-android
           # Same glob as the desktop job, not the single concrete path: for one
@@ -1042,10 +1113,20 @@ jobs:
     # Daqifi.Avalonia.slnx and in nobody's build — a change that broke it landed green
     # (#105).
     #
-    # This repo is private, so macOS minutes bill at 10x Linux. That is the cost of the
-    # job and it is deliberate: the alternative on offer was a path filter, and a gate
-    # that only runs when someone remembers to touch the right directory is not a gate.
-    # If the bill ever argues otherwise, narrow it on evidence, not on the assumption
+    # What this job costs is macOS capacity, not money. When this comment was first
+    # written the repo was private and macOS billed at 10x Linux. It is public now, so
+    # GitHub-hosted minutes are free. The binding limit is the org's Free plan, which
+    # allows 5 concurrent macOS jobs across every daqifi repository. Each run of this
+    # workflow takes 2 of them (this job and `Desktop head on macOS`). Measured
+    # 2026-11-07..16: 68 of 402 macOS jobs waited more than a minute for a runner, and
+    # 46 of those waited while 5 of THIS repo's macOS jobs were already running. That
+    # wait is the whole gap between the PR p50 (4.5 min) and p90 (9.0 min).
+    #
+    # The job is deliberate anyway. The alternative on offer was a path filter, and a
+    # gate that only runs when someone remembers to touch the right directory is not a
+    # gate. It would also buy almost nothing: 62 of 63 PRs in that window touched
+    # Daqifi.Avalonia/, which this head compiles, and none was docs-only. If capacity ever argues otherwise,
+    # narrow it on evidence, not on the assumption
     # that shared-library changes cannot break a platform head — that assumption is
     # exactly what #88 records going wrong on macOS.
     #
@@ -1054,20 +1135,21 @@ jobs:
     # the pinned SDK's workload wants, and a stale pin does not help with that — an
     # image carries only one Xcode major. When the label moves and the majors diverge,
     # the Xcode step below says so by name instead of failing 200 lines into a build.
+    needs: queue-reuse
+    # See the queue-reuse job: `!cancelled()`, never the implicit `success()`.
+    if: ${{ !cancelled() && needs.queue-reuse.outputs.reuse != 'true' }}
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Same pin as the other two jobs — see the comment on the desktop job, and #107.
       # It matters more here than anywhere: the SDK band also decides which iOS workload
       # is installed below, and therefore which Xcode this job has to select.
       #
-      # Same package cache as the desktop job — see the comment there.
-      - uses: actions/setup-dotnet@v4
+      # No package cache, deliberately — see the comment on the desktop job.
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
-          cache: true
-          cache-dependency-path: '**/packages.lock.json'
 
       # Mirrors the android job's workload step. Not preinstalled with the SDK, and
       # setup-dotnet installs into its own prefix, so whatever the runner image ships
@@ -1116,7 +1198,7 @@ jobs:
       #
       # The version is READ FROM THE SDK, never written here, because it tracks the SDK
       # pin and tracks nothing else you could infer it from. Under 10.0.203 the answer was
-      # Xcode 26.4; under the pinned 10.0.302 the iOS workload manifest is 26.5.10315 and
+      # Xcode 26.4; under the pinned 10.0.303 the iOS workload manifest is 26.5.10315 and
       # the Xcode it asks for is 26.6. Those two disagree on purpose — the manifest's 26.5
       # is an iOS version, and the lock file's net10.0-ios26.5 framework is that same
       # number, not an Xcode one. So every literal that looked plausible while writing
@@ -1309,7 +1391,7 @@ jobs:
           plutil -p "${app}/Info.plist" | grep -A6 CFBundleIcon
 
       - name: Upload dependency graph
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: assets-ios
           # Same glob and same reasoning as the other two jobs.
@@ -1349,8 +1431,14 @@ jobs:
     # Avalonia.iOS by hand; a head whose graph nobody uploads is a head this gate does
     # not actually cover.
     needs: [desktop, android, ios]
+    # Explicit results rather than the implicit `success()`, which also looks at the
+    # skipped queue-reuse job further up the chain. Skipped here when the heads were
+    # skipped by a verified reuse, and when any head failed (as before).
+    if: >-
+      ${{ !cancelled() && needs.desktop.result == 'success'
+          && needs.android.result == 'success' && needs.ios.result == 'success' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # One directory PER ARTIFACT (which is what omitting merge-multiple gets you),
       # not all three flattened into one. Every head restores the shared library and
@@ -1362,7 +1450,7 @@ jobs:
       # head's copy survives. It also makes the paths in a failure message say WHICH head
       # (graphs/assets-ios/... rather than graphs/...).
       - name: Download dependency graphs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: graphs
 
@@ -1382,3 +1470,41 @@ jobs:
           fi
           printf 'checking %s\n' "${assets[@]}"
           python3 .github/scripts/check_avalonia_versions.py "${assets[@]}"
+
+  # The other half of the queue-reuse job: a pull-request run in which EVERY job passed
+  # records the tree it built, as an artifact named green-tree-<tree>. On pull_request,
+  # checkout gives the test-merge commit of the PR with main, which is exactly what the
+  # jobs above built. One day of retention, because a queue entry reuses nothing older.
+  # Not a required check, and it runs after all six report, so it adds nothing to the
+  # time to a green PR.
+  record-tree:
+    name: Record the green tree
+    needs: [scripts, desktop, macos, android, ios, avalonia-graph]
+    if: >-
+      ${{ github.event_name == 'pull_request' && !cancelled()
+          && needs.scripts.result == 'success' && needs.desktop.result == 'success'
+          && needs.macos.result == 'success' && needs.android.result == 'success'
+          && needs.ios.result == 'success' && needs.avalonia-graph.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Name the tree
+        id: tree
+        run: |
+          set -euo pipefail
+          tree=$(git rev-parse 'HEAD^{tree}')
+          echo "tree=${tree}" >> "$GITHUB_OUTPUT"
+          mkdir -p "${RUNNER_TEMP}/green-tree"
+          printf '{"tree": "%s", "sha": "%s", "run_id": %s}\n' \
+            "${tree}" "${GITHUB_SHA}" "${GITHUB_RUN_ID}" > "${RUNNER_TEMP}/green-tree/tree.json"
+          echo "commit ${GITHUB_SHA} has tree ${tree}; every job passed"
+
+      - name: Record it
+        uses: actions/upload-artifact@v7
+        with:
+          name: green-tree-${{ steps.tree.outputs.tree }}
+          path: ${{ runner.temp }}/green-tree/tree.json
+          retention-days: 1
+          if-no-files-found: error
