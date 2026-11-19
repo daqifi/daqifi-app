@@ -419,14 +419,36 @@ public partial class ConnectionManager : ObservableObject
             // device that has not been accepted into ConnectedDevices yet.
             SubscribeDeviceEvents(device);
 
-            await Task.Delay(1000);
+            // @port-divergence: upstream awaits Task.Delay(1000) here.
+            // No fixed settle here (#617). Upstream waited 1 s at this point (daqifi-desktop
+            // 550fd16e) so that the device's first status message could fill in the firmware
+            // version and serial number before "ConnectedDevices" was raised. device.Connect() now
+            // waits for that condition itself: Core's InitializeAsync waits for the first status
+            // message and reads the capability document, the serial wrapper's
+            // OnCoreDeviceInitialized waits for the initial status with a timeout, and Connect()
+            // hydrates the metadata again before it returns. So the version, serial number and
+            // channels are already known here, and a fixed wait only delayed the user.
+            //
+            // Core can still report Lost between the !IsConnected check above and here, once the
+            // loss handler is attached. The handler only POSTS its teardown to the UI thread, and
+            // this continuation normally runs on that thread, so the teardown cannot have run yet:
+            // the device is still in ConnectedDevices while its transport is gone. So read the
+            // device's own state again, and if the transport is gone, run the same teardown now.
+            // The queued teardown then finds the device gone and does nothing, so the device is
+            // torn down once. A device that a firmware update is flashing is left to that update,
+            // as the loss handler does.
+            if (ConnectedDevices.Contains(device) && !device.IsConnected && !IsDeviceBeingUpdated(device))
+            {
+                TearDownDroppedDevice(device, $"{device.DeviceDisplayName} disconnected while it was connecting.");
+            }
 
-            // The device can be torn down DURING that settle, and only since this PR: the loss
-            // handler goes live at the SubscribeDeviceEvents call above, and it runs on the UI
-            // thread while this continuation is suspended. If it did, the connect did not leave a
-            // usable connection — publishing "Connected" here would put the shell back into a
-            // connected state for a device that is gone, and SetDeviceContext below would tag every
-            // later Sentry event with dead hardware. Treat it as an aborted connect.
+            // The loss handler can also have run already, when it runs on another thread than this
+            // continuation (a caller that is not on the UI thread). Either way, the connect did not
+            // leave a usable connection — publishing "Connected" here would put the shell back
+            // into a connected state for a device that is gone, and SetDeviceContext below would
+            // tag every later Sentry event with dead hardware. Treat it as an aborted connect. A
+            // drop after this point is the loss handler's to report, like any other drop of a
+            // connected device.
             //
             // Error rather than Disconnected because that is the status every other failure in this
             // method reports, and it is what keeps the connection dialog open
@@ -435,7 +457,7 @@ public partial class ConnectionManager : ObservableObject
             if (!ConnectedDevices.Contains(device))
             {
                 AppLogger.Instance.Warning(
-                    $"Device {device.DeviceDisplayName} dropped while its connection was settling; " +
+                    $"Device {device.DeviceDisplayName} dropped before its connect completed; " +
                     "reporting the connect as failed rather than connected.");
                 return DAQiFiConnectionStatus.Error;
             }
@@ -694,8 +716,8 @@ public partial class ConnectionManager : ObservableObject
     /// no-op when nothing is attached.
     /// </remarks>
     // Internal rather than private so the teardown tests can put a device into the same wired
-    // state Connect() leaves it in without paying Connect()'s one-second settle per case; one test
-    // still goes through Connect() itself to pin that this is what it calls.
+    // state Connect() leaves it in without a full connect per case; one test still goes through
+    // Connect() itself to pin that this is what it calls.
     // @port: Daqifi.Desktop.ConnectionManager.SubscribeDeviceEvents
     internal void SubscribeDeviceEvents(IStreamingDevice device)
     {

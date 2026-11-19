@@ -1712,8 +1712,8 @@ internal static partial class HeadlessBench
     /// </remarks>
     private static void ConnectScripted(DaqifiViewModel shell, ScriptedDevice device)
     {
-        // Never block on it: headless, Dispatcher.UIThread IS this thread, and Connect's own
-        // one-second settle marshals its continuation back onto it.
+        // Never block on it: headless, Dispatcher.UIThread IS this thread, and Connect marshals
+        // its continuation after the awaited device.Connect() back onto it.
         var connecting = ConnectionManager.Instance.Connect(device);
         if (!PumpUntil(() => connecting.IsCompleted, TimeSpan.FromSeconds(30)))
         {
