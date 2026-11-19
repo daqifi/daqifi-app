@@ -40,12 +40,15 @@ namespace Daqifi.Desktop.Logger;
 /// live import, and lets only one copy of the app import earlier sessions at a time.
 /// </para>
 /// <para>
-/// <b>Guarding against cut-short sessions.</b> The other app may still be recording. A session that
-/// gains samples during its copy is dropped, and so is the newest session when the old file was
-/// written in the last couple of minutes. Either is left for later: the offer is only retired once
-/// nothing is left to import, so it comes back at the next launch. Not a guarantee: an older session
-/// still being recorded (two recorders at once) that adds no sample during its own copy can be copied
-/// short. That is a known limit, listed for a follow-up.
+/// <b>Guarding against cut-short sessions.</b> The other app may still be recording, and two copies
+/// of it can record at once. A session that gains samples during its copy is dropped, and so is the
+/// newest session when the old file was written in the last couple of minutes. The other app writes
+/// a session's sample count only when its recording stops, so while it writes the old database a
+/// session is copied only if it has that count and the copy holds exactly that many samples (#514).
+/// Anything dropped is left for later: the offer is only retired once nothing is left to import, so it
+/// comes back at the next launch. A session with no count (the other app stopped before it wrote
+/// one) is copied once nothing writes the old file. One case is still not caught: a count written
+/// while the session recorded (by a second copy starting up), then no sample until after the copy.
 /// </para>
 /// <para>
 /// <b>Short locks.</b> Samples are copied in small batches, each in its own transaction, so the
@@ -200,6 +203,13 @@ public sealed class PreviousSessionImport
 
         outcome.Removed.AddRange(RemoveFailedImports(connection, complete, copyOf));
 
+        // Whether the other app may be recording into the old database: it wrote the file in the
+        // last couple of minutes, or has written it since this import started. Read before the
+        // sessions are listed, version first, so a write at any moment from here on is seen.
+        var versionAtStart = DataVersion(connection);
+        var recentlyWritten = RecentlyWritten(_previousDatabase!);
+        bool OldDatabaseIsBeingWritten() => recentlyWritten || DataVersion(connection) != versionAtStart;
+
         // The sessions to bring over and the sample ID range each spans in the old database.
         var pending = new List<(long Id, string Start, string Name, long? Count, long First, long Last)>();
         using (var read = Command(connection,
@@ -225,11 +235,20 @@ public sealed class PreviousSessionImport
 
         // The other app may be recording into its newest session right now; a copy of it would be
         // a prefix, marked complete. Leave it for later if the file was written very recently.
-        if (pending.Count > 0 && RecentlyWritten(_previousDatabase!)
+        if (pending.Count > 0 && recentlyWritten
             && pending[^1].Id == Scalar<long>(connection, "SELECT MAX(ID) FROM old.Sessions"))
         {
             pending.RemoveAt(pending.Count - 1);
             outcome.LeftForLater++;
+        }
+
+        // Two copies of the earlier version can record at once, so an older session can be
+        // recording too (#514). That version writes a session's sample count only when its
+        // recording stops, so a session with no count may still be recording. Left for later here,
+        // before the disk check, so a long recording does not count against the space needed.
+        if (OldDatabaseIsBeingWritten())
+        {
+            outcome.LeftForLater += pending.RemoveAll(s => s.Count is null);
         }
 
         var total = pending.Sum(s => s.Last - s.First + 1);
@@ -240,6 +259,15 @@ public sealed class PreviousSessionImport
         foreach (var (oldId, start, name, count, first, last) in pending)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            // The other app started to write during this import: a session with no count is left
+            // for later now, not copied only to be dropped below.
+            if (count is null && OldDatabaseIsBeingWritten())
+            {
+                done += last - first + 1;
+                outcome.LeftForLater++;
+                continue;
+            }
 
             // The row goes in only now, so an interruption leaves at most this one session partial.
             // Its ID comes from the allocator the app's other writers use, so it can never pick up
@@ -295,12 +323,17 @@ public sealed class PreviousSessionImport
                     progress?.Report((double)done / total);
                 }
 
-                // Samples arrived during the copy: the session is still being recorded. Drop the
-                // copy rather than keep a prefix marked complete; it is offered again later.
+                // Samples arrived during the copy: the session is still being recorded. And while
+                // the other app writes the old database, a session counts as finished only when
+                // that app recorded its end (the sample count) and the copy holds exactly that many
+                // samples: an older session can be recording with a gap between its samples longer
+                // than its copy, and a count written while it recorded is short (#514). Either way,
+                // drop the copy rather than keep a prefix marked complete; it is offered again later.
                 using (var grown = Command(connection, "SELECT MAX(ID) FROM old.Samples WHERE LoggingSessionID = $old"))
                 {
                     grown.Parameters.AddWithValue("$old", oldId);
-                    if (Convert.ToInt64(grown.ExecuteScalar()) > last)
+                    if (Convert.ToInt64(grown.ExecuteScalar()) > last
+                        || (count != copied && OldDatabaseIsBeingWritten()))
                     {
                         // Flagged failed first, so a crash during the deletion is cleaned up next time.
                         using (var flag = Command(connection, "UPDATE main.Sessions SET Status = $failed WHERE ID = $new"))
@@ -550,6 +583,13 @@ public sealed class PreviousSessionImport
 
     /// <summary>How recently the old file must have been written to suspect a recording in progress.</summary>
     internal TimeSpan RecordingWindow { get; init; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// SQLite's <c>data_version</c> for the old database. It changes when another connection (the
+    /// other app) commits a write to that file, and never for this connection's own reads.
+    /// </summary>
+    private static long DataVersion(SqliteConnection connection) =>
+        Scalar<long>(connection, "PRAGMA old.data_version");
 
     private bool RecentlyWritten(string path)
     {
