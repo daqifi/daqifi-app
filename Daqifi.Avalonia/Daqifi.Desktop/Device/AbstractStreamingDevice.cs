@@ -366,14 +366,13 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     private readonly List<(Daqifi.Core.Channel.IChannel Channel, EventHandler<Daqifi.Core.Channel.SampleReceivedEventArgs> Handler)>
         _coreSampleSubscriptions = [];
 
-    // The frame the last published sample came from, identified by the host timestamp Core
-    // reconstructed for it (every sample of one frame carries the same one), and the time from the
-    // frame before it to that frame. Feeds DataSample.FirmwareDeltaMs, which the live plot's gap
-    // detector reads. Written only on Core's consumer thread; cleared before each session starts,
-    // which is before Core can decode a frame of it.
-    private bool _hasPublishedFrame;
-    private DateTime _publishedFrameTimestamp;
-    private double? _publishedFrameDeltaMs;
+    // The host timestamp of the first frame after the latest gap Core found in this session's
+    // stream (issue #629), or null when Core has found none. Every sample of one frame carries the
+    // same timestamp, so a sample whose timestamp is this one follows the gap. Written and read only
+    // on Core's consumer thread: Core raises GapDetected on that thread, inside the decode of the
+    // frame and before the frame's samples. Cleared before each session starts, which is before
+    // Core can decode a frame of it.
+    private DateTime? _gapFrameTimestamp;
 
     // The device counter on the last stream frame of this session, for DeviceMessage.Rollover.
     private bool _hasSeenStreamFrameCounter;
@@ -1002,6 +1001,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         coreDevice.ChannelsPopulated += OnCoreChannelsPopulated;
         coreDevice.MessageReceived += OnCoreMessageReceived;
         coreDevice.StatusChanged += OnCoreStatusChanged;
+        coreDevice.GapDetected += OnCoreGapDetected;
     }
 
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.UnsubscribeCoreDeviceEvents
@@ -1010,7 +1010,25 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         coreDevice.ChannelsPopulated -= OnCoreChannelsPopulated;
         coreDevice.MessageReceived -= OnCoreMessageReceived;
         coreDevice.StatusChanged -= OnCoreStatusChanged;
+        coreDevice.GapDetected -= OnCoreGapDetected;
         UnsubscribeFromCoreSamples();
+    }
+
+    /// <summary>
+    /// Records the frame that follows a gap Core found in the stream, so that
+    /// <see cref="PublishToChannel"/> marks each sample of that frame with
+    /// <see cref="DataSample.FollowsGap"/> (issue #629).
+    /// </summary>
+    /// <remarks>
+    /// Core finds a gap once per frame, from the device-clock interval to the frame before it: a gap
+    /// is an interval more than two times the running average. Core raises the event on its consumer
+    /// thread, inside the decode of the frame and before it raises that frame's samples, so the
+    /// samples that follow on the same thread find the timestamp already set. The live plot used to
+    /// run its own copy of the same detector, once per sample of each channel.
+    /// </remarks>
+    private void OnCoreGapDetected(object? sender, TimestampGapEventArgs e)
+    {
+        _gapFrameTimestamp = e.Timestamp;
     }
 
     /// <summary>
@@ -1605,7 +1623,6 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// </summary>
     private void PublishToChannel(IChannel channel, Daqifi.Core.Channel.IDataSample coreSample, bool isAnalog)
     {
-        var firmwareDeltaMs = TrackPublishedFrame(coreSample.Timestamp);
         var value = coreSample.Value;
 
         if (isAnalog)
@@ -1640,35 +1657,10 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             return;
         }
 
-        channel.ActiveSample = new DataSample(this, channel, coreSample.Timestamp, value, firmwareDeltaMs);
-    }
-
-    /// <summary>
-    /// Returns the device-clock time from the previous frame to the frame
-    /// <paramref name="frameTimestamp"/> belongs to, in milliseconds, or <c>null</c> for the first
-    /// frame of the session.
-    /// </summary>
-    /// <remarks>
-    /// Core reconstructs each frame's timestamp as the previous frame's plus the device-counter
-    /// delta, and stamps every sample of the frame with it. So the difference between two
-    /// consecutive frames' timestamps is the firmware-measured interval, immune to transport
-    /// jitter: the same figure the app's own timestamp processor used to supply. It exists only for
-    /// the live plot's gap detector; #629 replaces both with Core's <c>GapDetected</c> event.
-    /// </remarks>
-    /// <param name="frameTimestamp">The host timestamp Core reconstructed for the sample's frame.</param>
-    private double? TrackPublishedFrame(DateTime frameTimestamp)
-    {
-        if (_hasPublishedFrame && frameTimestamp == _publishedFrameTimestamp)
+        channel.ActiveSample = new DataSample(this, channel, coreSample.Timestamp, value)
         {
-            return _publishedFrameDeltaMs;
-        }
-
-        _publishedFrameDeltaMs = _hasPublishedFrame
-            ? (frameTimestamp - _publishedFrameTimestamp).TotalMilliseconds
-            : null;
-        _publishedFrameTimestamp = frameTimestamp;
-        _hasPublishedFrame = true;
-        return _publishedFrameDeltaMs;
+            FollowsGap = _gapFrameTimestamp == coreSample.Timestamp
+        };
     }
     #endregion
 
@@ -2014,8 +2006,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         // that now: StartStreaming below re-anchors its timestamp reconstruction and re-arms its
         // leftover-frame gate and first-frame hold before it sends the start (issue #440). The
         // per-frame bookkeeping kept here starts afresh too, before Core can decode a frame.
-        _hasPublishedFrame = false;
-        _publishedFrameDeltaMs = null;
+        _gapFrameTimestamp = null;
         _hasSeenStreamFrameCounter = false;
         _frameInProgress = null;
         // Interlocked, because a 64-bit assignment is not guaranteed atomic on a 32-bit

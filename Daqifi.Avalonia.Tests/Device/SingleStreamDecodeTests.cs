@@ -161,43 +161,74 @@ public sealed class SingleStreamDecodeTests : IDisposable
         Assert.Equal(1.5, Assert.Single(published).Value, precision: 5);
     }
 
+    /// <summary>
+    /// Issue #629: the app takes stream gaps from Core's <c>GapDetected</c>. Core finds a gap once
+    /// per frame; every channel's sample of the frame after the gap must carry the mark, and no
+    /// other sample may.
+    /// </summary>
     [Fact]
-    public void The_firmware_delta_is_the_device_clock_interval_between_frames()
+    public void A_gap_Core_finds_marks_every_channels_sample_of_the_next_frame_and_no_other()
     {
-        var harness = Harness();
-        var first = harness.EnableAnalog(0);
-        var second = harness.EnableAnalog(1);
-        var firstSamples = Published(first);
-        var secondSamples = Published(second);
+        var harness = Harness(analogPorts: 3, digitalPorts: 8);
+        var analog0 = harness.EnableAnalog(0);
+        var analog1 = harness.EnableAnalog(1);
+        var digital0 = harness.EnableDigital(0);
+        var published = new[] { Published(analog0), Published(analog1), Published(digital0) };
+        var gapsCoreRaised = 0;
+        harness.Core.GapDetected += (_, _) => gapsCoreRaised++;
         harness.Device.InitializeStreaming();
 
-        var counter = CoreDecodingHarness.FirstCounter;
-        harness.Core.Feed(CoreDecodingHarness.FloatFrame(counter, 1f, 2f));
-        harness.Core.Feed(CoreDecodingHarness.FloatFrame(counter += harness.TicksPerSample, 1f, 2f));
-        // Two periods: one frame lost on the way.
-        harness.Core.Feed(CoreDecodingHarness.FloatFrame(counter += 2 * harness.TicksPerSample, 1f, 2f));
+        // Frames 0 to 3 one period apart, then three periods to the next: two frames lost. One
+        // lost frame is not enough, because Core's test is strict: two periods is exactly two
+        // times the average, not more. Then two more frames one period apart.
+        uint[] periodsFromStart = [0, 1, 2, 3, 6, 7, 8];
+        foreach (var periods in periodsFromStart)
+        {
+            var frame = CoreDecodingHarness.FloatFrame(
+                CoreDecodingHarness.FirstCounter + periods * harness.TicksPerSample, 1f, 2f);
+            frame.DigitalData = ByteString.CopyFrom(0b0000_0001);
+            harness.Core.Feed(frame);
+        }
 
-        Assert.Equal(new double?[] { null, 10.0, 20.0 }, firstSamples.Select(s => s.FirmwareDeltaMs is { } ms ? Math.Round(ms, 3) : (double?)null));
-        Assert.Equal(
-            firstSamples.Select(s => s.FirmwareDeltaMs),
-            secondSamples.Select(s => s.FirmwareDeltaMs));
+        // One gap for the device, not one for each channel.
+        Assert.Equal(1, gapsCoreRaised);
+        bool[] expected = [false, false, false, false, true, false, false];
+        Assert.All(published, samples => Assert.Equal(expected, samples.Select(s => s.FollowsGap)));
     }
 
     [Fact]
-    public void The_firmware_delta_starts_afresh_with_each_session()
+    public void A_steady_stream_marks_no_sample()
+    {
+        var harness = Harness();
+        var channel = harness.EnableAnalog(0);
+        var published = Published(channel);
+        harness.Device.InitializeStreaming();
+
+        FeedFrames(harness, CoreDecodingHarness.FirstCounter, 50);
+
+        Assert.Equal(50, published.Count);
+        Assert.DoesNotContain(published, sample => sample.FollowsGap);
+    }
+
+    /// <summary>
+    /// A stop and start is not a gap: Core starts its detector again with each session, and the
+    /// time between the two sessions is not an interval between frames of one stream.
+    /// </summary>
+    [Fact]
+    public void A_restart_is_not_a_gap()
     {
         var harness = Harness();
         var channel = harness.EnableAnalog(0);
         harness.Device.InitializeStreaming();
-        var last = FeedFrames(harness, CoreDecodingHarness.FirstCounter, 3);
+        var last = FeedFrames(harness, CoreDecodingHarness.FirstCounter, 5);
         harness.Device.StopStreaming();
 
         var published = Published(channel);
         harness.Device.InitializeStreaming();
-        FeedFrames(harness, unchecked(last + CoreDecodingHarness.TicksPerSecond), 2);
+        FeedFrames(harness, unchecked(last + CoreDecodingHarness.TicksPerSecond), 5);
 
-        Assert.Null(published[0].FirmwareDeltaMs);
-        Assert.Equal(10.0, published[1].FirmwareDeltaMs!.Value, precision: 3);
+        Assert.Equal(5, published.Count);
+        Assert.DoesNotContain(published, sample => sample.FollowsGap);
     }
 
     [Fact]
