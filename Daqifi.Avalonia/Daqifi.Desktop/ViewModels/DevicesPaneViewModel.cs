@@ -90,6 +90,14 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         set
         {
             if (_shell == null || SelectedDevice == null) return;
+            // The slider is disabled during a firmware update (issue #643); this covers a write that
+            // reaches the setter anyway, such as a pending delayed binding update. The announcement
+            // moves the slider back to the rate the device holds.
+            if (!CanUseDeviceActions())
+            {
+                OnPropertyChanged();
+                return;
+            }
             // A Slider writes its Value back when a falling Maximum coerces it, so this setter can
             // be reached carrying the rate the device already holds. That is not a change the user
             // asked for, and pushing it through the shell would answer it with "Cannot change
@@ -301,7 +309,7 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         AddDeviceCommand = new RelayCommand(AddDevice);
         DisconnectSelectedCommand = new RelayCommand(DisconnectSelected, CanUseDeviceActions);
         RebootSelectedCommand = new RelayCommand(RebootSelected, CanUseDeviceActions);
-        SetLoggingModeCommand = new RelayCommand<string>(SetLoggingMode);
+        SetLoggingModeCommand = new RelayCommand<string>(SetLoggingMode, _ => CanUseDeviceActions());
 
         if (_shell != null)
         {
@@ -349,29 +357,47 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
             tile.IsUpdatingFirmware = updating != null && ReferenceEquals(tile.Device, updating);
         }
 
-        // Issue #538: DISCONNECT and REBOOT follow the same state.
-        DisconnectSelectedCommand.NotifyCanExecuteChanged();
-        RebootSelectedCommand.NotifyCanExecuteChanged();
+        // Issue #538: DISCONNECT and REBOOT follow the same state. Issue #643: so does every other
+        // drawer control that talks to the device.
+        RaiseDeviceActionsChanged();
         OnPropertyChanged(nameof(DeviceActionsToolTip));
+
+        // The shell owns APPLY NETWORK SETTINGS, SAVE NAME and BROWSE, and the drawer's status lines.
+        _shell?.ApplyFirmwareUpdateState();
     }
 
     /// <summary>
-    /// Condition of DISCONNECT and REBOOT: a device is selected, and no firmware update is in
-    /// progress (issue #538). Both commands dispose the connection, and the update uses that
-    /// connection until it ends — CANCEL UPDATE is the control that stops an update.
+    /// Condition of the drawer controls that talk to the device: a device is selected, and no
+    /// firmware update is in progress (issues #538, #643). DISCONNECT and REBOOT dispose the
+    /// connection that the update uses until it ends; the other controls send commands to a device
+    /// that is in its bootloader. CANCEL UPDATE is the control that stops an update, and does not use
+    /// this condition.
     /// </summary>
     // Downstream-only: no upstream counterpart.
-    private bool CanUseDeviceActions() =>
-        SelectedDevice != null && !ConnectionManager.Instance.IsFirmwareUpdateInProgress;
+    private bool CanUseDeviceActions() => DeviceCommandAvailability.IsAvailable(SelectedDevice);
 
     /// <summary>
-    /// The tooltip of DISCONNECT and REBOOT: why they are disabled during a firmware update, and
-    /// <c>null</c> (no tooltip) at other times.
+    /// <see cref="CanUseDeviceActions"/> for the drawer controls that have no command: the LOGGING
+    /// MODE buttons, the FREQUENCY slider and box, and the firmware-file box (issue #643).
     /// </summary>
     // Downstream-only: no upstream counterpart.
-    public string? DeviceActionsToolTip => ConnectionManager.Instance.IsFirmwareUpdateInProgress
-        ? "Not available during a firmware update."
-        : null;
+    public bool CanUseDeviceCommands => CanUseDeviceActions();
+
+    /// <summary>
+    /// The tooltip of the drawer controls that <see cref="CanUseDeviceActions"/> disables: why they are
+    /// disabled during a firmware update, and <c>null</c> (no tooltip) at other times.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    public string? DeviceActionsToolTip => DeviceCommandAvailability.ToolTip;
+
+    /// <summary>Tells every control that uses <see cref="CanUseDeviceActions"/> to read it again.</summary>
+    private void RaiseDeviceActionsChanged()
+    {
+        DisconnectSelectedCommand.NotifyCanExecuteChanged();
+        RebootSelectedCommand.NotifyCanExecuteChanged();
+        SetLoggingModeCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(CanUseDeviceCommands));
+    }
 
     // @port: Daqifi.Desktop.ViewModels.DevicesPaneViewModel.OnSelectedTileChanged
     partial void OnSelectedTileChanged(DeviceTileViewModel? oldValue, DeviceTileViewModel? newValue)
@@ -386,8 +412,7 @@ public partial class DevicesPaneViewModel : ObservableObject, IDisposable
         Unfollow(oldValue?.Device);
         Follow(newValue?.Device);
 
-        DisconnectSelectedCommand.NotifyCanExecuteChanged();
-        RebootSelectedCommand.NotifyCanExecuteChanged();
+        RaiseDeviceActionsChanged();
     }
 
     private void Follow(IStreamingDevice? device)
