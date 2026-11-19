@@ -89,7 +89,7 @@ jobs:
     name: CI script self-tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Run every guard's self-test
         run: |
@@ -147,7 +147,7 @@ jobs:
     outputs:
       reuse: ${{ steps.decide.outputs.reuse }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Look for a green pull-request run of this exact tree
         id: decide
@@ -177,7 +177,7 @@ jobs:
     if: ${{ !cancelled() && needs.queue-reuse.outputs.reuse != 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Resolve the SDK from global.json, NOT a floating '10.0.x'.
       # Microsoft.NET.ILLink.Tasks is an IMPLICIT PackageReference on the trimming heads,
@@ -201,7 +201,7 @@ jobs:
       # Do not re-add it as-is. A cache only pays here if it is (a) written from main,
       # so every PR can read it, AND (b) much smaller than the whole global packages
       # folder, so its download costs less than the restore. Measure both first.
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
@@ -446,14 +446,14 @@ jobs:
       # at are what say whether ubuntu rendered the app at all.
       - name: Upload the --scripted run directories
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: headlessbench-scripted
           path: ${{ runner.temp }}/headlessbench
           if-no-files-found: ignore
 
       - name: Upload dependency graphs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: assets-desktop
           path: '**/obj/project.assets.json'
@@ -582,12 +582,12 @@ jobs:
     if: ${{ !cancelled() && needs.queue-reuse.outputs.reuse != 'true' }}
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Same pin as every other job — see the comment on the desktop job, and #107.
       #
       # No package cache, deliberately — see the comment on the desktop job.
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
@@ -1003,7 +1003,7 @@ jobs:
       # keeps each run's throwaway .appdata (SQLite DB + logs) out of the artifact.
       - name: Upload the determinism captures
         if: ${{ failure() && (steps.determinism.outcome == 'failure' || steps.baseline.outcome == 'failure') }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: parity-determinism-macos
           path: ${{ runner.temp }}/parity-audit/determinism
@@ -1016,14 +1016,14 @@ jobs:
     if: ${{ !cancelled() && needs.queue-reuse.outputs.reuse != 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Same pin as the desktop job — see the comment there, and #107. This job is where
       # the drift actually bit: the Android head trims, so it carries the implicit
       # Microsoft.NET.ILLink.Tasks reference whose version the SDK's bundled runtime picks.
       #
       # No package cache, deliberately — see the comment on the desktop job.
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
@@ -1077,7 +1077,7 @@ jobs:
             -c Release --no-restore -p:AndroidSdkDirectory="$ANDROID_HOME"
 
       - name: Upload dependency graph
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: assets-android
           # Same glob as the desktop job, not the single concrete path: for one
@@ -1140,14 +1140,14 @@ jobs:
     if: ${{ !cancelled() && needs.queue-reuse.outputs.reuse != 'true' }}
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Same pin as the other two jobs — see the comment on the desktop job, and #107.
       # It matters more here than anywhere: the SDK band also decides which iOS workload
       # is installed below, and therefore which Xcode this job has to select.
       #
       # No package cache, deliberately — see the comment on the desktop job.
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
@@ -1198,7 +1198,7 @@ jobs:
       #
       # The version is READ FROM THE SDK, never written here, because it tracks the SDK
       # pin and tracks nothing else you could infer it from. Under 10.0.203 the answer was
-      # Xcode 26.4; under the pinned 10.0.302 the iOS workload manifest is 26.5.10315 and
+      # Xcode 26.4; under the pinned 10.0.303 the iOS workload manifest is 26.5.10315 and
       # the Xcode it asks for is 26.6. Those two disagree on purpose — the manifest's 26.5
       # is an iOS version, and the lock file's net10.0-ios26.5 framework is that same
       # number, not an Xcode one. So every literal that looked plausible while writing
@@ -1391,7 +1391,7 @@ jobs:
           plutil -p "${app}/Info.plist" | grep -A6 CFBundleIcon
 
       - name: Upload dependency graph
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: assets-ios
           # Same glob and same reasoning as the other two jobs.
@@ -1438,7 +1438,7 @@ jobs:
       ${{ !cancelled() && needs.desktop.result == 'success'
           && needs.android.result == 'success' && needs.ios.result == 'success' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # One directory PER ARTIFACT (which is what omitting merge-multiple gets you),
       # not all three flattened into one. Every head restores the shared library and
@@ -1450,7 +1450,7 @@ jobs:
       # head's copy survives. It also makes the paths in a failure message say WHICH head
       # (graphs/assets-ios/... rather than graphs/...).
       - name: Download dependency graphs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: graphs
 
@@ -1488,7 +1488,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Name the tree
         id: tree
@@ -1502,7 +1502,7 @@ jobs:
           echo "commit ${GITHUB_SHA} has tree ${tree}; every job passed"
 
       - name: Record it
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: green-tree-${{ steps.tree.outputs.tree }}
           path: ${{ runner.temp }}/green-tree/tree.json

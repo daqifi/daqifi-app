@@ -69,7 +69,7 @@ jobs:
     steps:
       # Fully qualified: given a bare name, actions/checkout prefers a BRANCH of that name over
       # the tag, so a branch called v3.4.0 would be checked out instead of the tag v3.4.0.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
 
@@ -111,13 +111,13 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.sha }}
 
       # From global.json, never a floating 10.0.x: the SDK patch decides package versions the
       # lock files record (see build.yml and #107).
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
@@ -280,7 +280,7 @@ jobs:
           cp "${src}/releases.win.json" "${src}/RELEASES" "${out}/"
           ls -la "${out}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-${{ needs.version.outputs.version }}
           path: ${{ runner.temp }}/upload
