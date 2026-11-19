@@ -410,6 +410,9 @@ internal static partial class HeadlessBench
             // LoggedPoints, not LoggedChannels[..].Points: the LineSeries render through ItemsSource,
             // so their own Points lists stay empty while the plot is visibly drawing.
             var plotted = shell.Plotter?.LoggedPoints?.Values.Sum(l => l.Count) ?? -1;
+            // A line break is a NaN point: one for each gap Core found in the stream (#629), and one
+            // for each time the plot queue overflowed. A clean stream has none.
+            var plotBreaks = shell.Plotter?.LoggedPoints?.Values.Sum(l => l.Count(p => double.IsNaN(p.X))) ?? -1;
             var plotSeries = shell.Plotter?.LoggedChannels?.Count ?? 0;
             // Hold the session BEFORE stopping — LoggingManager.Session is this run's row, and
             // LOG-SESSION below waits for its persisted sample count.
@@ -475,7 +478,7 @@ internal static partial class HeadlessBench
                  shot);
             Step(2, "GRAPH-LIVE", "works", plotted > 0,
                  plotted >= 0
-                     ? $"PlotLogger had {plotted} points across {plotSeries} series while streaming (read before stop clears it)"
+                     ? $"PlotLogger had {plotted} points across {plotSeries} series while streaming, {plotBreaks} of them line breaks (read before stop clears it)"
                      : "shell.Plotter is null — live plot not constructed",
                  shot);
 
