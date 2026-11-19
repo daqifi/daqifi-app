@@ -79,6 +79,11 @@ public class FirmwareUpdateCoordinator
     /// state-changing <c>LAN:APPLY</c> on the wire — which this probe has never done, and which
     /// runs during a firmware flash. Enabling either is a separate, bench-verified change.
     /// </para>
+    /// <para>
+    /// It carries no <see cref="LanChipInfoRetryOptions.Progress"/> sink. The flash path adds its
+    /// own in <see cref="UpdateWifiModuleAsync"/>, because its status line is on screen. The
+    /// connect-time probe must not write that line (issue #241), so it gets this policy as is.
+    /// </para>
     /// </summary>
     internal static readonly LanChipInfoRetryOptions WifiChipInfoRetryOptions = new()
     {
@@ -1014,11 +1019,31 @@ public class FirmwareUpdateCoordinator
             // already powers on before its query; mirror that here so the version check can succeed.
             serialStreamingDevice.PowerOnWifiModule();
 
+            // Tell the user the app is retrying, not stalled (issue #308). The probe can take ~10 s,
+            // and a module that is still starting legitimately misses the first attempts. Core
+            // reports each attempt that read nothing (daqifi-core#745, shipped in 1.10.0), so the
+            // loop stays Core's and only the sentence is ours. A report with no retry after it
+            // writes nothing: the outcome line below comes next. A cancelled run writes nothing:
+            // the cancellation is already on its way out of the probe, and a retry message would
+            // contradict it.
+            //
+            // Progress<T>, like the other progress sinks in this class, posts to the context it was
+            // made on (the UI thread). Each report is posted before the probe completes, so it runs
+            // before the continuation that writes the outcome, never after it.
+            var retryProgress = new Progress<LanChipInfoProbeProgress>(report =>
+            {
+                if (report.Attempt < report.MaxAttempts && !cancellationToken.IsCancellationRequested)
+                {
+                    _host.FirmwareUpdateStatusText =
+                        $"Waiting for device to finish starting up before checking WiFi firmware version (attempt {report.Attempt + 1} of {report.MaxAttempts})...";
+                }
+            });
+
             // Keep the whole probe result, not just .ChipInfo: when nothing was read, the result
             // is the only record of WHY, and this outcome line is the only one that survives the
             // app's Information+ log floor (see DescribeUnreadableModule).
             var probe = await lanChipProvider.GetLanChipInfoWithRetryAsync(
-                WifiChipInfoRetryOptions, _firmwareLogger, cancellationToken);
+                WifiChipInfoRetryOptions with { Progress = retryProgress }, _firmwareLogger, cancellationToken);
             var chipInfo = probe.ChipInfo;
 
             if (chipInfo == null)
