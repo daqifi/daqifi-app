@@ -1,4 +1,5 @@
 using System.Reflection;
+using Avalonia.Platform.Storage;
 using Daqifi.Avalonia.Tests.Device;
 using Daqifi.Avalonia.Views;
 using Daqifi.Avalonia.Views.Mobile;
@@ -304,19 +305,20 @@ public sealed class MobileShellRecordTests : IDisposable
         var directory = Directory.CreateTempSubdirectory("daqifi-applogs-export-");
         try
         {
-            var picker = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
-            await _ui.Run(() => appLogs.SavePathResolver = _ => picker.Task);
+            var picker = new TaskCompletionSource<IStorageFile?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await _ui.Run(() => appLogs.SaveFileResolver = _ => picker.Task);
 
             var export = await _ui.Get(() => appLogs.ExportSessionCommand.ExecuteAsync(appLogs.Sessions[0]));
             Assert.True(await _ui.Get(() => appLogs.IsBusy), "Arrangement: the export must hold the list busy.");
             database.Commit(new LoggingSession(7, "Session_7"));
             await _ui.Run(appLogs.RefreshSessions);
 
-            picker.SetResult(Path.Combine(directory.FullName, "Session_6.csv"));
+            picker.SetResult(LocalStorageFile.Create(Path.Combine(directory.FullName, "Session_6.csv")));
             await export.WaitAsync(SendTimeout);
             await WaitUntilListedAsync(appLogs, "Session_7");
 
-            Assert.Equal("Couldn't export that session — see logs.", await _ui.Get(() => appLogs.StatusMessage));
+            Assert.Equal("Couldn't export to Session_6.csv. Nothing was saved — see logs.",
+                await _ui.Get(() => appLogs.StatusMessage));
         }
         finally
         {
@@ -336,8 +338,8 @@ public sealed class MobileShellRecordTests : IDisposable
         var directory = Directory.CreateTempSubdirectory("daqifi-applogs-export-");
         try
         {
-            var picker = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
-            await _ui.Run(() => appLogs.SavePathResolver = _ => picker.Task);
+            var picker = new TaskCompletionSource<IStorageFile?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await _ui.Run(() => appLogs.SaveFileResolver = _ => picker.Task);
             var destination = Path.Combine(directory.FullName, "Session_6.csv");
 
             var export = await _ui.Get(() => appLogs.ExportSessionCommand.ExecuteAsync(appLogs.Sessions[0]));
@@ -345,12 +347,12 @@ public sealed class MobileShellRecordTests : IDisposable
             database.Commit(new LoggingSession(7, "Session_7"));
             await _ui.Run(appLogs.RefreshSessions);
 
-            picker.SetResult(destination);
+            picker.SetResult(LocalStorageFile.Create(destination));
             await export.WaitAsync(SendTimeout);
             await WaitUntilListedAsync(appLogs, "Session_7");
 
-            Assert.True(File.Exists(destination), "Arrangement: the export wrote no CSV.");
-            Assert.Equal("Exported 1 session.", await _ui.Get(() => appLogs.StatusMessage));
+            Assert.True(new FileInfo(destination) is { Exists: true, Length: > 0 }, "Arrangement: the export wrote no CSV.");
+            Assert.Equal("Exported 1 session to Session_6.csv.", await _ui.Get(() => appLogs.StatusMessage));
         }
         finally
         {
@@ -657,5 +659,36 @@ public sealed class MobileShellRecordTests : IDisposable
             _pending = new TaskCompletionSource<RecordingResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             return _pending.Task;
         }
+    }
+
+    /// <summary>
+    /// The file the APP LOGS save picker returns, backed by a local path. Avalonia 12 marks
+    /// <see cref="IStorageFile"/> as not implementable by user code (an analyzer rule, enforced at
+    /// compile time), and no public Avalonia type makes one from a path without a platform storage
+    /// provider, so this double is generated at run time by <see cref="DispatchProxy"/>. It answers
+    /// only the members the export writer uses; any other member throws, so a new dependency of the
+    /// writer fails these tests instead of reading a silent default.
+    /// </summary>
+    public class LocalStorageFile : DispatchProxy
+    {
+        private string _path = string.Empty;
+
+        public static IStorageFile Create(string path)
+        {
+            var file = Create<IStorageFile, LocalStorageFile>();
+            ((LocalStorageFile)(object)file)._path = path;
+            return file;
+        }
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) => targetMethod?.Name switch
+        {
+            "get_Name" => Path.GetFileName(_path),
+            "OpenWriteAsync" => Task.FromResult<Stream>(new FileStream(_path, FileMode.Create, FileAccess.Write)),
+            "GetBasicPropertiesAsync" => Task.FromResult(new StorageItemProperties(
+                File.Exists(_path) ? (ulong)new FileInfo(_path).Length : null)),
+            "DeleteAsync" => Task.Run(() => File.Delete(_path)),
+            "Dispose" => null,
+            _ => throw new NotSupportedException($"The export test double does not implement {targetMethod?.Name}."),
+        };
     }
 }

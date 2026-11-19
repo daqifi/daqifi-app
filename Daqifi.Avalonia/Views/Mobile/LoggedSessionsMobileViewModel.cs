@@ -216,7 +216,7 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
     /// <param name="keepOperationResult">
     /// True for the automatic refresh after a commit (review of PR #609). A commit can land while
     /// an export or a delete holds <see cref="IsBusy"/>; the queued refresh then runs just after
-    /// that operation writes its result ("Exported 1 session.", "Couldn't delete that session…").
+    /// that operation writes its result ("Exported 1 session to …", "Couldn't delete that session…").
     /// Clearing the status line on success would erase that result before the user could read
     /// it. So this load clears only a previous load error. A user Reload still clears the line.
     /// </param>
