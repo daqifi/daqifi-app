@@ -145,6 +145,15 @@ public interface IFirmwareUpdateHost
     void ShowFirmwareSection(IStreamingDevice device) { }
 
     /// <summary>
+    /// Takes the user to the WiFi settings of <paramref name="device"/>: the Devices pane, with the
+    /// device's drawer open at its NETWORK section. Run by the button of the notification that a
+    /// successful update leaves about the WiFi settings (issue #644).
+    /// </summary>
+    /// <remarks>A default no-op for the same reason as <see cref="ShowFirmwareSection"/>.</remarks>
+    // Downstream-only: no upstream counterpart.
+    void ShowNetworkSection(IStreamingDevice device) { }
+
+    /// <summary>
     /// Records the result of the version check for one device: <paramref name="isOutdated"/> when
     /// its <paramref name="installedVersion"/> was compared with <paramref name="latestVersion"/>.
     /// Both are the values the comparison used, not values read again afterwards. The Devices drawer says "up to date" or

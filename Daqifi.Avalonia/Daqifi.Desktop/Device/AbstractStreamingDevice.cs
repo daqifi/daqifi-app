@@ -4,6 +4,7 @@
 // the correspondence map.
 
 using Daqifi.Desktop.Channel;
+using Daqifi.Desktop.Device.Firmware;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Core.Communication;
 using Daqifi.Core.Device.Network;
@@ -2804,6 +2805,57 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         AppLogger.Information($"Detected device type: {DeviceType} from part number: {Metadata.PartNumber}");
     }
 
+    /// <summary>
+    /// Replaces the WiFi settings that this device and its Core device hold with the values that the
+    /// device reported after a firmware update (issue #642), and puts them in the drawer.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A null field in <paramref name="reported"/> is not known and keeps its value. The password
+    /// and the static IP fields are not in a status reply and also keep their values.
+    /// </para>
+    /// <para>
+    /// The values are written into Core's metadata too, not only into this wrapper. Core raises
+    /// <c>ChannelsPopulated</c> for each status reply, and <see cref="HydrateDeviceMetadata"/> then
+    /// copies Core's metadata over this wrapper's. Core keeps a security mode from before the update
+    /// when the device reports 0 (daqifi/daqifi-core#986), so a correction made only here would be
+    /// overwritten by the next status reply. Once Core holds 0, Core's own rule keeps it correct:
+    /// a later reply with a security mode above 0 replaces it. Remove the Core write when a Core
+    /// release with the #986 correction is pinned.
+    /// </para>
+    /// </remarks>
+    // Downstream-only: no upstream counterpart.
+    public void ApplyReportedNetworkSettings(ReportedNetworkSettings reported)
+    {
+        ArgumentNullException.ThrowIfNull(reported);
+
+        WriteReportedNetworkSettings(reported);
+
+        // A new instance, for the same reason as in HydrateDeviceMetadata (#565).
+        var networkConfiguration = NetworkConfiguration.Clone();
+        if (reported.Ssid != null) networkConfiguration.Ssid = reported.Ssid;
+        if (reported.Mode is { } newMode) networkConfiguration.Mode = newMode;
+        if (reported.SecurityType is { } newSecurity) networkConfiguration.SecurityType = newSecurity;
+        NetworkConfiguration = networkConfiguration;
+    }
+
+    /// <summary>
+    /// Writes WiFi settings that the device holds into the metadata of this device and of its Core
+    /// device. A null field is not known and keeps its value.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    private void WriteReportedNetworkSettings(ReportedNetworkSettings reported)
+    {
+        // Core first, so that a status reply that arrives during this method copies the new values.
+        foreach (var metadata in new[] { CoreDevice?.Metadata, Metadata })
+        {
+            if (metadata == null) continue;
+            if (reported.Ssid != null) metadata.Ssid = reported.Ssid;
+            if (reported.Mode is { } mode) metadata.WifiInfrastructureMode = (uint)mode;
+            if (reported.SecurityType is { } security) metadata.WifiSecurityMode = (uint)security;
+        }
+    }
+
     #endregion
 
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.UpdateNetworkConfiguration
@@ -2818,9 +2870,24 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             StopStreaming();
         }
 
+        // Read before the await: the drawer edits this configuration, and an edit made while the
+        // settings are sent was not sent.
+        var configuration = NetworkConfiguration;
+        var applied = new ReportedNetworkSettings(
+            configuration.Mode,
+            string.IsNullOrWhiteSpace(configuration.Ssid) ? null : configuration.Ssid.Trim(),
+            configuration.SecurityType);
+
         try
         {
-            await coreDevice.UpdateNetworkConfigurationAsync(NetworkConfiguration);
+            await coreDevice.UpdateNetworkConfigurationAsync(configuration);
+
+            // The device now holds these settings, and no status reply follows an apply (issue
+            // #644, review of PR #646). A firmware update compares what the device reports after
+            // it with this metadata. Without this write, it compared with the reply read at
+            // connect: an update that erased settings applied in this session said nothing, and
+            // one that kept them said the settings had changed.
+            WriteReportedNetworkSettings(applied);
         }
         finally
         {

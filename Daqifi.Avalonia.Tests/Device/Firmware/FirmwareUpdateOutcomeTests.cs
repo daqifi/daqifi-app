@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using Daqifi.Core.Device;
+using Daqifi.Core.Device.Network;
 using Daqifi.Core.Firmware;
 using Daqifi.Desktop.Device.Firmware;
 using Daqifi.Desktop.Device.SerialDevice;
@@ -51,6 +52,16 @@ public class FirmwareUpdateOutcomeTests : IDisposable
     private int _postRestartReads;
 
     /// <summary>
+    /// The WiFi settings the post-restart network reader gives (issue #642), or null when they are
+    /// not known. The reader itself is <c>PostRestartNetworkSettings</c>, which
+    /// <c>PostRestartNetworkSettingsTests</c> tests; here it is a seam.
+    /// </summary>
+    private ReportedNetworkSettings? _postRestartNetwork;
+
+    /// <summary>Runs in place of the network reader, before <see cref="_postRestartNetwork"/> is returned.</summary>
+    private Func<CancellationToken, Task>? _onReadPostRestartNetwork;
+
+    /// <summary>
     /// <c>canFlashWifiModule: false</c> and a device with no WINC module keep the run to the PIC32
     /// half, which is the half this ticket is about.
     /// </summary>
@@ -72,6 +83,15 @@ public class FirmwareUpdateOutcomeTests : IDisposable
                 }
 
                 return _postRestartVersion;
+            },
+            readPostRestartNetworkSettings: async (_, token) =>
+            {
+                if (_onReadPostRestartNetwork != null)
+                {
+                    await _onReadPostRestartNetwork(token);
+                }
+
+                return _postRestartNetwork;
             });
 
     public void Dispose()
@@ -444,13 +464,353 @@ public class FirmwareUpdateOutcomeTests : IDisposable
     }
     #endregion
 
+    #region 4. WiFi settings after the update (issues #642 and #644)
+    /// <summary>The access-point SSID the bench Nyquist 1 reported after the 3.9.1 update.</summary>
+    private const string AccessPointSsid = "DAQiFi-95AC";
+
+    /// <summary>What the bench board reported after the update: its own access point, open.</summary>
+    private static readonly ReportedNetworkSettings ErasedSettings =
+        new(WifiMode.SelfHosted, AccessPointSsid, WifiSecurityType.None);
+
+    /// <summary>
+    /// Issue #642 through the coordinator: a device that was on a site network with WPA comes back
+    /// open, as its own access point. The drawer shows what the device reports, and Core's metadata
+    /// holds it too, so the next hydrate from Core does not bring the old WPA back (core#986).
+    /// </summary>
+    [Fact]
+    public async Task After_the_update_the_drawer_shows_the_settings_the_device_reports()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.9.0");
+        OnSiteNetwork(harness);
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        _postRestartNetwork = ErasedSettings;
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        var drawer = harness.Device.NetworkConfiguration;
+        Assert.Equal(WifiMode.SelfHosted, drawer.Mode);
+        Assert.Equal(WifiSecurityType.None, drawer.SecurityType);
+        Assert.Equal(AccessPointSsid, drawer.Ssid);
+        Assert.Equal((uint)WifiSecurityType.None, harness.Core.Metadata.WifiSecurityMode);
+        Assert.Equal(AccessPointSsid, harness.Core.Metadata.Ssid);
+    }
+
+    /// <summary>
+    /// Issue #642, the SSID: the status Core read at the reconnect, during the write, had the SSID
+    /// without its suffix (firmware#1266). The SSID of the later status reaches the drawer.
+    /// </summary>
+    [Fact]
+    public async Task An_ssid_that_changes_after_the_reconnect_reaches_the_drawer()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.9.0");
+        OnSiteNetwork(harness);
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        // The reconnect inside the write hydrated the short SSID, as on the bench.
+        _updates.OnPic32Flash = () => harness.Device.NetworkConfiguration =
+            new NetworkConfiguration { Mode = WifiMode.SelfHosted, Ssid = "DAQiFi", SecurityType = WifiSecurityType.WpaPskPhrase };
+        _postRestartNetwork = ErasedSettings;
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        Assert.Equal(AccessPointSsid, harness.Device.NetworkConfiguration.Ssid);
+        Assert.Equal(WifiSecurityType.None, harness.Device.NetworkConfiguration.SecurityType);
+    }
+
+    /// <summary>
+    /// The settings are read after the write has returned: a reply before that comes from the
+    /// device before its restart.
+    /// </summary>
+    [Fact]
+    public async Task The_wifi_settings_are_read_after_the_write_returns()
+    {
+        using var harness = ConnectedDevice();
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        var writeReturned = false;
+        bool? writeHadReturnedWhenRead = null;
+        _updates.OnPic32Flash = () => writeReturned = true;
+        _onReadPostRestartNetwork = _ =>
+        {
+            writeHadReturnedWhenRead = writeReturned;
+            return Task.CompletedTask;
+        };
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        Assert.True(writeHadReturnedWhenRead);
+        Assert.Contains(FirmwareUpdateCoordinator.ReadingWifiSettingsStatus, _host.StatusWrites);
+    }
+
+    /// <summary>
+    /// A Cancel during the settings read does not cancel a run whose writes are complete: the run
+    /// reports success, the settings are unknown, and the drawer keeps what it had.
+    /// </summary>
+    [Fact]
+    public async Task Cancel_during_the_wifi_settings_read_reports_the_completed_write()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.9.0");
+        OnSiteNetwork(harness);
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        _postRestartVersion = "3.9.1";
+        var reading = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _onReadPostRestartNetwork = async token =>
+        {
+            reading.TrySetResult();
+            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, token);
+        };
+        var coordinator = CreateCoordinator();
+
+        var run = coordinator.UploadFirmwareAsync();
+        await reading.Task.WaitAsync(Timeout);
+        coordinator.CancelUpload();
+        await run.WaitAsync(Timeout);
+
+        Assert.Equal(
+            SuccessDialogText("Nq1 now has firmware 3.9.1. The old version was 3.9.0."),
+            Assert.Single(_host.SuccessMessages));
+        Assert.DoesNotContain("Firmware update canceled.", _host.StatusWrites);
+        Assert.Equal("SiteNetwork", harness.Device.NetworkConfiguration.Ssid);
+    }
+
+    /// <summary>
+    /// Issue #644, settings changed: the dialog and the notification say in clear words that the
+    /// settings were erased and name the new access point, and the notification has a button that
+    /// opens the drawer at NETWORK.
+    /// </summary>
+    [Fact]
+    public async Task Erased_settings_are_named_in_the_dialog_and_the_notification()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.9.0");
+        OnSiteNetwork(harness);
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        _postRestartVersion = "3.9.1";
+        _postRestartNetwork = ErasedSettings;
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        const string wifiText =
+            "The WiFi settings were erased. Nq1 is now its own access point, DAQiFi-95AC. " +
+            "To connect it to your network again, open the WiFi settings of the device. " +
+            "The update can also have erased the calibration of the device.";
+        Assert.Equal(
+            "Nq1 now has firmware 3.9.1. The old version was 3.9.0.\n\n" + wifiText,
+            Assert.Single(_host.SuccessMessages));
+
+        var notification = Assert.Single(_host.Notifications);
+        Assert.Equal(wifiText, notification.Message);
+        Assert.Equal(FirmwareUpdateMessages.OpenWifiSettingsActionText, notification.ActionText);
+        Assert.NotNull(notification.Action);
+        Assert.True(notification.Action.CanExecute(null));
+
+        notification.Action.Execute(null);
+
+        Assert.Same(harness.Device, Assert.Single(_host.NetworkSectionRequests));
+    }
+
+    /// <summary>
+    /// Review of PR #646: no status reply follows APPLY NETWORK SETTINGS, so the "before" side must
+    /// be the settings applied in this session, not the reply read at connect. Here the device
+    /// connected as its own access point, the user put it on a site network, and the update erased
+    /// that. Compared with the connect reply, the access point it comes back as looked unchanged,
+    /// and the user was told nothing.
+    /// </summary>
+    [Fact]
+    public async Task Settings_applied_in_this_session_are_what_the_update_is_compared_with()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.9.0");
+        foreach (var metadata in new[] { harness.Core.Metadata, harness.Device.Metadata })
+        {
+            metadata.WifiInfrastructureMode = (uint)WifiMode.SelfHosted;
+            metadata.WifiSecurityMode = (uint)WifiSecurityType.None;
+            metadata.Ssid = AccessPointSsid;
+        }
+
+        harness.Device.NetworkConfiguration = new NetworkConfiguration
+        {
+            Mode = WifiMode.ExistingNetwork,
+            SecurityType = WifiSecurityType.WpaPskPhrase,
+            Ssid = "SiteNetwork",
+            Password = "site-passphrase",
+        };
+        await harness.Device.UpdateNetworkConfiguration().WaitAsync(Timeout);
+        Assert.Equal("SiteNetwork", harness.Core.Metadata.Ssid);
+        Assert.Equal((uint)WifiMode.ExistingNetwork, harness.Device.Metadata.WifiInfrastructureMode);
+
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        _postRestartVersion = "3.9.1";
+        _postRestartNetwork = ErasedSettings;
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        Assert.StartsWith("The WiFi settings were erased.", Assert.Single(_host.Notifications).Message);
+    }
+
+    /// <summary>Issue #644, settings not changed: no WiFi warning in the dialog, and no notification.</summary>
+    [Fact]
+    public async Task Unchanged_settings_give_no_wifi_warning()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.9.0");
+        OnSiteNetwork(harness);
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        _postRestartVersion = "3.9.1";
+        _postRestartNetwork = new ReportedNetworkSettings(WifiMode.ExistingNetwork, "SiteNetwork", WifiSecurityType.WpaPskPhrase);
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        Assert.Equal("Nq1 now has firmware 3.9.1. The old version was 3.9.0.", Assert.Single(_host.SuccessMessages));
+        Assert.Empty(_host.Notifications);
+    }
+
+    /// <summary>
+    /// Issue #644, values not known: the device did not report its settings after the update, so the
+    /// text cannot say that nothing changed. The notification still has the button.
+    /// </summary>
+    [Fact]
+    public async Task Unknown_settings_give_the_cautious_text()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.9.0");
+        OnSiteNetwork(harness);
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        _postRestartNetwork = null;
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        var notification = Assert.Single(_host.Notifications);
+        Assert.Equal(FirmwareUpdateMessages.WifiSettingsMayBeErased("Nq1"), notification.Message);
+        Assert.Equal(FirmwareUpdateMessages.OpenWifiSettingsActionText, notification.ActionText);
+        Assert.EndsWith(FirmwareUpdateMessages.WifiSettingsMayBeErased("Nq1"), Assert.Single(_host.SuccessMessages));
+    }
+
+    /// <summary>
+    /// Issue #644: the dialog and the notification name the device with one rule. The device has a
+    /// part number and a serial and no friendly name: both say "Nq1", and neither gives the serial
+    /// as the name.
+    /// </summary>
+    [Fact]
+    public async Task The_dialog_and_the_notification_use_the_same_device_name()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.9.0");
+        harness.Device.DeviceSerialNo = "9090539562006014104";
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        _postRestartVersion = "3.9.1";
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        var name = FirmwareUpdateMessages.DeviceNameFor(harness.Device);
+        Assert.Equal("Nq1", name);
+        var serialAsShown = Daqifi.Desktop.Device.DeviceSerials.ToDisplay(harness.Device.DeviceSerialNo);
+        var dialog = Assert.Single(_host.SuccessMessages);
+        var notification = Assert.Single(_host.Notifications).Message;
+        Assert.StartsWith("Nq1 now has firmware", dialog);
+        Assert.Contains(" of Nq1.", notification);
+        Assert.DoesNotContain(serialAsShown, dialog);
+        Assert.DoesNotContain(serialAsShown, notification);
+    }
+
+    /// <summary>
+    /// A second update replaces the WiFi notification of the same device instead of adding a second
+    /// one beside it, also when its text differs, so the list never holds two texts that disagree.
+    /// </summary>
+    [Fact]
+    public async Task A_second_update_replaces_the_wifi_notification_of_the_device()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.9.0");
+        harness.Device.DeviceSerialNo = "9090539562006014104";
+        OnSiteNetwork(harness);
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        var coordinator = CreateCoordinator();
+
+        _postRestartNetwork = null;
+        await coordinator.UploadFirmwareAsync().WaitAsync(Timeout);
+        _host.FirmwareFilePath = FirmwareFile();
+        _postRestartNetwork = ErasedSettings;
+        OnSiteNetwork(harness);
+        await coordinator.UploadFirmwareAsync().WaitAsync(Timeout);
+
+        var notification = Assert.Single(_host.Notifications);
+        Assert.StartsWith("The WiFi settings were erased.", notification.Message);
+    }
+
+    [Fact]
+    public void The_wifi_text_for_a_change_that_is_not_an_erase_asks_the_user_to_check()
+    {
+        var text = FirmwareUpdateMessages.WifiSettingsAfterUpdate(
+            "Nq1",
+            new ReportedNetworkSettings(WifiMode.ExistingNetwork, "SiteNetwork", null),
+            new ReportedNetworkSettings(WifiMode.ExistingNetwork, "OtherNetwork", WifiSecurityType.WpaPskPhrase));
+
+        Assert.Equal(
+            "The WiFi settings changed during the update. Nq1 now uses the network OtherNetwork. " +
+            "Open the WiFi settings of the device and make sure that they are correct. " +
+            "The update can also have erased the calibration of the device.",
+            text);
+    }
+
+    /// <summary>The SSID comparison is exact: an SSID is case-sensitive.</summary>
+    [Fact]
+    public void An_ssid_that_differs_only_in_case_is_a_change()
+    {
+        var text = FirmwareUpdateMessages.WifiSettingsAfterUpdate(
+            "Nq1",
+            new ReportedNetworkSettings(WifiMode.SelfHosted, "daqifi-95ac", null),
+            ErasedSettings);
+
+        Assert.NotNull(text);
+    }
+
+    /// <summary>A mode or an SSID that is not known on one side gives the cautious text.</summary>
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void A_side_without_a_mode_or_an_ssid_gives_the_cautious_text(bool beforeHasMode, bool afterHasSsid)
+    {
+        var before = new ReportedNetworkSettings(beforeHasMode ? WifiMode.SelfHosted : null, AccessPointSsid, null);
+        var after = new ReportedNetworkSettings(WifiMode.SelfHosted, afterHasSsid ? AccessPointSsid : null, WifiSecurityType.None);
+
+        Assert.Equal(
+            FirmwareUpdateMessages.WifiSettingsMayBeErased("Nq1"),
+            FirmwareUpdateMessages.WifiSettingsAfterUpdate("Nq1", before, after));
+    }
+
+    /// <summary>
+    /// Puts the device on a site network with WPA, in Core's metadata, in the wrapper's metadata
+    /// and in the drawer, as a connect's hydrate does.
+    /// </summary>
+    private static void OnSiteNetwork(Harness harness)
+    {
+        foreach (var metadata in new[] { harness.Core.Metadata, harness.Device.Metadata })
+        {
+            metadata.WifiInfrastructureMode = (uint)WifiMode.ExistingNetwork;
+            metadata.WifiSecurityMode = (uint)WifiSecurityType.WpaPskPhrase;
+            metadata.Ssid = "SiteNetwork";
+        }
+
+        harness.Device.NetworkConfiguration = new NetworkConfiguration
+        {
+            Mode = WifiMode.ExistingNetwork,
+            SecurityType = WifiSecurityType.WpaPskPhrase,
+            Ssid = "SiteNetwork",
+        };
+    }
+    #endregion
+
     #region Helpers
     /// <summary>
-    /// The full success dialog text: the version paragraph (issue #570), an empty line, and the
-    /// instruction to set the WiFi settings again (issue #564).
+    /// The full success dialog text when the WiFi settings are not known: the version paragraph
+    /// (issue #570), an empty line, and the instruction to set the WiFi settings again (issues #564
+    /// and #644).
     /// </summary>
     private static string SuccessDialogText(string versionParagraph) =>
-        versionParagraph + "\n\n" + FirmwareUpdateCoordinator.WifiSettingsMayBeErasedInstruction;
+        versionParagraph + "\n\n" + FirmwareUpdateMessages.WifiSettingsMayBeErased("Nq1");
 
     /// <summary>A stand-in PIC32 image: the coordinator checks only that the file exists.</summary>
     private string FirmwareFile()
@@ -657,6 +1017,11 @@ public class FirmwareUpdateOutcomeTests : IDisposable
         public void ShowFirmwareError(string message) { }
 
         public void ShowFirmwareUpdateSucceeded(string message) => SuccessMessages.Add(message);
+
+        /// <summary>The devices whose NETWORK section a notification button asked for (issue #644).</summary>
+        public List<DesktopStreamingDevice> NetworkSectionRequests { get; } = [];
+
+        public void ShowNetworkSection(DesktopStreamingDevice device) => NetworkSectionRequests.Add(device);
 
         /// <summary>Confirms at once: these facts are about the run, not the prompt in front of it (issue #564).</summary>
         public Task<bool> ConfirmFirmwareUpdateAsync(string title, string message, CancellationToken cancellationToken) => Task.FromResult(true);

@@ -749,8 +749,10 @@
                                 </ComboBox>
                             </StackPanel>
 
-                            <!-- NETWORK -->
-                            <TextBlock Text="NETWORK" Classes="sectionLabel drawerSectionLabel"/>
+                            <!-- NETWORK. Named so the WiFi-settings notification can scroll to it (issue #644). -->
+                            <TextBlock x:Name="NetworkSection"
+                                       Text="NETWORK"
+                                       Classes="sectionLabel drawerSectionLabel"/>
 
                             <TextBlock Text="MODE" Classes="infoLabel" Margin="0,0,0,6"/>
                             <!-- divergence: ObjectDataProvider Enum.GetValues → inline enum items -->

@@ -142,7 +142,7 @@ public partial class DevicesPanePrototype : UserControl
             var shell = (TopLevel.GetTopLevel(this) as Window)?.DataContext as DaqifiViewModel;
             DataContext = new DevicesPaneViewModel(shell);
         }
-        FollowFirmwareSectionRequests();
+        FollowDeviceSectionRequests();
         base.OnAttachedToVisualTree(e);
     }
 
@@ -167,7 +167,7 @@ public partial class DevicesPanePrototype : UserControl
         base.OnDetachedFromVisualTree(e);
         if (DataContext is DevicesPaneViewModel pane)
         {
-            pane.FirmwareSectionShown -= OnFirmwareSectionShown;
+            pane.DeviceSectionShown -= OnDeviceSectionShown;
         }
         if (DataContext is IDisposable disposable)
         {
@@ -177,30 +177,32 @@ public partial class DevicesPanePrototype : UserControl
     }
 
     /// <summary>
-    /// Subscribes to the view model's FIRMWARE-section requests (issue #569), and serves the one it
-    /// took while it was being built, before this subscription existed.
+    /// Subscribes to the view model's drawer-section requests (issues #569 and #644), and serves the
+    /// one it took while it was being built, before this subscription existed.
     /// </summary>
-    private void FollowFirmwareSectionRequests()
+    private void FollowDeviceSectionRequests()
     {
         if (DataContext is not DevicesPaneViewModel pane) return;
-        pane.FirmwareSectionShown += OnFirmwareSectionShown;
-        if (pane.TakeFirmwareScrollRequest()) ScrollToFirmwareSection();
+        pane.DeviceSectionShown += OnDeviceSectionShown;
+        if (pane.TakeSectionScrollRequest() is { } section) ScrollToSection(section);
     }
 
-    private void OnFirmwareSectionShown(object? sender, EventArgs e)
+    private void OnDeviceSectionShown(object? sender, EventArgs e)
     {
-        if ((sender as DevicesPaneViewModel)?.TakeFirmwareScrollRequest() == true) ScrollToFirmwareSection();
+        if ((sender as DevicesPaneViewModel)?.TakeSectionScrollRequest() is { } section) ScrollToSection(section);
     }
 
     /// <summary>
-    /// Scrolls the drawer so the FIRMWARE section starts at the top of its view (issue #569). The
-    /// drawer has only now become visible, so this waits for the layout pass that measures it.
+    /// Scrolls the drawer so <paramref name="drawerSection"/> starts at the top of its view: FIRMWARE
+    /// (issue #569) or NETWORK (issue #644). The drawer has only now become visible, so this waits for
+    /// the layout pass that measures it.
     /// </summary>
-    private void ScrollToFirmwareSection()
+    private void ScrollToSection(DeviceDrawerSection drawerSection)
     {
+        var name = drawerSection == DeviceDrawerSection.Network ? "NetworkSection" : "FirmwareSection";
         Dispatcher.UIThread.Post(() =>
         {
-            var section = this.FindControl<TextBlock>("FirmwareSection");
+            var section = this.FindControl<TextBlock>(name);
             if (section == null) return;
             // A rectangle one viewport tall from the label down, so the label lands at the top of
             // the view and not at its bottom edge with the controls under it out of sight.

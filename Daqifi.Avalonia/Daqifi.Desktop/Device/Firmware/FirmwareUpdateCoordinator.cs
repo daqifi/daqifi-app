@@ -6,6 +6,7 @@
 using System.IO;
 using System.IO.Ports;
 using Daqifi.Core.Device;
+using Daqifi.Core.Device.Network;
 using Daqifi.Core.Firmware;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.Device.SerialDevice;
@@ -155,6 +156,14 @@ public class FirmwareUpdateCoordinator
     /// <c>Metadata.FirmwareVersion</c>.
     /// </summary>
     private readonly Func<DaqifiDevice, CancellationToken, Task<string?>> _readPostRestartVersion;
+
+    /// <summary>
+    /// Reads the WiFi settings from a status reply that the device sends once it has completed its
+    /// start after the write; <c>null</c> when they are not known (issue #642). Production:
+    /// <see cref="PostRestartNetworkSettings.ReadAsync"/>, which waits out the firmware's first
+    /// seconds before it asks. Overridable so unit tests can give the reply without a device or a wait.
+    /// </summary>
+    private readonly Func<DaqifiDevice, CancellationToken, Task<ReportedNetworkSettings?>> _readPostRestartNetworkSettings;
     #endregion
 
     #region Constructor
@@ -192,6 +201,12 @@ public class FirmwareUpdateCoordinator
     /// Overrides how the WINC flash tool is started. Null uses Core's
     /// <see cref="ProcessExternalProcessRunner"/>; tests pass a fake so no process starts.
     /// </param>
+    /// <param name="readPostRestartNetworkSettings">
+    /// Overrides how the WiFi settings are read from the restarted device. Null uses
+    /// <see cref="PostRestartNetworkSettings.ReadAsync"/>; tests pass a fake so the reply is set
+    /// without a device and without its settle delay. The result is null when the settings are not
+    /// known (issue #642).
+    /// </param>
     public FirmwareUpdateCoordinator(
         IFirmwareUpdateHost host,
         IFirmwareUpdateService firmwareUpdateService,
@@ -203,7 +218,8 @@ public class FirmwareUpdateCoordinator
         IBootloaderWatcher? watcher = null,
         bool? canFlashWifiModule = null,
         Func<DaqifiDevice, CancellationToken, Task<string?>>? readPostRestartVersion = null,
-        IExternalProcessRunner? wifiFlashToolRunner = null)
+        IExternalProcessRunner? wifiFlashToolRunner = null,
+        Func<DaqifiDevice, CancellationToken, Task<ReportedNetworkSettings?>>? readPostRestartNetworkSettings = null)
     {
         _host = host ?? throw new ArgumentNullException(nameof(host));
         _firmwareUpdateService = firmwareUpdateService ?? throw new ArgumentNullException(nameof(firmwareUpdateService));
@@ -217,6 +233,8 @@ public class FirmwareUpdateCoordinator
         _readPostRestartVersion = readPostRestartVersion
             ?? ((device, token) => PostRestartFirmwareVersion.ReadAsync(device, cancellationToken: token));
         _wifiFlashToolRunner = wifiFlashToolRunner ?? new ProcessExternalProcessRunner();
+        _readPostRestartNetworkSettings = readPostRestartNetworkSettings
+            ?? ((device, token) => PostRestartNetworkSettings.ReadAsync(device, cancellationToken: token));
     }
     #endregion
 
@@ -296,6 +314,12 @@ public class FirmwareUpdateCoordinator
             // Read before the flash for the success dialog (issue #570): the device still reports
             // the version it had.
             var previousVersion = serialStreamingDevice.DeviceVersion;
+
+            // Read before the flash for the WiFi text (issue #644): the WiFi settings the device
+            // reported before the update, to compare with what it reports after it. From the
+            // device's metadata, not from the drawer, which can hold values the user typed and
+            // did not apply.
+            var networkBeforeUpdate = ReportedNetworkSettingsOf(serialStreamingDevice.Metadata);
 
             _appLogger.AddBreadcrumb("firmware", $"Firmware update started for {serialStreamingDevice.Name}");
 
@@ -398,6 +422,26 @@ public class FirmwareUpdateCoordinator
                 await UpdateWifiModuleAsync(serialStreamingDevice, cancellationToken);
             }
 
+            // Issue #642: the drawer kept WiFi settings that the update had erased. Read them again
+            // now that the device has completed its start, and put what the device reports in the
+            // drawer. Like the version read, a Cancel here does not cancel a run whose writes are
+            // complete: the settings are then unknown and the drawer keeps what it has.
+            _host.FirmwareUpdateStatusText = ReadingWifiSettingsStatus;
+            ReportedNetworkSettings? networkAfterUpdate;
+            try
+            {
+                networkAfterUpdate = await _readPostRestartNetworkSettings(coreDevice, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                networkAfterUpdate = null;
+            }
+
+            if (networkAfterUpdate != null)
+            {
+                serialStreamingDevice.ApplyReportedNetworkSettings(networkAfterUpdate);
+            }
+
             RecheckFirmwareAfterWrite(serialStreamingDevice, reportedVersion);
             refreshReleasesAfterRun = true;
 
@@ -408,16 +452,21 @@ public class FirmwareUpdateCoordinator
             _host.UploadFirmwareProgress = 0;
             _host.UploadWiFiProgress = 0;
 
-            NotifyWifiSettingsMayBeErased(serialStreamingDevice);
+            // One name for the device in the dialog and in the notification (issue #644).
+            var deviceName = FirmwareUpdateMessages.DeviceNameFor(serialStreamingDevice);
+            var wifiText = FirmwareUpdateMessages.WifiSettingsAfterUpdate(
+                deviceName, networkBeforeUpdate, networkAfterUpdate);
+            if (wifiText != null)
+            {
+                NotifyWifiSettingsAfterUpdate(serialStreamingDevice, wifiText);
+            }
+
             _appLogger.AddBreadcrumb("firmware", "Firmware update completed");
 
-            // The device and both versions (issue #570), then what the user must do next (issue #564).
-            _host.ShowFirmwareUpdateSucceeded(
-                FirmwareUpdateMessages.UpdateSucceeded(
-                    FirmwareUpdateMessages.DeviceNameFor(serialStreamingDevice),
-                    previousVersion,
-                    reportedVersion)
-                + "\n\n" + WifiSettingsMayBeErasedInstruction);
+            // The device and both versions (issue #570), then what the user must do next (issues
+            // #564 and #644) — nothing when the WiFi settings did not change.
+            var successText = FirmwareUpdateMessages.UpdateSucceeded(deviceName, previousVersion, reportedVersion);
+            _host.ShowFirmwareUpdateSucceeded(wifiText == null ? successText : successText + "\n\n" + wifiText);
         }
         catch (OperationCanceledException)
         {
@@ -699,7 +748,14 @@ public class FirmwareUpdateCoordinator
             ? $"the file {Path.GetFileName(manualFirmwarePath)}"
             : releaseVersion;
 
-        return $"Device: {device.DeviceDisplayName}\n" +
+        // The name the other firmware messages use, and the serial as a second line: the name can be
+        // shared by two boards, and here the user confirms a write to one exact board (issue #644).
+        var serialLine = string.IsNullOrWhiteSpace(device.DeviceSerialNo)
+            ? string.Empty
+            : $"Serial number: {DeviceSerials.ToDisplay(device.DeviceSerialNo)}\n";
+
+        return $"Device: {FirmwareUpdateMessages.DeviceNameFor(device)}\n" +
+               serialLine +
                $"Installed version: {installed}\n" +
                $"New version: {target}\n\n" +
                "The update takes approximately 1 minute. Do not disconnect the USB cable during the update.\n\n" +
@@ -708,12 +764,10 @@ public class FirmwareUpdateCoordinator
     }
 
     /// <summary>
-    /// What the user is told after a successful write (issue #564), in the success dialog and in the
-    /// device's notification. One text for both, so the two can never disagree.
+    /// The status line while the coordinator reads the WiFi settings of the restarted device
+    /// (issue #642). The read waits a few seconds first, so the line says why the run has not ended.
     /// </summary>
-    internal const string WifiSettingsMayBeErasedInstruction =
-        "The firmware update can erase the WiFi settings and the calibration of the device. " +
-        "Set the WiFi settings of the device again.";
+    internal const string ReadingWifiSettingsStatus = "Reading the WiFi settings of the device...";
 
     /// <summary>
     /// What the user is told when no release can be resolved for the prompt. The run stops there: a
@@ -758,32 +812,62 @@ public class FirmwareUpdateCoordinator
     }
 
     /// <summary>
-    /// Tells the user, after a successful write, that the device may have lost its WiFi settings
-    /// (issue #564). The success dialog says it too, but that dialog closes and the status line is
-    /// hidden once the run ends, so a notification is the one place this outlives the run. A device that was set to join a site
-    /// network comes back as its own access point and WiFi discovery no longer finds it.
+    /// Tells the user, after a successful write, what happened to the WiFi settings of the device
+    /// (issues #564 and #644). The success dialog says it too, but that dialog closes and the status
+    /// line is hidden once the run ends, so a notification is the one place this outlives the run. A
+    /// device that was set to join a site network comes back as its own access point and WiFi
+    /// discovery no longer finds it.
     /// <para>
-    /// Owned by the device's serial, like <see cref="NotifyWifiModuleWasNotUpdated"/>, and
-    /// deduplicated per device on the same terms, so a second update does not stack a second copy.
+    /// The button opens the NETWORK section of the device's drawer, as the outdated-firmware
+    /// notification's button opens FIRMWARE (issue #569). The text names the device with the same
+    /// rule as the success dialog (<see cref="FirmwareUpdateMessages.DeviceNameFor"/>).
+    /// </para>
+    /// <para>
+    /// Owned by the device's serial. A second update replaces this notification of the same device
+    /// instead of adding a second one beside it, so the list never shows two texts about the WiFi
+    /// settings of one device that disagree.
     /// </para>
     /// </summary>
-    private void NotifyWifiSettingsMayBeErased(SerialStreamingDevice serialStreamingDevice)
+    private void NotifyWifiSettingsAfterUpdate(SerialStreamingDevice serialStreamingDevice, string message)
     {
-        var message = $"{serialStreamingDevice.DeviceDisplayName}: {WifiSettingsMayBeErasedInstruction}";
         var serial = serialStreamingDevice.DeviceSerialNo;
 
-        if (_host.Notifications.Any(notification =>
-                notification.Message == message && DeviceSerials.SameDevice(notification.DeviceSerialNo, serial)))
+        foreach (var earlier in _host.Notifications
+                     .Where(notification => IsWifiSettingsNotice(notification)
+                                            && DeviceSerials.SameDevice(notification.DeviceSerialNo, serial))
+                     .ToList())
         {
-            return;
+            _host.Notifications.Remove(earlier);
         }
 
         _host.Notifications.Add(new Notifications
         {
             Message = message,
-            DeviceSerialNo = serial
+            DeviceSerialNo = serial,
+            ActionText = FirmwareUpdateMessages.OpenWifiSettingsActionText,
+            Action = new CommunityToolkit.Mvvm.Input.RelayCommand(() => _host.ShowNetworkSection(serialStreamingDevice)),
         });
         _host.RefreshNotificationCount();
+    }
+
+    /// <summary>Whether <paramref name="notification"/> is one that <see cref="NotifyWifiSettingsAfterUpdate"/> made.</summary>
+    private static bool IsWifiSettingsNotice(Notifications notification) =>
+        notification.ActionText == FirmwareUpdateMessages.OpenWifiSettingsActionText;
+
+    /// <summary>
+    /// The WiFi mode and SSID in <paramref name="metadata"/>, or <c>null</c> when it holds neither.
+    /// The security type is left out: only the mode and the SSID are compared (issue #644).
+    /// </summary>
+    internal static ReportedNetworkSettings? ReportedNetworkSettingsOf(DeviceMetadata metadata)
+    {
+        WifiMode? mode = metadata.WifiInfrastructureMode switch
+        {
+            (uint)WifiMode.ExistingNetwork => WifiMode.ExistingNetwork,
+            (uint)WifiMode.SelfHosted => WifiMode.SelfHosted,
+            _ => null,
+        };
+        var ssid = string.IsNullOrWhiteSpace(metadata.Ssid) ? null : metadata.Ssid.Trim();
+        return mode is null && ssid is null ? null : new ReportedNetworkSettings(mode, ssid, null);
     }
 
     /// <summary>
@@ -1607,10 +1691,8 @@ public class FirmwareUpdateCoordinator
             : $"{name} has firmware {installedVersion}. Version {latestFirmware} is available.";
     }
 
-    private static string NotificationName(IStreamingDevice device) =>
-        !string.IsNullOrWhiteSpace(device.FriendlyName) ? device.FriendlyName
-        : !string.IsNullOrWhiteSpace(device.DevicePartNumber) ? device.DevicePartNumber
-        : device.DeviceDisplayName;
+    // The one name rule of the firmware messages (issue #644).
+    private static string NotificationName(IStreamingDevice device) => FirmwareUpdateMessages.DeviceNameFor(device);
 
     /// <summary>
     /// Leaves a record, outliving the run, that the WiFi half did not happen.

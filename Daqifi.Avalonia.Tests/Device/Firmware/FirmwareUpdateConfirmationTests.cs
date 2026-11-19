@@ -76,7 +76,9 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
             // The version read after the write (issue #570) asks the device for a status reply. The
             // devices here never answer, so the real reader would wait its full timeout in every
             // run that writes. These facts are about the prompt and the write, not that read.
-            readPostRestartVersion: (_, _) => Task.FromResult<string?>(null));
+            readPostRestartVersion: (_, _) => Task.FromResult<string?>(null),
+            // The WiFi-settings read after the write (issue #642) waits and asks for a reply too.
+            readPostRestartNetworkSettings: (_, _) => Task.FromResult<ReportedNetworkSettings?>(null));
 
     #region The write starts only after the user confirms
     /// <summary>
@@ -219,7 +221,8 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
 
         Assert.Equal("Update firmware?", _host.LastTitle);
         var message = _host.LastMessage;
-        Assert.Contains("Device: Bench Nq1", message);
+        Assert.Contains("Device: Bench Nq1\n", message);
+        Assert.Contains("Serial number: SN564\n", message);
         Assert.Contains("Installed version: 3.8.0", message);
         Assert.Contains("New version: the file firmware.hex", message);
         Assert.Contains("approximately 1 minute", message);
@@ -263,8 +266,8 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
 
         var notification = Assert.Single(_host.Notifications);
         Assert.Equal("SN564", notification.DeviceSerialNo);
-        Assert.StartsWith("Bench Nq1:", notification.Message);
-        Assert.Contains("Set the WiFi settings of the device again.", notification.Message);
+        // No WiFi settings were known before or after the write, so the text cannot say what changed.
+        Assert.Equal(FirmwareUpdateMessages.WifiSettingsMayBeErased("Bench Nq1"), notification.Message);
         Assert.False(notification.IsFirmwareUpdate);
         Assert.Equal(1, _host.RefreshCount);
     }
@@ -411,9 +414,11 @@ public sealed class FirmwareUpdateConfirmationTests : IDisposable
         Assert.Equal(
             FirmwareUpdateMessages.UpdateSucceeded(
                 FirmwareUpdateMessages.DeviceNameFor(device), device.DeviceVersion, reportedVersion: null)
-            + "\n\n" + FirmwareUpdateCoordinator.WifiSettingsMayBeErasedInstruction,
+            + "\n\n" + FirmwareUpdateMessages.WifiSettingsMayBeErased(FirmwareUpdateMessages.DeviceNameFor(device)),
             message);
-        Assert.EndsWith(FirmwareUpdateCoordinator.WifiSettingsMayBeErasedInstruction, Assert.Single(_host.Notifications).Message);
+        Assert.Equal(
+            FirmwareUpdateMessages.WifiSettingsMayBeErased(FirmwareUpdateMessages.DeviceNameFor(device)),
+            Assert.Single(_host.Notifications).Message);
     }
     #endregion
 

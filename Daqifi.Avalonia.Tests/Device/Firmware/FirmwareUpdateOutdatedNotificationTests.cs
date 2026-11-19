@@ -102,7 +102,9 @@ public class FirmwareUpdateOutdatedNotificationTests : IDisposable
             _dataDirectory,
             wifiUpdateModeSettleDelay: TimeSpan.Zero,
             canFlashWifiModule: canFlashWifiModule,
-            readPostRestartVersion: readPostRestartVersion);
+            readPostRestartVersion: readPostRestartVersion,
+            // The WiFi-settings read after the write (issue #642) waits and asks for a reply too.
+            readPostRestartNetworkSettings: (_, _) => Task.FromResult<ReportedNetworkSettings?>(null));
 
     public void Dispose()
     {

@@ -123,6 +123,86 @@ public class AbstractStreamingDeviceNetworkSettingsRefreshTests
         Assert.Equal(IPAddress.Parse("192.168.1.1"), device.NetworkConfiguration.Gateway);
     }
 
+    #region After a firmware update (issue #642)
+    /// <summary>
+    /// The full status a Nyquist 1 sends after an update erased its WiFi settings: its own access
+    /// point, open. Open is 0, and proto3 does not send a 0, so field 60 is absent.
+    /// </summary>
+    private static DaqifiOutMessage OpenAccessPointStatus(string ssid = AccessPointSsid) => new()
+    {
+        DeviceSn = 9090539562006014104,
+        DevicePn = "Nq1",
+        WifiInfMode = (uint)WifiMode.SelfHosted,
+        Ssid = ssid,
+    };
+
+    /// <summary>
+    /// The first check of issue #642: a device that had WPA before the update shows open after a
+    /// post-update status without field 60 — and keeps open through the next status, which Core's
+    /// <c>ChannelsPopulated</c> turns into another hydrate from Core's metadata.
+    /// </summary>
+    [Fact]
+    public void A_device_that_had_WPA_shows_open_after_a_status_without_the_security_field()
+    {
+        var core = CoreDeviceReporting(WifiMode.ExistingNetwork, WifiSecurityType.WpaPskPhrase, SiteSsid);
+        var device = new TestDevice(core);
+        device.Sync(core);
+        Assert.Equal(WifiSecurityType.WpaPskPhrase, device.NetworkConfiguration.SecurityType);
+
+        core.Metadata.UpdateFromProtobuf(OpenAccessPointStatus());
+        device.ApplyReportedNetworkSettings(
+            Desktop.Device.Firmware.PostRestartNetworkSettings.FromStatus(OpenAccessPointStatus())!);
+
+        Assert.Equal(WifiSecurityType.None, device.NetworkConfiguration.SecurityType);
+        Assert.Equal(WifiMode.SelfHosted, device.NetworkConfiguration.Mode);
+        Assert.Equal(AccessPointSsid, device.NetworkConfiguration.Ssid);
+
+        // The next status reply: Core applies it, and the wrapper hydrates from Core again.
+        core.Metadata.UpdateFromProtobuf(OpenAccessPointStatus());
+        device.Sync(core);
+
+        Assert.Equal(WifiSecurityType.None, device.NetworkConfiguration.SecurityType);
+        Assert.Equal((uint)WifiSecurityType.None, core.Metadata.WifiSecurityMode);
+    }
+
+    /// <summary>
+    /// The second check of issue #642: the first status after the restart has the SSID without its
+    /// MAC suffix (firmware#1266); the SSID of the later status reaches the drawer.
+    /// </summary>
+    [Fact]
+    public void An_ssid_that_changes_after_the_first_status_reaches_the_drawer()
+    {
+        var core = CoreDeviceReporting(WifiMode.SelfHosted, WifiSecurityType.None, "DAQiFi");
+        var device = new TestDevice(core);
+        device.Sync(core);
+        Assert.Equal("DAQiFi", device.NetworkConfiguration.Ssid);
+        var before = device.NetworkConfiguration;
+
+        device.ApplyReportedNetworkSettings(
+            Desktop.Device.Firmware.PostRestartNetworkSettings.FromStatus(OpenAccessPointStatus())!);
+
+        Assert.Equal(AccessPointSsid, device.NetworkConfiguration.Ssid);
+        Assert.Equal(AccessPointSsid, core.Metadata.Ssid);
+        Assert.Equal(AccessPointSsid, device.Metadata.Ssid);
+        Assert.NotSame(before, device.NetworkConfiguration);
+    }
+
+    /// <summary>A field the reply did not state keeps its value, and so do the fields no reply has.</summary>
+    [Fact]
+    public void Values_that_were_not_reported_are_kept()
+    {
+        var device = DeviceOnSiteNetwork();
+        device.NetworkConfiguration.Password = "typed-not-applied";
+
+        device.ApplyReportedNetworkSettings(new(Mode: null, Ssid: "Other", SecurityType: null));
+
+        Assert.Equal("Other", device.NetworkConfiguration.Ssid);
+        Assert.Equal(WifiMode.ExistingNetwork, device.NetworkConfiguration.Mode);
+        Assert.Equal(WifiSecurityType.WpaPskPhrase, device.NetworkConfiguration.SecurityType);
+        Assert.Equal("typed-not-applied", device.NetworkConfiguration.Password);
+    }
+    #endregion
+
     /// <summary>A device whose first metadata read put it on the site's WiFi network.</summary>
     private static TestDevice DeviceOnSiteNetwork()
     {
@@ -151,6 +231,16 @@ public class AbstractStreamingDeviceNetworkSettingsRefreshTests
 
     private sealed class TestDevice : AbstractStreamingDevice
     {
+        public TestDevice()
+        {
+        }
+
+        /// <summary>A device whose Core device is <paramref name="coreDevice"/>, as after a connect.</summary>
+        public TestDevice(DaqifiStreamingDevice coreDevice)
+        {
+            CoreDevice = coreDevice;
+        }
+
         public override ConnectionType ConnectionType => ConnectionType.Usb;
 
         /// <summary>
