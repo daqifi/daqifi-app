@@ -63,12 +63,15 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     [ObservableProperty]
     private bool _isLoggedDataBusy;
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsAnyDrawerOpen))]
     private bool _isNotificationsOpen;
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsAnyDrawerOpen))]
     private bool _isLogSummaryOpen;
     [ObservableProperty]
     private bool _isLoggingSessionSettingsOpen;
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsAnyDrawerOpen))]
     private bool _isLiveGraphSettingsOpen;
     [ObservableProperty]
     private bool _networkSettingsApplied;
@@ -122,6 +125,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.HasFriendlyNameError
     public bool HasFriendlyNameError => !string.IsNullOrEmpty(FriendlyNameError);
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsAnyDrawerOpen))]
     private bool _isAppSettingsOpen;
 
     // In-pane confirm overlay (delete confirmations, etc.). The reusable ConfirmOverlayViewModel
@@ -545,7 +549,19 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     }
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(NotificationsButtonName))]
     private int _notificationCount;
+
+    /// <summary>
+    /// The accessible name of the top bar's bell button (#630). The button shows only an icon and
+    /// the unread badge, so the name Avalonia derived from its content was the badge text: VoiceOver
+    /// read the button as "0".
+    /// </summary>
+    public string NotificationsButtonName => NotificationsButtonNameFor(NotificationCount);
+
+    /// <summary>"Notifications", and the unread count when there is one.</summary>
+    internal static string NotificationsButtonNameFor(int unread) =>
+        unread > 0 ? $"Notifications, {unread} unread" : "Notifications";
 
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.SelectedIndex
     public int SelectedIndex
@@ -1090,11 +1106,6 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // Notifications
                     _ = CheckForAppUpdateAsync();
 
-                    // Issue #90: when USB hotplug-removal detection isn't running on a platform that
-                    // has USB serial, say so. Previously the failure only reached the log, so the
-                    // user had no way to know an unplugged device would keep showing as connected.
-                    ReportHotplugDetectionUnavailable();
-
                     // Startup moved an unreadable database aside — say so, or the Logged Data pane
                     // is simply empty with no explanation of where the sessions went.
                     ReportQuarantinedDatabase();
@@ -1294,6 +1305,70 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
     [RelayCommand]
     private void CloseLogSummary() => IsLogSummaryOpen = false;
+
+    /// <summary>
+    /// True while one of the four right-side panels (#615) is open: Settings, Notifications,
+    /// Plot Settings or Log Summary. They share MainWindow's one SplitView pane, and this is what
+    /// opens it.
+    /// </summary>
+    /// <remarks>
+    /// One computed value, not a MultiBinding over the four flags, because a switch from one panel
+    /// to another sets the new flag and then clears the old one inside the same change. A
+    /// MultiBinding hears the old flag go false before it hears the new one go true, so for a
+    /// moment it reported "all closed" and the pane started to close. This getter reads all four
+    /// fields when it is asked, so it is true at every step of a switch.
+    /// </remarks>
+    public bool IsAnyDrawerOpen =>
+        IsAppSettingsOpen || IsNotificationsOpen || IsLiveGraphSettingsOpen || IsLogSummaryOpen;
+
+    /// <summary>
+    /// Closes whichever right-side panel is open. MainWindow calls it when the pane is dismissed
+    /// from the view — a click on the scrim, or Escape — so the flags, which drive the pane, agree
+    /// with what is on screen. Unlike <see cref="CloseFlyouts"/> it leaves the Logged Data session
+    /// drawer alone: that one is not in this pane.
+    /// </summary>
+    /// <summary>
+    /// Escape from anywhere in the window (#615): closes the open right-side panel and reports
+    /// whether there was one, so the key is only consumed when it did something.
+    /// </summary>
+    public bool DismissDrawer()
+    {
+        if (!IsAnyDrawerOpen)
+        {
+            return false;
+        }
+
+        CloseDrawers();
+        return true;
+    }
+
+    public void CloseDrawers()
+    {
+        IsAppSettingsOpen = false;
+        IsNotificationsOpen = false;
+        IsLiveGraphSettingsOpen = false;
+        IsLogSummaryOpen = false;
+    }
+
+    // One right-side panel at a time (#615). The four now share one pane, where two open at once
+    // would draw on top of each other; Settings opens from a two-way toggle, not a command, so it
+    // closes the others here.
+    partial void OnIsAppSettingsOpenChanged(bool value)
+    {
+        if (value)
+        {
+            CloseDrawersExcept(nameof(IsAppSettingsOpen));
+        }
+    }
+
+    /// <summary>Clears every right-side panel flag but <paramref name="keep"/>.</summary>
+    private void CloseDrawersExcept(string keep)
+    {
+        if (keep != nameof(IsAppSettingsOpen)) IsAppSettingsOpen = false;
+        if (keep != nameof(IsNotificationsOpen)) IsNotificationsOpen = false;
+        if (keep != nameof(IsLiveGraphSettingsOpen)) IsLiveGraphSettingsOpen = false;
+        if (keep != nameof(IsLogSummaryOpen)) IsLogSummaryOpen = false;
+    }
 
     [RelayCommand]
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.DisconnectDevice
@@ -1642,8 +1717,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.OpenLiveGraphSettings
     private void OpenLiveGraphSettings()
     {
-        CloseFlyouts();
+        // Open first, then close the rest (#615): the pane must not see "no panel open" mid-switch.
         IsLiveGraphSettingsOpen = true;
+        IsLoggingSessionSettingsOpen = false;
+        CloseDrawersExcept(nameof(IsLiveGraphSettingsOpen));
     }
 
     /// <summary>
@@ -1674,8 +1751,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.OpenLogSummary
     private void OpenLogSummary()
     {
-        CloseFlyouts();
+        // Open first, then close the rest (#615): the pane must not see "no panel open" mid-switch.
         IsLogSummaryOpen = true;
+        IsLoggingSessionSettingsOpen = false;
+        CloseDrawersExcept(nameof(IsLogSummaryOpen));
     }
 
     [RelayCommand]
@@ -1907,24 +1986,6 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     }
 
     #region Firmware version checking methods
-
-    /// <summary>
-    /// Adds a standing notification when USB hotplug-removal detection is not running on a platform
-    /// that has USB serial hardware, so the user learns that unplugging a connected device will not
-    /// be noticed instead of being left to infer it from a stale connected state (issue #90).
-    /// Adds nothing on the platforms where detection is working, and nothing on the mobile heads,
-    /// which have no serial transport to watch.
-    /// </summary>
-    private void ReportHotplugDetectionUnavailable()
-    {
-        var message = ConnectionManager.Instance.HotplugDetectionUnavailableMessage;
-        if (string.IsNullOrEmpty(message))
-        {
-            return;
-        }
-
-        AddAppNotification(message);
-    }
 
     /// <summary>
     /// Adds a standing notification that has no owning device: one sentence, no link, no action.
@@ -2280,7 +2341,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.OpenNotifications
     private void OpenNotifications()
     {
+        // One right-side panel at a time (#615): they share one pane now. Open first, then close
+        // the rest, so the pane never sees "no panel open" mid-switch.
         IsNotificationsOpen = true;
+        CloseDrawersExcept(nameof(IsNotificationsOpen));
     }
 
     #endregion
@@ -2297,9 +2361,13 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             var SerailDeviceProperty = connectedDevice.GetType().GetProperty("DeviceVersion");
             var DeviceVersion = SerailDeviceProperty.GetValue(connectedDevice)?.ToString();
             var latestFirmwareVersion = _firmwareCoordinator.LatestFirmwareVersion;
-            if (!string.IsNullOrEmpty(latestFirmwareVersion))
+            // The coordinator's rule (issue #569). FirmwareVersion.Compare sorts a version that does
+            // not parse before every release, which would mark an unknown version outdated; Core
+            // 1.10.0 offers no update for it, and neither does the app (issue #583).
+            if (FirmwareVersion.TryParse(latestFirmwareVersion, out var latestRelease))
             {
-                connectedDevice.IsFirmwareOutdated = FirmwareVersion.Compare(DeviceVersion, latestFirmwareVersion) < 0;
+                connectedDevice.IsFirmwareOutdated =
+                    FirmwareUpdateCoordinator.CompareWithRelease(DeviceVersion, latestRelease) == true;
             }
 
             ConnectedDevices.Add(connectedDevice);

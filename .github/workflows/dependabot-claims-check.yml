@@ -47,7 +47,7 @@ jobs:
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Run the guard's own tests before trusting its verdict. Its value is
       # entirely in FAILING on a PR that over-claims; a guard that silently only

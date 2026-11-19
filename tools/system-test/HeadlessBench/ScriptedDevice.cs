@@ -242,6 +242,8 @@ internal sealed class ScriptedDevice : IStreamingDevice
 
     public int PwmFrequencyHz { get; set; }
 
+    public int PwmFrequencyFloorHz => Daqifi.Core.Device.DaqifiStreamingDevice.MinPwmFrequencyHz;
+
     public void Reboot() { }
 
     /// <summary>Refuses SD card logging off USB with the exception

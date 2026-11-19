@@ -380,7 +380,7 @@ public class SdCardSessionImporter : ISdCardSessionImporter
         // one outcome where the frequency is a guess rather than something the file or the
         // device stated. SdCardTimestampSource.None cannot occur here — it means the fallback
         // was disabled, and this importer never sets FallbackTimestampFrequency, so Core's
-        // 50 MHz default is always in play.
+        // default is always in play: 42 MHz since Core 1.10.0, 50 MHz before (daqifi-core#902).
         if (logSession.TimestampFrequencySource == SdCardTimestampSource.Fallback)
         {
             _logger.Warning(

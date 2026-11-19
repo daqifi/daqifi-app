@@ -74,36 +74,35 @@
 		     crashes at runtime under Avalonia 11 — see third_party/oxyplot-avalonia/VENDORED.md -->
 		<PackageReference Include="OxyPlot.Core" Version="2.2.0" />
 		<!-- Same Material glyph set as MahApps.Metro.IconPacks.Material -->
-		<PackageReference Include="Optris.Icons.Avalonia.MaterialDesign" Version="12.0.7" />
+		<PackageReference Include="Optris.Icons.Avalonia.MaterialDesign" Version="12.1.0" />
 		<!-- Direct port of Microsoft.Xaml.Behaviors.Wpf -->
 		<PackageReference Include="Xaml.Behaviors.Avalonia" Version="12.1.5" />
 
 		<!-- Platform-neutral stack carried over from upstream Daqifi.Desktop + Daqifi.Desktop.Common -->
 		<PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
-		<PackageReference Include="Daqifi.Core" Version="1.9.1" />
+		<PackageReference Include="Daqifi.Core" Version="1.10.0" />
 		<PackageReference Include="EFCore.BulkExtensions.Sqlite" Version="10.0.1" />
-		<PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
-		<PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.14" />
-		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.14" />
-		<PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.14">
+		<PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.15" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.15" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.15" />
+		<PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.15">
 			<PrivateAssets>all</PrivateAssets>
 			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
 		</PackageReference>
-		<PackageReference Include="Microsoft.Extensions.Http" Version="10.0.14" />
+		<PackageReference Include="Microsoft.Extensions.Http" Version="10.0.15" />
 		<PackageReference Include="NCalcSync" Version="7.4.0" />
 		<PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
 		<PackageReference Include="NLog" Version="6.2.2" />
-		<PackageReference Include="Sentry" Version="6.12.1" />
+		<PackageReference Include="Sentry" Version="7.0.1" />
 		<!-- AppLogger reads this back via AssemblyMetadata at startup (see ResolveSentryDsn).
 		     Overridable per build: -p:SentryDsn= disables reporting entirely, and either an
 		     App.config entry or DAQIFI_SENTRY_DSN takes precedence at run time. -->
 		<AssemblyMetadata Include="SentryDsn" Value="$(SentryDsn)" Condition="'$(SentryDsn)' != ''" />
 		<!-- All-platform native SQLite bundle (upstream committed a win-x64 e_sqlite3.dll) -->
 		<PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
-		<PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.14" />
-		<!-- Desktop-only transports: serial + WMI hotplug (mobile is WiFi/TCP only, DIV-UI-003) -->
-		<PackageReference Include="System.IO.Ports" Version="10.0.14" />
-		<PackageReference Include="System.Management" Version="10.0.14" />
+		<PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.15" />
+		<!-- Desktop-only transport: serial (mobile is WiFi/TCP only, DIV-UI-003) -->
+		<PackageReference Include="System.IO.Ports" Version="10.0.15" />
 	</ItemGroup>
 
 	<ItemGroup>

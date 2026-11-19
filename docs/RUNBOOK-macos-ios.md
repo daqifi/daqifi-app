@@ -85,7 +85,7 @@ cd portomatic
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev,treesitter,visual]'
 ```
 
-Install the .NET SDK **version pinned in `global.json`** — currently `10.0.302`, with
+Install the .NET SDK **version pinned in `global.json`** — currently `10.0.303`, with
 `rollForward: disable`, so nothing else will do. That is not fussiness: the SDK's
 bundled runtime version decides `Microsoft.NET.ILLink.Tasks`, an *implicit* package
 reference on the trimming heads which the lock files record. A different SDK therefore
@@ -380,16 +380,14 @@ fails to apply, `PlotView.OnApplyTemplate` silently no-ops and the plot renders
   ```
 
   and USB hotplug-removal detection was dead on macOS with no user-visible
-  signal. `ConnectionManager` now goes through `Services/DeviceWatcher/`:
-  `DeviceWatcherFactory.Create()` returns `WmiDeviceWatcher` on Windows,
-  `SerialPortPollingDeviceWatcher` on macOS/Linux (it samples
-  `SerialPort.GetPortNames()` once a second and raises `DeviceRemoved` when the
-  port set shrinks), and `NoOpDeviceWatcher` on the mobile heads, which have no
-  serial transport to watch. **Expect no `PlatformNotSupportedException` at
-  startup on any head.** If the watcher ever fails to start on a platform that
-  does have USB serial, `ConnectionManager.HotplugDetectionUnavailableMessage`
-  becomes non-null and the main view model raises a standing notification, so
-  the degradation is visible rather than log-only.
+  signal. #90 replaced it with a per-platform watcher (`Services/DeviceWatcher/`),
+  and #441 deleted that too: Core's `SerialStreamTransport` polls for its own
+  port once a second on every platform and reports two consecutive misses as
+  `ConnectionStatus.Lost`, which `ConnectionManager.OnDeviceConnectionLost`
+  tears down as "<device> disconnected (connection lost)." The app no longer
+  constructs any watcher, so **expect no `PlatformNotSupportedException` at
+  startup on any head.** To confirm an unplug, look in
+  `DAQiFi/Logs/DAQifiAppLog.log` for "connection lost unexpectedly".
 
 **Fixed in this PR — hardcoded path separators:**
 
@@ -588,7 +586,8 @@ would be silent, and the next mismatch is the one you want to hear about.
 | SDK | iOS workload manifest | Xcode it actually wants |
 |---|---|---|
 | 10.0.203 | `26.4.10259` | 26.4 |
-| 10.0.302 (pinned) | `26.5.10315` | **26.6** |
+| 10.0.302 | `26.5.10315` | 26.6 |
+| 10.0.303 (pinned) | `26.5.10315` | **26.6** |
 
 The manifest number is an *iOS* version, and the lock file's `net10.0-ios26.5`
 framework is that same iOS version — neither is the Xcode version, and under the

@@ -501,6 +501,30 @@ test — for zero screens and zero run time. If the app ever grows a real light 
 assert is what to replace with light captures, and the ten screens above are the ones that
 will move.
 
+## Accessible names and tab selection (#630)
+
+The harness also checks the desktop app the way VoiceOver reads it. Neither check writes a
+pixel, and both run after the frame of the screen is saved, so no baseline moves because of
+them.
+
+1. **Accessible names.** After each of `desktop-1` to `desktop-9` is captured, the harness walks
+   the visual tree of the window. It reads the runtime name of each visible interactive control
+   (button, toggle, switch, tab, list row, slider, combo box, text box) from that control's own
+   automation peer. The run fails on a control with no name, and on a name with no letter in
+   it (the notifications button was named "0", the text of its badge). The minimum-size
+   screens show the same controls, so they are not checked again.
+2. **Tab selection.** After the five tab captures at the full size, the harness invokes the
+   automation peer of each main tab, from the last to the first, and requires that the tab
+   opens. On macOS the press action of VoiceOver (VO-Space) becomes an invoke. A plain
+   `TabItem` peer is not an invoke provider, so the press did nothing (Avalonia 12.1.6,
+   `accessibilityPerformPress` in `native/Avalonia.Native/src/OSX/automation.mm`). The main
+   tabs are `InvokableTabItem`s for this reason.
+
+The capture runs without a device, so the checks see only the controls of the empty app.
+`Daqifi.Avalonia.Tests/Views/DesktopAutomationNameTests.cs` applies the same naming rule to the
+markup, which also covers the controls that appear only with data (channel tiles, session rows,
+device tiles).
+
 ## Baselines
 
 `baselines/<os>-<arch>.sha256` records the SHA-256 of every Avalonia screen the harness
@@ -511,6 +535,26 @@ places that are checked against reality on every run. `./run.sh --check-baseline
 captures once and verifies against the one for the current host, failing on a changed
 screen, a missing one, and one the baseline does not list (`shasum -c` only checks the
 names it was given, so the extra-file direction is checked separately).
+
+Three dialog screens were re-recorded 2026-11-14 (macOS 26.5, Apple silicon, .NET SDK 10.0.302)
+for #631: `DarkSecondaryButton` and `DarkPrimaryButton` now apply the `Padding="16,6"` they
+always set. `dialog-export-configure` shows the visible change: its Browse button has no fixed
+width, so it grew from the width of its text to the text plus 16 px at each side.
+`dialog-firmware-uploading` and `dialog-firmware-close-refused` moved by about one pixel only: the
+Browse label in their fixed 75 px button is now centred inside the padded area, not inside the
+whole button. The other thirty-seven hashes did not move. The pre-change capture at `origin/main`
+(`99cc6be`) reproduced the manifest on all forty, five `--determinism` runs agreed on all forty
+after the change, and the hashes are from run 1.
+
+The eight drawer screens (`desktop-6` to `-9` and `desktop-min-6` to `-9`) were re-recorded
+again 2026-11-14 for #615, on top of the #613/#618/#619 recording below: the settings drawer
+moved into the SplitView pane beside the three flyouts, all four share one `DrawerHeader`, one
+section style and one light-dismiss scrim. `desktop-6-settings-drawer` is now the fourth user of
+the `PART_PaneRoot` end-state check, because the settings drawer slides like the others. The
+other thirty-two hashes are unchanged against the #624 capture, and five `--determinism` runs
+agreed on all forty after the change. The eight were captured again after #585's time axis
+reached #624, on the merged tree, since every one of them shows the Live Graph plot behind its
+panel.
 
 Thirty-six of the forty screens were re-recorded 2026-11-14 (macOS 26.5, Apple silicon, .NET SDK
 10.0.302) for the visual-consistency change (#613, #618, #619). Three causes, one recording:

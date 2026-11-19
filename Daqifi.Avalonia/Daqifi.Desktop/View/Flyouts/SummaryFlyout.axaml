@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:i="https://github.com/projektanker/icons.avalonia"
              xmlns:vm="using:Daqifi.Desktop.ViewModels"
+             xmlns:local="using:Daqifi.Desktop.View.Flyouts"
              x:DataType="vm:DaqifiViewModel"
              x:CompileBindings="True"
              Background="{DynamicResource SurfaceRaised}"
@@ -30,9 +31,10 @@
         other drawer — including the Plot Settings flyout that shares this very SplitView pane and
         sits next to it in the same toolbar — is a full-bleed section with a small grey caps header
         and a single hairline rule along its bottom edge. The theme is gone and the four sections
-        here are that idiom, on the app-wide TextBlock.sectionLabel class already in
-        Resources/Components.axaml; Reset is on the app-wide PillButton theme from
-        Resources/Shell.axaml. Nothing new was defined for either.
+        here are that idiom. Since #615 that idiom has one definition for all four right-side
+        panels — Border.drawerSection, TextBlock.drawerSectionLabel and ToggleSwitch.drawerToggle
+        in Resources/Components.axaml, and the DrawerHeader above; Reset is on the app-wide
+        PillButton theme from Resources/Shell.axaml.
     -->
 
     <UserControl.Styles>
@@ -46,6 +48,12 @@
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
+        <!-- The number box on the drawer surfaces (#615): the stock Fluent box drew a white
+             rim on SurfaceRaised, the only bright edge in the pane. -->
+        <Style Selector="NumericUpDown.drawerNumber">
+            <Setter Property="Background" Value="{DynamicResource Surface}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderDim}"/>
+        </Style>
         <Style Selector="TextBlock.cellHeader">
             <Setter Property="FontSize" Value="11"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
@@ -56,32 +64,16 @@
 
     <Grid RowDefinitions="Auto,Auto,*">
 
-        <!-- Header (MahApps Flyout rendered Header + close chrome) -->
-        <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="20,12,12,4">
-            <TextBlock Grid.Column="0" Text="Log Summary"
-                       FontSize="18" FontWeight="Light"
-                       Foreground="{DynamicResource TextPrimary}"
-                       VerticalAlignment="Center"/>
-            <!-- A plain Button with a close command, not a ToggleButton bound to the open
-                 flag (#613): the flag is always true while this is on screen, so the toggle
-                 sat in its checked state and Fluent filled it with the accent colour. -->
-            <Button Grid.Column="1"
-                    Width="28" Height="28"
-                    Theme="{StaticResource RoundCloseButton}"
-                    Foreground="{DynamicResource TextSecondary}"
-                    ToolTip.Tip="Close"
-                    AutomationProperties.Name="Close"
-                    Command="{Binding CloseLogSummaryCommand}">
-                <i:Icon Value="mdi-close" FontSize="16"/>
-            </Button>
-        </Grid>
+        <!-- The shared panel header (#615); its look is the DrawerHeader theme in
+             Resources/Shell.axaml, the same one the settings drawer uses. -->
+        <local:DrawerHeader Grid.Row="0"
+                            Overline="DEBUG"
+                            Title="Log Summary"
+                            CloseCommand="{Binding CloseLogSummaryCommand}"/>
 
-        <Border Grid.Row="1"
-                BorderBrush="{DynamicResource BorderDim}"
-                BorderThickness="0,0,0,1"
-                Padding="20,16,20,16">
+        <Border Grid.Row="1" Classes="drawerSection">
             <StackPanel>
-                <TextBlock Text="SETTINGS" Classes="sectionLabel" Margin="0,0,0,12"/>
+                <TextBlock Text="SETTINGS" Classes="drawerSectionLabel"/>
                 <!--
                     Two columns, both content-sized, because the flyout pane is a fixed 380px
                     (MainWindow's SplitView OpenPaneLength) and the longest label here is wider
@@ -107,15 +99,19 @@
                          count by one was never the way this value gets changed; arrow keys still
                          spin it, since AllowSpin is untouched. -->
                     <NumericUpDown Grid.Row="1" Grid.Column="1"
+                                   AutomationProperties.Name="Refresh every (messages)"
                                    Value="{Binding SummaryLogger.SampleSize}"
                                    Minimum="1" Increment="1"
                                    ShowButtonSpinner="False"
+                                   Classes="drawerNumber"
                                    HorizontalAlignment="Right" Width="110"/>
 
                     <TextBlock Grid.Row="2" Grid.Column="0" Classes="cellHeader" Text="Status"/>
                     <ToggleSwitch Grid.Row="2" Grid.Column="1"
+                                  AutomationProperties.Name="Summary logging"
                                   Command="{Binding SummaryLogger.ToggleEnabledCommand}"
                                   IsChecked="{Binding SummaryLogger.Enabled, Mode=OneWay}"
+                                  Classes="drawerToggle"
                                   OffContent="Stopped" OnContent="Running" HorizontalAlignment="Right"/>
                     <Button Grid.Row="3" Grid.Column="1" Content="Reset" HorizontalAlignment="Right"
                             Theme="{StaticResource PillButton}"
@@ -135,7 +131,7 @@
         <StackPanel Grid.Row="2"
                     IsVisible="{Binding !SummaryLogger.HasDevices}"
                     Spacing="10"
-                    Margin="20,0,20,40"
+                    Margin="24,16"
                     HorizontalAlignment="Center"
                     VerticalAlignment="Center">
             <i:Icon Value="mdi-chip"
@@ -163,12 +159,9 @@
                 <DataTemplate>
             <Grid RowDefinitions="Auto,Auto">
 
-                <Border Grid.Row="0"
-                        BorderBrush="{DynamicResource BorderDim}"
-                        BorderThickness="0,0,0,1"
-                        Padding="20,16,20,16">
+                <Border Grid.Row="0" Classes="drawerSection">
                     <StackPanel>
-                        <TextBlock Text="{Binding Title}" Classes="sectionLabel" Margin="0,0,0,12"/>
+                        <TextBlock Text="{Binding Title}" Classes="drawerSectionLabel"/>
                         <Grid ColumnDefinitions="Auto,*,*,*"
                               RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto"
                               ColumnSpacing="8" RowSpacing="8">
@@ -209,12 +202,9 @@
                     </StackPanel>
                 </Border>
 
-                <Border Grid.Row="1"
-                        BorderBrush="{DynamicResource BorderDim}"
-                        BorderThickness="0,0,0,1"
-                        Padding="20,16,20,16">
+                <Border Grid.Row="1" Classes="drawerSection">
                     <StackPanel>
-                        <TextBlock Text="CHANNELS" Classes="sectionLabel" Margin="0,0,0,12"/>
+                        <TextBlock Text="CHANNELS" Classes="drawerSectionLabel"/>
                         <ItemsControl ItemsSource="{Binding Snapshot.Channels}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>

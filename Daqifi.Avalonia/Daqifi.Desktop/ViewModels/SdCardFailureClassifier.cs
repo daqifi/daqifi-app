@@ -108,6 +108,15 @@ public static class SdCardFailureClassifier
         "its own; if it keeps failing, that file or that part of the card may be damaged.";
 
     /// <summary>
+    /// Guidance for a file the device could not find on its card. The listing the user picked it
+    /// from is out of date, or the file sits outside the device's log directory, which is the only
+    /// place a download looks. Nothing is wrong with the card, so this must not give the reformat
+    /// advice of <see cref="GENERIC_CARD_GUIDANCE"/>: a reformat erases every other log on it.
+    /// </summary>
+    internal const string FILE_NOT_FOUND_GUIDANCE =
+        "The device could not find this file on its SD card. Refresh the file list and try again.";
+
+    /// <summary>
     /// Guidance for a transfer whose transport went away mid-file. Distinct from the two above
     /// because the card is not the problem: Core states that retrying on the same transport cannot
     /// succeed, so the user has to re-establish the connection first.
@@ -231,6 +240,21 @@ public static class SdCardFailureClassifier
                 Guidance: "The device is still using the SD card. Stop logging, wait a moment, and try again.",
                 IsExpectedDeviceCondition: true,
                 IsCardUnavailable: true),
+
+            // The device says the file is not there (-256) or that it cannot use the name (-257).
+            // Core 1.10.0 raises this from firmware v3.9.0 on, where the device queues that SCPI
+            // error after an empty download (daqifi-core#967). Older firmware sends the same empty
+            // reply with no error, and Core still raises SdCardEmptyTransferException there.
+            //
+            // MUST precede the SdCardFilesystemException arm below: this type derives from it, and
+            // that arm would show the raw SCPI error with the reformat advice. Per file, not card
+            // wide: one stale name says nothing about the other files in a batch.
+            SdCardFileNotFoundException => new SdCardFailure(
+                State: SdCardState.Error,
+                StatusMessage: "The device could not find this file on its SD card.",
+                Guidance: FILE_NOT_FOUND_GUIDANCE,
+                IsExpectedDeviceCondition: true,
+                IsCardUnavailable: false),
 
             // A filesystem error can be the whole card or one corrupt directory entry, and the
             // device message does not say which — so skip this file rather than write off the rest.

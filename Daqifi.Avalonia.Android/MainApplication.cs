@@ -59,6 +59,10 @@ public class MainApplication : AvaloniaAndroidApplication<App>
         // UsbManager system service. The base context is attached before OnCreate, so
         // GetSystemService is safe here — unlike in the constructor.
         MobileUsbConnector.Current = new Usb.AndroidUsbConnector(this);
+        // The export writer's non-replacing create for a picked Storage Access Framework folder
+        // (review of PR #603). Read only when an export creates its file, so the position here is
+        // not load-bearing; it sits with the other registrations. Keeps only ApplicationContext.
+        ExclusiveFileCreator.Current = new ContentExclusiveFileCreator(this);
         base.OnCreate();
     }
 

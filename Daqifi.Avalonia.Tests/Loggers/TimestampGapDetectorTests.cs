@@ -34,7 +34,7 @@ public class TimestampGapDetectorTests
     {
         var detector = new TimestampGapDetector();
 
-        // Null is what ProcessStreamMessage passes for the first message of a session: there is no
+        // Null is what PublishCoreSample passes for the first frame of a session: there is no
         // previous frame to measure against, so no gap is knowable.
         Assert.False(detector.IsGap(ChannelA, null));
     }

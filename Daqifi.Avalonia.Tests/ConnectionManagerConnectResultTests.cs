@@ -2,7 +2,6 @@ using Daqifi.Avalonia.Tests.Device;
 using Daqifi.Desktop;
 using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Device;
-using Daqifi.Desktop.Services.DeviceWatcher;
 using Xunit;
 
 namespace Daqifi.Avalonia.Tests;
@@ -30,13 +29,11 @@ namespace Daqifi.Avalonia.Tests;
 public class ConnectionManagerConnectResultTests
 {
     /// <summary>
-    /// A manager with its own device list, an inert watcher (so no background serial poller starts),
-    /// no logger subscriptions and its UI marshal run inline. Everything about the connect path
-    /// itself is production code.
+    /// A manager with its own device list, no logger subscriptions and its UI marshal run inline.
+    /// Everything about the connect path itself is production code.
     /// </summary>
     private static ConnectionManager NewManager() =>
-        new(new NoOpDeviceWatcher(),
-            () => new List<IChannel>(),
+        new(() => new List<IChannel>(),
             _ => { },
             action => action());
 

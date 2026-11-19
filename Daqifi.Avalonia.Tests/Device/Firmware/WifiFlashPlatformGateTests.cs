@@ -336,12 +336,14 @@ public class WifiFlashPlatformGateTests : IDisposable
     /// Core accepts any nonempty version string in the chip reply. A reply the app cannot parse as
     /// a version is not a version, so the notice must not quote it as "the module has firmware …":
     /// it gets the unreadable wording, the same as a module that did not answer. Both strings fail
-    /// Core's pattern (at most three numeric parts, an optional letter suffix): a word, and a
-    /// four-part dotted string such as an IP address.
+    /// Core's pattern: a word, and a five-part dotted string. Core 1.10.0 reads a fourth numeric
+    /// part as a build number ("3.8.0.1", daqifi-core#910), so a four-part string such as an IP
+    /// address is now a version and no longer serves as the example here. The fifth part is what
+    /// Core still refuses.
     /// </summary>
     [Theory]
     [InlineData("not-a-version")]
-    [InlineData("192.168.1.1")]
+    [InlineData("192.168.1.1.1")]
     public async Task A_version_the_app_cannot_parse_gets_the_unreadable_notice(string reply)
     {
         var coordinator = CreateCoordinator(canFlashWifiModule: false);
@@ -365,7 +367,7 @@ public class WifiFlashPlatformGateTests : IDisposable
     /// </summary>
     [Theory]
     [InlineData("not-a-version")]
-    [InlineData("192.168.1.1")]
+    [InlineData("192.168.1.1.1")]
     public async Task A_version_the_app_cannot_parse_is_still_flashed_where_the_tool_can_run(string reply)
     {
         var coordinator = CreateCoordinator(canFlashWifiModule: true);
