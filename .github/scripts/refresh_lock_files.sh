@@ -76,7 +76,7 @@ PROJECTS=(
   third_party/oxyplot-avalonia/OxyPlot.Avalonia/OxyPlot.Avalonia.csproj
 )
 
-# Resolve the SDK before doing anything. global.json pins 10.0.302 with
+# Resolve the SDK before doing anything. global.json pins 10.0.303 with
 # rollForward: disable, and a Homebrew `dotnet` on PATH commonly carries a different
 # band and fails with "A compatible .NET SDK was not found".
 #

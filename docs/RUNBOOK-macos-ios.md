@@ -85,7 +85,7 @@ cd portomatic
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev,treesitter,visual]'
 ```
 
-Install the .NET SDK **version pinned in `global.json`** — currently `10.0.302`, with
+Install the .NET SDK **version pinned in `global.json`** — currently `10.0.303`, with
 `rollForward: disable`, so nothing else will do. That is not fussiness: the SDK's
 bundled runtime version decides `Microsoft.NET.ILLink.Tasks`, an *implicit* package
 reference on the trimming heads which the lock files record. A different SDK therefore
@@ -586,7 +586,8 @@ would be silent, and the next mismatch is the one you want to hear about.
 | SDK | iOS workload manifest | Xcode it actually wants |
 |---|---|---|
 | 10.0.203 | `26.4.10259` | 26.4 |
-| 10.0.302 (pinned) | `26.5.10315` | **26.6** |
+| 10.0.302 | `26.5.10315` | 26.6 |
+| 10.0.303 (pinned) | `26.5.10315` | **26.6** |
 
 The manifest number is an *iOS* version, and the lock file's `net10.0-ios26.5`
 framework is that same iOS version — neither is the Xcode version, and under the
