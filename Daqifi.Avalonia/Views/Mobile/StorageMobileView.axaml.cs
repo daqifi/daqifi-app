@@ -38,6 +38,31 @@ public partial class StorageMobileView : UserControl
     }
 
     /// <summary>
+    /// A phone recording is committed to SQLite while this pane is built (review of PR #609). The
+    /// user can open Logged Data while Live Graph still says "Saving the recording…", and the visit's
+    /// snapshot is then read before the commit. Re-read the list in place: unlike <see cref="Refresh"/>
+    /// this keeps a session viewer the user opened meanwhile. The shell hides this pane with
+    /// <c>IsVisible</c> rather than detaching it, so the subscription also covers a hidden list,
+    /// which is cheap and means the next visit starts from a current list as well.
+    /// </summary>
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        MobileShellViewModel.RecordingCommitted += OnRecordingCommitted;
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        MobileShellViewModel.RecordingCommitted -= OnRecordingCommitted;
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    private void OnRecordingCommitted()
+    {
+        if (AppLogsHost.DataContext is LoggedSessionsMobileViewModel vm) { vm.RefreshSessions(); }
+    }
+
+    /// <summary>
     /// The APP LOGS view model while that half is the visible one; otherwise <c>null</c>. The shell's
     /// Back handling (#588) closes the session plot or a confirm overlay through it, and must not
     /// close one that the DEVICE LOGS half hides.

@@ -36,8 +36,8 @@
 	    bindings resolve, so the file needs no escape hatch.
 	-->
 	<UserControl.Styles>
-		<!-- The two toggle buttons below put a Panel in their Content and swap which of
-		     two TextBlocks is visible, so their automation peer has no string to fall back
+		<!-- The scan button below puts a Panel in its Content and swaps which of
+		     two TextBlocks is visible, so its automation peer has no string to fall back
 		     on and announces "Avalonia.Controls.Panel" instead of the label (#356). The
 		     name has to follow the label rather than be pinned once, which is what the
 		     class pair does — the same shape LiveGraphPane.axaml uses to keep the UIA name
@@ -48,11 +48,47 @@
 		<Style Selector="Button.scanToggle.scanning">
 			<Setter Property="(AutomationProperties.Name)" Value="Stop scanning"/>
 		</Style>
+		<!-- The stream button has four labels now (#597), so it names itself from the same
+		     StreamButtonText its TextBlock shows, and no class pair is needed for its name. Its
+		     colour comes from these two styles rather than a local value, which a style cannot
+		     override: accent to stream, record-red when the tap records and while it records. -->
 		<Style Selector="Button.streamToggle">
-			<Setter Property="(AutomationProperties.Name)" Value="Start streaming"/>
+			<Setter Property="Background" Value="{DynamicResource Accent}"/>
+			<Setter Property="Transitions">
+				<Transitions>
+					<BrushTransition Property="Background" Duration="0:0:0.15"/>
+				</Transitions>
+			</Setter>
 		</Style>
-		<Style Selector="Button.streamToggle.streaming">
-			<Setter Property="(AutomationProperties.Name)" Value="Stop streaming"/>
+		<Style Selector="Button.streamToggle.record">
+			<Setter Property="Background" Value="{DynamicResource StatusRed}"/>
+		</Style>
+
+		<!-- Recording outcome banner: neutral while the samples are being committed, green once
+		     they are confirmed in SQLite, amber when nothing is confirmed saved. -->
+		<Style Selector="Border.recordOutcome">
+			<Setter Property="BorderBrush" Value="{DynamicResource StatusAmber}"/>
+		</Style>
+		<Style Selector="Border.recordOutcome.saving">
+			<Setter Property="BorderBrush" Value="{DynamicResource BorderBright}"/>
+		</Style>
+		<Style Selector="Border.recordOutcome.saved">
+			<Setter Property="BorderBrush" Value="{DynamicResource StatusGreen}"/>
+		</Style>
+
+		<!-- The REC dot pulses only while a recording runs: the class, not IsVisible, starts and
+		     stops the animation, so a hidden badge costs no frames. -->
+		<Style Selector="Ellipse.recDot.live">
+			<Style.Animations>
+				<Animation Duration="0:0:0.9" IterationCount="Infinite" PlaybackDirection="Alternate">
+					<KeyFrame Cue="0%">
+						<Setter Property="Opacity" Value="1"/>
+					</KeyFrame>
+					<KeyFrame Cue="100%">
+						<Setter Property="Opacity" Value="0.2"/>
+					</KeyFrame>
+				</Animation>
+			</Style.Animations>
 		</Style>
 	</UserControl.Styles>
 
@@ -133,19 +169,44 @@
 			<Button DockPanel.Dock="Top"
 			        Classes="streamToggle"
 			        Classes.streaming="{Binding IsStreaming}"
+			        Classes.record="{Binding ShowRecordStyle}"
+			        AutomationProperties.Name="{Binding StreamButtonText}"
 			        Command="{Binding StreamToggleCommand}"
 			        IsVisible="{Binding IsConnected}"
 			        HorizontalAlignment="Stretch"
 			        HorizontalContentAlignment="Center"
 			        Margin="0,0,0,10" Padding="0,14"
 			        FontSize="{DynamicResource FontSizeSubtitle}" FontWeight="SemiBold"
-			        Foreground="White" Background="{DynamicResource Accent}"
+			        Foreground="White"
 			        CornerRadius="10">
-				<Panel>
-					<TextBlock Text="Start streaming" IsVisible="{Binding !IsStreaming}" />
-					<TextBlock Text="Stop streaming" IsVisible="{Binding IsStreaming}" />
-				</Panel>
+				<StackPanel Orientation="Horizontal" Spacing="10" HorizontalAlignment="Center">
+					<Ellipse Width="10" Height="10" VerticalAlignment="Center" Fill="White"
+					         IsVisible="{Binding ShowRecordStyle}" />
+					<TextBlock Text="{Binding StreamButtonText}" VerticalAlignment="Center" />
+				</StackPanel>
 			</Button>
+
+			<!-- What the last recording produced (#597): the saved session and where to find it,
+			     or why nothing was kept. Stays until the next stream starts, and through a
+			     disconnect, because that is exactly when a user wonders where the data went. -->
+			<Border DockPanel.Dock="Top" IsVisible="{Binding HasRecordingOutcome}"
+			        Classes="recordOutcome" Classes.saved="{Binding RecordingSaved}"
+			        Classes.saving="{Binding IsSavingRecording}"
+			        Background="{DynamicResource SurfaceRaised}" BorderThickness="1"
+			        CornerRadius="12" Padding="14,10" Margin="0,0,0,10">
+				<Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+					<i:Icon Grid.Column="0" Value="mdi-progress-upload" FontSize="20" VerticalAlignment="Center"
+					        Foreground="{DynamicResource TextSecondary}" IsVisible="{Binding IsSavingRecording}" />
+					<i:Icon Grid.Column="0" Value="mdi-check-circle" FontSize="20" VerticalAlignment="Center"
+					        Foreground="{DynamicResource StatusGreen}" IsVisible="{Binding RecordingSaved}" />
+					<i:Icon Grid.Column="0" Value="mdi-alert-circle-outline" FontSize="20" VerticalAlignment="Center"
+					        Foreground="{DynamicResource StatusAmber}" IsVisible="{Binding ShowRecordingWarning}" />
+					<TextBlock Grid.Column="1" Text="{Binding RecordingOutcome}" TextWrapping="Wrap"
+					           VerticalAlignment="Center"
+					           FontSize="{DynamicResource FontSizeLabel}"
+					           Foreground="{DynamicResource TextPrimary}" />
+				</Grid>
+			</Border>
 
 			<!-- Channel + sample-rate picker: shown once connected, before streaming -->
 			<Border DockPanel.Dock="Top" IsVisible="{Binding ShowChannelSelector}"
@@ -153,6 +214,32 @@
 			        BorderBrush="{DynamicResource BorderDim}" BorderThickness="1"
 			        CornerRadius="12" Padding="14,12" Margin="0,0,0,10">
 				<StackPanel Spacing="10">
+					<!-- Record switch (#597). The phone had no way to keep a stream, while APP LOGS
+					     said that streamed sessions appear there. On, the next stream is recorded
+					     through the desktop's own logging path (LoggingManager + DatabaseLogger),
+					     so the session lands in APP LOGS with its plot, export and delete. First
+					     in the card so it is in reach without scrolling, in landscape too. -->
+					<Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+						<Border Grid.Column="0" Width="36" Height="36" CornerRadius="18"
+						        Background="{DynamicResource SurfaceActive}" VerticalAlignment="Center">
+							<Ellipse Width="12" Height="12" Fill="{DynamicResource StatusRed}"
+							         HorizontalAlignment="Center" VerticalAlignment="Center" />
+						</Border>
+						<StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+							<TextBlock Text="Record to APP LOGS"
+							           FontSize="{DynamicResource FontSizeBody}" FontWeight="SemiBold"
+							           Foreground="{DynamicResource TextPrimary}" />
+							<TextBlock Text="Keep every sample as a session to plot and export."
+							           FontSize="{DynamicResource FontSizeCaption}"
+							           Foreground="{DynamicResource TextTertiary}" TextWrapping="Wrap" />
+						</StackPanel>
+						<ToggleSwitch Grid.Column="2" IsChecked="{Binding RecordStream}"
+						              AutomationProperties.Name="Record to APP LOGS"
+						              OnContent="" OffContent="" MinWidth="0"
+						              VerticalAlignment="Center" />
+					</Grid>
+					<Border Height="1" Background="{DynamicResource BorderDim}" />
+
 					<Grid ColumnDefinitions="Auto,*,Auto,Auto" VerticalAlignment="Center">
 						<TextBlock Grid.Column="0" Text="Rate (Hz):"
 						           VerticalAlignment="Center" FontSize="{DynamicResource FontSizeBody}"
@@ -197,6 +284,22 @@
 			     hides connect. -->
 			<Panel DockPanel.Dock="Top" MinHeight="300" Height="360" Margin="0,0,0,10">
 				<views:LivePlot x:Name="Plot" IsVisible="{Binding IsStreaming}" />
+				<!-- REC badge (#597), in the plot's free top-right corner: the legend owns the
+				     top-left and the sample count the bottom-left. -->
+				<Border IsVisible="{Binding IsRecording}"
+				        HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,6,8,0"
+				        Background="{DynamicResource Surface}"
+				        BorderBrush="{DynamicResource StatusRed}" BorderThickness="1"
+				        CornerRadius="10" Padding="9,3">
+					<StackPanel Orientation="Horizontal" Spacing="6">
+						<Ellipse Classes="recDot" Classes.live="{Binding IsRecording}"
+						         Width="8" Height="8" VerticalAlignment="Center"
+						         Fill="{DynamicResource StatusRed}" />
+						<TextBlock Text="REC" VerticalAlignment="Center"
+						           FontSize="{DynamicResource FontSizeSmall}" FontWeight="Bold"
+						           Foreground="{DynamicResource StatusRed}" />
+					</StackPanel>
+				</Border>
 				<Border IsVisible="{Binding !IsStreaming}"
 				        Background="{DynamicResource SurfaceRaised}"
 				        BorderBrush="{DynamicResource BorderDim}" BorderThickness="1"

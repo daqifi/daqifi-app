@@ -263,6 +263,19 @@ narrow for the label at this font
 committed baseline, so it ships today. It is a defect in a redesigned surface, not a
 missing capability — no WPF capture exists to compare against.
 
+## Mobile: the phone records streams (#597, decided 2026-11-14)
+
+The desktop records a stream with its LOGGING toggle. The phone shell had no
+equivalent, so a phone user could stream and plot but not keep the data, while
+APP LOGS said that streamed sessions appear there. **Decision: add phone
+logging, not a text change.** Live Graph has a **Record to APP LOGS** switch in
+the pre-stream card. With the switch on, the shell sets `LoggingManager.Active`
+before the device streams and clears it when the stream ends by any route, and
+`LoggingManagerStreamRecorder` adds the one `DatabaseLogger` the mobile host did
+not create. The session row, the sample writes, the empty-session cleanup and the
+sample count are the desktop's own code. The phone does not take the desktop's
+disk-space gate, which lives in `DaqifiViewModel`.
+
 ## Limits of this ledger
 
 State these rather than round up:

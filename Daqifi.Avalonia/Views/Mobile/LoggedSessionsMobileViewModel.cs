@@ -123,8 +123,31 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
     /// single-timestamp value-spread helper (which takes the factory directly).</summary>
     private IDbContextFactory<LoggingContext>? _factory;
 
+    /// <summary>Reads the committed session list. A pure SELECT; see <see cref="LoadSessionsAsync"/>.</summary>
+    private readonly Func<IReadOnlyList<LoggingSession>> _loadSnapshot;
+
+    /// <summary>Runs the bound-collection mutation on the UI thread; completes once it has run.</summary>
+    private readonly Func<Action, Task> _invokeOnUiAsync;
+
     public LoggedSessionsMobileViewModel()
+        : this(
+            static () => LoggingManager.Instance.GetLoggingSessionsSnapshot(),
+            static action => Dispatcher.UIThread.InvokeAsync(action).GetTask())
     {
+    }
+
+    /// <summary>
+    /// Test seam (review of PR #609). The unit tests have no Avalonia lifetime, so
+    /// <c>LoggingManager.Instance</c> throws and <c>Dispatcher.UIThread.InvokeAsync</c> never runs
+    /// its action. The tests pass a snapshot source and an inline UI invoker instead; everything
+    /// else is the real code.
+    /// </summary>
+    internal LoggedSessionsMobileViewModel(
+        Func<IReadOnlyList<LoggingSession>> loadSnapshot,
+        Func<Action, Task> invokeOnUiAsync)
+    {
+        _loadSnapshot = loadSnapshot;
+        _invokeOnUiAsync = invokeOnUiAsync;
         // Fire-and-forget: Reload hydrates off the UI thread and handles its own
         // errors, so there is nothing to await at construction.
         _ = Reload();
@@ -142,6 +165,63 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
         CloseViewer();
         ConfirmOverlay.Cancel();
 
+        await LoadSessionsAsync();
+    }
+
+    /// <summary>
+    /// Re-reads the list in place because a phone recording has just been committed to SQLite
+    /// (review of PR #609). <see cref="StorageMobileView"/> calls it when the shell raises
+    /// <see cref="MobileShellViewModel.RecordingCommitted"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The user can stop a recording and open Logged Data while the Live Graph banner still says
+    /// "Saving the recording…". That visit's snapshot is read before the writer commits, and APP
+    /// LOGS lists only a session with a committed sample, so the list showed no new recording until
+    /// a manual Refresh or another visit, even after the banner said it was saved.
+    /// </para>
+    /// <para>
+    /// Unlike <see cref="Reload"/>, this does not close a session viewer or a confirm that the user
+    /// opened meanwhile: nobody re-entered the list, so there is nothing left over to dismiss. Only
+    /// the list underneath changes. And it is not dropped while a load, an export or a delete holds
+    /// <see cref="IsBusy"/>: a load in flight may have read its snapshot before the commit, so the
+    /// re-read runs as soon as the busy operation ends (<see cref="OnIsBusyChanged"/>).
+    /// </para>
+    /// </remarks>
+    internal void RefreshSessions()
+    {
+        if (IsBusy) { _refreshPending = true; return; }
+        _ = LoadSessionsAsync(keepOperationResult: true);
+    }
+
+    private bool _refreshPending;
+
+    partial void OnIsBusyChanged(bool value)
+    {
+        if (value || !_refreshPending) { return; }
+        _refreshPending = false;
+        // The busy operation that just ended may be an export or a delete that has written its
+        // result to the status line. Keep it: the user did not ask for this reload.
+        _ = LoadSessionsAsync(keepOperationResult: true);
+    }
+
+    /// <summary>The status line a failed load shows. A later successful load clears exactly this
+    /// text, and nothing else, when it must keep an operation result.</summary>
+    private const string LoadFailedMessage = "Couldn't load logged sessions. Tap Refresh to retry.";
+
+    /// <summary>
+    /// The one load path. <see cref="Reload"/> (every visit and the Refresh tap) and
+    /// <see cref="RefreshSessions"/> (a committed recording) both read the list here.
+    /// </summary>
+    /// <param name="keepOperationResult">
+    /// True for the automatic refresh after a commit (review of PR #609). A commit can land while
+    /// an export or a delete holds <see cref="IsBusy"/>; the queued refresh then runs just after
+    /// that operation writes its result ("Exported 1 session to …", "Couldn't delete that session…").
+    /// Clearing the status line on success would erase that result before the user could read
+    /// it. So this load clears only a previous load error. A user Reload still clears the line.
+    /// </param>
+    private async Task LoadSessionsAsync(bool keepOperationResult = false)
+    {
         if (IsBusy) { return; }
         IsBusy = true;
         try
@@ -154,12 +234,12 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
             // by the Samples.Any filter until it has data), so a refresh can't destroy it.
             // It returns a fresh list without touching the shared singleton collection, and
             // the EF Core query runs on a background thread so opening Storage never blocks.
-            var loaded = await Task.Run(() => LoggingManager.Instance.GetLoggingSessionsSnapshot());
+            var loaded = await Task.Run(_loadSnapshot);
             // Marshal the ObservableCollection mutation onto the UI thread explicitly:
             // the await above does not guarantee resuming on the UI thread (e.g. the
             // fire-and-forget ctor path may have no captured context), and Sessions is
             // bound to the UI.
-            await Dispatcher.UIThread.InvokeAsync(() =>
+            await _invokeOnUiAsync(() =>
             {
                 Sessions.Clear();
                 foreach (var session in loaded)
@@ -168,10 +248,14 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
                 }
             });
             LoadFailedFlag = false;
-            // Clear any prior error unconditionally on success — otherwise a successful
-            // retry against an EMPTY db would show the definitive "NO LOGGED SESSIONS"
-            // empty state AND the stale "Couldn't load…" error at the same time.
-            StatusMessage = string.Empty;
+            // Clear any prior load error on success — otherwise a successful retry against an
+            // EMPTY db would show the definitive "NO LOGGED SESSIONS" empty state AND the stale
+            // "Couldn't load…" error at the same time. An automatic refresh clears only that
+            // error and keeps an export or delete result (see keepOperationResult).
+            if (!keepOperationResult || StatusMessage == LoadFailedMessage)
+            {
+                StatusMessage = string.Empty;
+            }
         }
         catch (Exception ex)
         {
@@ -180,7 +264,7 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
             // instead of the definitive "NO LOGGED SESSIONS" empty state.
             _appLogger.Error(ex, "Mobile: failed to load logged sessions");
             LoadFailedFlag = true;
-            StatusMessage = "Couldn't load logged sessions. Tap Refresh to retry.";
+            StatusMessage = LoadFailedMessage;
         }
         finally
         {
