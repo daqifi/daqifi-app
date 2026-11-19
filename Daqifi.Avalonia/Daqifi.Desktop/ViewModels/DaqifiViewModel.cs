@@ -1612,12 +1612,18 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     }
 
     /// <summary>Clears the drawer's result lines for APPLY NETWORK SETTINGS and SAVE NAME.</summary>
+    /// <remarks>
+    /// <see cref="FriendlyNameError"/> also carries the as-you-type rule for the NAME box (issue
+    /// #596), which describes the text still in the box, not the device. An unsaved edit is
+    /// therefore judged again rather than cleared; otherwise SAVE NAME would stay disabled after the
+    /// update with nothing saying why.
+    /// </remarks>
     private void ClearDrawerStatusLines()
     {
         ResetNetworkSettingsStatus();
         CancelAndDisposeFriendlyNameAppliedCts();
         FriendlyNameApplied = false;
-        FriendlyNameError = null;
+        FriendlyNameError = _pendingFriendlyNameDirty ? FriendlyNameRule.Describe(TrimmedPendingFriendlyName) : null;
     }
 
     /// <summary>

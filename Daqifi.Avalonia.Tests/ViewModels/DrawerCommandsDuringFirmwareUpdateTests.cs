@@ -134,8 +134,56 @@ public class DrawerCommandsDuringFirmwareUpdateTests : IDisposable
         Assert.All(raised, r => Assert.True(r.Value >= 1, $"{r.Key} not raised at start"));
         Assert.Contains(nameof(DevicesPaneViewModel.CanUseDeviceCommands), announced);
 
+        // Count the end on its own. The start can raise each one more than once (the setter's own
+        // handler and the step StartUpdate runs), so a running total cannot show the end raised it.
+        foreach (var key in raised.Keys.ToList()) raised[key] = 0;
+        announced.Clear();
+
         EndUpdate(pane);
-        Assert.All(raised, r => Assert.True(r.Value >= 2, $"{r.Key} not raised at end"));
+        Assert.All(raised, r => Assert.True(r.Value >= 1, $"{r.Key} not raised at end"));
+        Assert.Contains(nameof(DevicesPaneViewModel.CanUseDeviceCommands), announced);
+    }
+
+    /// <summary>
+    /// The NAME box's rule message (issue #596) is about the text in the box, not a device result,
+    /// so an update must not erase it: SAVE NAME stays disabled for that text, and the line says why.
+    /// </summary>
+    [Fact]
+    public void An_update_keeps_the_rule_message_for_an_invalid_name_in_the_box()
+    {
+        var (shell, pane, device) = DrawerOpen("COM-TEST-643-M");
+        shell.PendingFriendlyName = string.Empty;
+        var rule = shell.FriendlyNameError;
+        Assert.False(string.IsNullOrEmpty(rule), "Arrangement: an empty name must have a rule message.");
+
+        StartUpdate(pane, device);
+        Assert.Equal(rule, shell.FriendlyNameError);
+
+        EndUpdate(pane);
+        Assert.Equal(rule, shell.FriendlyNameError);
+        Assert.False(shell.SetFriendlyNameCommand.CanExecute(null));
+    }
+
+    /// <summary>
+    /// The FREQUENCY slider is disabled during an update; a write that reaches the setter anyway (a
+    /// delayed binding update) must not reach the device, and the slider is told to move back.
+    /// </summary>
+    [Fact]
+    public void A_frequency_write_during_an_update_does_not_reach_the_device()
+    {
+        var (shell, pane, device) = DrawerOpen("COM-TEST-643-N");
+        // The shell writes a rate only to a device in its connected list.
+        shell.ConnectedDevices.Add(device);
+        pane.FrequencyHz = 10;
+        Assert.Equal(10, device.StreamingFrequency); // Arrangement: outside an update, the write lands.
+        StartUpdate(pane, device);
+        var announced = new List<string?>();
+        pane.PropertyChanged += (_, e) => announced.Add(e.PropertyName);
+
+        pane.FrequencyHz = 20;
+
+        Assert.Equal(10, device.StreamingFrequency);
+        Assert.Contains(nameof(DevicesPaneViewModel.FrequencyHz), announced);
     }
 
     /// <summary>The issue's second check: an error from before the update does not survive it.</summary>
