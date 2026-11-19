@@ -360,21 +360,21 @@ internal static partial class HeadlessBench
             // and the device-clock span separate "the device sampled slower" from "the app got the
             // samples late", which are different findings against different layers.
             var samples = 0;
-            DateTime? first = null;
+            // One entry per sample, in delivery order, in both lists: when it reached the app's
+            // channel object (ms on arrivalSw) and the device's own timestamp for it. Both rates
+            // below are taken over the same samples from these, so the two clocks compare directly.
             var arrivals = new List<long>(_rate * (_seconds + 2));
-            long firstTicks = 0, lastTicks = 0;
+            var stamps = new List<long>(_rate * (_seconds + 2));
             var deviceGaps = new DeviceGapTally();
             var arrivalSw = Stopwatch.StartNew();
             OnChannelUpdatedHandler counter = (_, sample) =>
             {
-                first ??= DateTime.UtcNow;
                 Interlocked.Increment(ref samples);
                 lock (arrivals)
                 {
+                    if (stamps.Count > 0) { deviceGaps.Note(sample.TimestampTicks - stamps[^1]); }
                     arrivals.Add(arrivalSw.ElapsedMilliseconds);
-                    if (firstTicks == 0) { firstTicks = sample.TimestampTicks; }
-                    else { deviceGaps.Note(sample.TimestampTicks - lastTicks); }
-                    lastTicks = sample.TimestampTicks;
+                    stamps.Add(sample.TimestampTicks);
                 }
             };
             sw.Restart();
@@ -390,7 +390,7 @@ internal static partial class HeadlessBench
             // a sample that arrives before this line is missed by `counted` and only makes the
             // floor lower.
             ai.OnChannelUpdated += counter;
-            var started = PumpUntil(() => first is not null, TimeSpan.FromSeconds(10));
+            var started = PumpUntil(() => Volatile.Read(ref samples) > 0, TimeSpan.FromSeconds(10));
             var latency = sw.Elapsed.TotalSeconds;
             // The rate this session is actually running at, read after the start because that is
             // when it is decided. InitializeStreaming re-reads the device's capability document and
@@ -405,7 +405,6 @@ internal static partial class HeadlessBench
             if (started) { PumpStreamWindow(shell); }
             var streamPumpsTo = FrameLatenciesMs.Count;
             var redraw = started ? MeasureLiveRedraw(main) : default;
-            var window = first is null ? 0 : (DateTime.UtcNow - first.Value).TotalSeconds;
             var counted = samples;
             // Read the plot BEFORE stopping: LoggingManager clears the PlotLogger when Active goes false.
             // LoggedPoints, not LoggedChannels[..].Points: the LineSeries render through ItemsSource,
@@ -435,12 +434,28 @@ internal static partial class HeadlessBench
             Pump();
 
             var shot = Capture(main, "t2-07-streamed");
-            var effective = window > 0 ? counted / window : 0;
+            // A rate is intervals over time. N samples hold N - 1 intervals, so each rate here is
+            // (N - 1) / the span from the first to the last of those same N samples, on both clocks.
+            // N / span over-reads by 1 / (N - 1) — invisible at 100 Hz, but at --rate 1 it read nine
+            // samples one second apart as "1.1 Hz" and failed a board that was on time. The span
+            // used to run from the first arrival to after the redraw probe, which also let the
+            // window grow by up to one period past the last sample. N is `counted`, the samples seen
+            // before the stop; the counter records until it is unsubscribed, so the lists may hold
+            // a few more, and those stay out of both spans.
+            double window, deviceSpan;
+            int spanned;
+            lock (arrivals)
+            {
+                spanned = Math.Min(counted, arrivals.Count);
+                window = spanned > 1 ? (arrivals[spanned - 1] - arrivals[0]) / 1000.0 : 0;
+                deviceSpan = spanned > 1 ? (stamps[spanned - 1] - stamps[0]) / (double)TimeSpan.TicksPerSecond : double.NaN;
+            }
+            var effective = window > 0 ? (spanned - 1) / window : 0;
             var asked = commandedRate == _rate ? "" : $" after --rate asked for {_rate} Hz";
             var within = started && commandedRate > 0 && Math.Abs(effective - commandedRate) <= commandedRate * 0.1;
             Step(2, "STREAM-AI", "works", within,
                  started
-                     ? $"{counted} samples in {window:F1} s after a {latency:F1} s start latency -> {effective:F1} Hz effective " +
+                     ? $"{counted} samples, first to last {window:F2} s apart, after a {latency:F1} s start latency -> {effective:F2} Hz effective " +
                        $"against {commandedRate} Hz commanded{asked} on '{ai.Name}'; " +
                        $"IsStreaming after stop={(device as AbstractStreamingDevice)?.IsStreaming}"
                      : $"no sample within 10 s of IsLogging=true at {commandedRate} Hz{asked}; " +
@@ -464,29 +479,39 @@ internal static partial class HeadlessBench
                      : "shell.Plotter is null — live plot not constructed",
                  shot);
 
-            // Delivery shape — the "unexpected" half of STREAM-AI.
-            long maxGap = 0, gapsOver100 = 0;
+            // Delivery shape — the "unexpected" half of STREAM-AI. An arrival gap is judged by how
+            // late it is: how far it runs past the sample period, not how long it is. The bars were
+            // absolute (100 ms counted, 250 ms a finding), which held only while the period was
+            // negligible; at --rate 1 every gap is a 1000 ms period and an on-time stream read as
+            // a finding. At 100 Hz and up the period is 10 ms or less, so the bars are within
+            // 10 ms of what they were. A dropped sample still counts: it leaves a gap one whole
+            // period late.
+            var periodMs = commandedRate > 0 ? 1000.0 / commandedRate : 0;
+            long maxGap = 0, lateGaps = 0;
             lock (arrivals)
             {
                 for (var i = 1; i < arrivals.Count; i++)
                 {
                     var g = arrivals[i] - arrivals[i - 1];
                     if (g > maxGap) { maxGap = g; }
-                    if (g > 100) { gapsOver100++; }
+                    if (g - periodMs > 100) { lateGaps++; }
                 }
             }
+            var maxLateMs = Math.Max(0, maxGap - periodMs);
             // DataSample.TimestampTicks are DateTime ticks (100 ns) — Core has already converted the
-            // device's counter (TimestampFrequency, 42 MHz on an Nq1) into a DateTime. So the span
-            // below is "how much time the device *claims* passed"; the wall-clock window above is how
-            // much actually did. When the two disagree the finding is about the device's timebase.
+            // device's counter (TimestampFrequency, 42 MHz on an Nq1) into a DateTime. So deviceSpan
+            // is "how much time the device *claims* passed" between the first and last counted
+            // sample; the wall-clock window is how much actually did between the same two. When
+            // the two disagree the finding is about the device's timebase.
             var tsFreq = (device as AbstractStreamingDevice)?.TimestampFrequency ?? 0;
-            var deviceSpan = lastTicks > firstTicks ? (lastTicks - firstTicks) / (double)TimeSpan.TicksPerSecond : double.NaN;
-            var deviceRate = double.IsNaN(deviceSpan) || deviceSpan <= 0 ? double.NaN : (counted - 1) / deviceSpan;
+            var deviceRate = double.IsNaN(deviceSpan) || deviceSpan <= 0 ? double.NaN : (spanned - 1) / deviceSpan;
             var clockSkew = double.IsNaN(deviceSpan) || window <= 0 ? double.NaN : deviceSpan / window;
-            Emit(2, "STREAM-AI", "unexpected", maxGap > 250 || Math.Abs(clockSkew - 1) > 0.05 ? "finding" : "pass",
-                 $"arrival gaps: max {maxGap} ms, {gapsOver100} over 100 ms across {arrivals.Count} samples; " +
-                 $"device-stamped span {deviceSpan:F2} s vs wall-clock {window:F2} s (ratio {clockSkew:F3}; device counter {tsFreq} Hz) " +
-                 $"-> {deviceRate:F1} Hz by device timestamps, {(window > 0 ? counted / window : 0):F1} Hz by wall clock");
+            Emit(2, "STREAM-AI", "unexpected", maxLateMs > 250 || Math.Abs(clockSkew - 1) > 0.05 ? "finding" : "pass",
+                 $"arrival gaps: max {maxGap} ms against a {periodMs:F1} ms sample period ({maxLateMs:F0} ms late), " +
+                 $"{lateGaps} more than 100 ms late across {arrivals.Count} samples; " +
+                 $"device-stamped span {deviceSpan:F2} s vs wall-clock {window:F2} s over the same {spanned} samples " +
+                 $"(ratio {clockSkew:F3}; device counter {tsFreq} Hz) " +
+                 $"-> {deviceRate:F2} Hz by device timestamps, {effective:F2} Hz by wall clock");
             ReportStreamLoad(device, ai, started, counted, window, commandedRate, deviceSpan, deviceGaps,
                              streamPumpsFrom, streamPumpsTo, redraw, session, shot);
             if (_allAi)

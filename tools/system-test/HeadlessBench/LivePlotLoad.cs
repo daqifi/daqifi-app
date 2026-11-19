@@ -173,9 +173,11 @@ internal static partial class HeadlessBench
         if (!_allAi) { return; }
 
         var activeAi = device.DataChannels.Count(c => c.IsAnalog && c.IsActive && c.Direction == ChannelDirection.Input);
+        // Both spans run from the first to the last counted sample (STREAM-AI measures them that
+        // way), so a span of S seconds at R Hz should hold S * R intervals: S * R + 1 samples.
         var expectedByDevice = double.IsNaN(deviceSpan) ? double.NaN : deviceSpan * commandedRate + 1;
         var lossByDevice = expectedByDevice > 0 ? 1 - counted / expectedByDevice : double.NaN;
-        var lossByWall = window > 0 && commandedRate > 0 ? 1 - counted / (window * commandedRate) : double.NaN;
+        var lossByWall = window > 0 && commandedRate > 0 ? 1 - counted / (window * commandedRate + 1) : double.NaN;
 
         double periodTicks = commandedRate > 0 ? TimeSpan.TicksPerSecond / (double)commandedRate : double.NaN;
         long gapCount = 0, maxGapTicks = 0;
