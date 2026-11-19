@@ -3,7 +3,9 @@
 **Measured 2026-09-03** against daqifi-desktop `36995fe` (upstream `main`) and this
 repo at `5414c07`. **Re-measured 2026-09-04** at the binding level, against the same
 upstream `36995fe` — still `identical` to upstream `main` — after the 2026-09-03
-method was shown to be measuring the wrong thing.
+method was shown to be measuring the wrong thing. **Upstream has moved once since**,
+to `c1bf58b` (2026-11-10). The port already had that change, so the measurement
+below still holds. See "Upstream drift is zero".
 
 ## Verdict
 
@@ -100,15 +102,24 @@ two working trees alone.
 
 ```
 $ cat .github/upstream-sync/last-reviewed.sha
-36995fedb291337cc681b17aefd32c6fa96c3d86
-$ gh api repos/daqifi/daqifi-desktop/compare/36995fe...main --jq .status
+c1bf58b1c745dd9cffc2c7a9622d36f26b42a29a
+$ gh api repos/daqifi/daqifi-desktop/compare/c1bf58b...main --jq .status
 identical
 ```
 
-The watermark is already at upstream `main`: **0 commits behind**. daqifi-desktop
-is not moving, so the gap set is fixed rather than a moving target. This is the
-single most important fact for planning — a parity pass no longer has to re-measure
-drift before it can trust anything else.
+The watermark is at upstream `main`: **0 commits behind** (checked 2026-11-19).
+daqifi-desktop almost never moves, so the gap set is close to fixed rather than a
+moving target. This is the single most important fact for planning — a parity pass
+does not have to re-measure drift before it can trust anything else. Check this
+block first; when the watermark is behind, the weekly digest issue lists what to
+triage.
+
+From 2026-09-03 to 2026-11-10 the watermark was `36995fe` and upstream did not
+move. Each upstream commit triaged since then has a row here:
+
+| Upstream commit | What it changes upstream | Port status | Evidence |
+|---|---|---|---|
+| `c1bf58b` — daqifi-desktop #826, merged 2026-11-10; triaged in #641 | Replaces the legacy `WiFiDAQ.ico` (a green and blue "W" waveform, one 96 px entry) with a seven-entry brand `AppIcon.ico` as the WPF `ApplicationIcon`. | **ALREADY-PORTED.** The port adopted this icon first, in #129 (2026-08-21). | The port's `Daqifi.Avalonia/Daqifi.Desktop/Images/AppIcon.ico` is git blob `c8a0d6f2`, which is the blob upstream added: the bytes are identical (48 776). It is the desktop head's `ApplicationIcon`, the `MainWindow` `Icon`, and the Velopack `--icon` in `release.yml`. The macOS bundle ships `AppIcon.icns`, made from the same 1024 px brand art as iOS. No tracked file names or contains `WiFiDAQ`, and the legacy blob `d256e623` is in no commit of the port's history. |
 
 ## The five signals
 
