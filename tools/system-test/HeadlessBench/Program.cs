@@ -1997,7 +1997,8 @@ internal static partial class HeadlessBench
             // the channel is enabled; the mid-stream read below is the other side.
             shell.SelectedIndex = LiveGraphTabIndex;
             PumpFor(TimeSpan.FromMilliseconds(300));
-            var plotShownBefore = PlotShown(main, shell.Plotter.PlotModel);
+            var livePlot = shell.Plotter.PlotModel; // built once, at boot
+            var plotShownBefore = PlotShown(main, livePlot);
 
             // Clicking the channel's tile: ToggleChannelCommand both enables the channel on the
             // device AND subscribes it in LoggingManager, and only the second half is what the drop
@@ -2030,7 +2031,7 @@ internal static partial class HeadlessBench
             var plottedBefore = shell.Plotter?.LoggedPoints?.Values.Sum(l => l.Count) ?? -1;
             var subscribedBefore = LoggingManager.Instance.SubscribedChannels.Count;
             var activeBefore = LoggingManager.Instance.Active;
-            var plotShownMidStream = PlotShown(main, shell.Plotter.PlotModel);
+            var plotShownMidStream = PlotShown(main, livePlot);
             var midStream = activeBefore && plottedBefore > 0 && subscribedBefore > 0;
             Capture(main, "t1-connlost-streaming");
 
@@ -2070,7 +2071,7 @@ internal static partial class HeadlessBench
                 () => !shell.IsLogging && !LoggingManager.Instance.Active,
                 TimeSpan.FromSeconds(5));
             // The channel the drop released was the only one, so the empty state is back (#616).
-            var plotShownAfterDrop = PlotShown(main, shell.Plotter.PlotModel);
+            var plotShownAfterDrop = PlotShown(main, livePlot);
             var shot = Capture(main, "t1-connlost-dropped");
 
             Step(1, "CONN-LOST", "works",
