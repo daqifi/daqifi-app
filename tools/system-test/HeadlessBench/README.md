@@ -43,6 +43,11 @@ It goes through the **user's** code path, not a convenient one:
   bench Nq1 with one analog input, against a 22000 Hz ceiling). Both are the app working, and
   measuring delivery against `--rate` reported them as failures indistinguishable from nothing
   having streamed at all (#281). The evidence string names both numbers whenever they differ.
+- `STREAM-AI` measures a rate as intervals over time: (N - 1) / the span from the first to the
+  last of the same N samples, by arrival time and by device timestamp alike. N / span read nine
+  samples one second apart as 1.1 Hz and failed `--rate 1`. Its `unexpected` probe judges an
+  arrival gap by how far it runs past the sample period (over 100 ms counted, over 250 ms a
+  finding), so a 1 Hz stream's normal 1000 ms gaps are not reported.
 - Streaming is driven by toggling `shell.IsLogging`, so the disk-space check, session
   creation and `LoggingFleet.Start` all happen the way they do in the app.
 - The Devices and Channels panes are the real pane view models, built the way their own views
