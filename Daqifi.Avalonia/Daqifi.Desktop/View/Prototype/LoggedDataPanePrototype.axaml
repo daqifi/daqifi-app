@@ -862,9 +862,10 @@
                 <!-- Empty state (no sessions): ONE state for the whole pane above the status bar
                      (#616). It used to sit in the list row while the plot row above it drew a
                      second message over an invented 0 to 100 grid. It spans the plot, separator
-                     and list rows, which are hidden in this state; the status bar keeps IMPORT SD
-                     LOG. upstream DataTrigger LoggingSessions.Count == 0; HasLoggingSessions is the
-                     VM's equivalent (Count > 0) and change-notifies. -->
+                     and list rows: the plot area and the separator are hidden in this state, and
+                     the list is empty. The status bar keeps IMPORT SD LOG. upstream DataTrigger
+                     LoggingSessions.Count == 0; HasLoggingSessions is the VM's equivalent
+                     (Count > 0) and change-notifies. -->
                 <StackPanel Grid.Row="0"
                             Grid.RowSpan="3"
                             HorizontalAlignment="Center"
