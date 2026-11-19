@@ -46,6 +46,21 @@
 	</PropertyGroup>
 
 	<!--
+	  16 KB page size (#486). Play refuses an update for API 35+ from 2027-02-01
+	  if a bundled .so has a LOAD segment that is not 16 KB-aligned. The risk is
+	  a native library in a NuGet package (SkiaSharp, HarfBuzzSharp and similar).
+
+	  The .NET Android SDK already examines every bundled .so when it packages
+	  the app, and gives XA0141 for a non-aligned one. As a warning, XA0141 is
+	  one line among the ~146 warnings of this head and stops nothing. As an
+	  error, the ubuntu "Android head" job (a Release build) fails the PR that
+	  brings in such a library. Baseline on 2026-11-19: all 378 libraries pass.
+	-->
+	<PropertyGroup>
+		<WarningsAsErrors>$(WarningsAsErrors);XA0141</WarningsAsErrors>
+	</PropertyGroup>
+
+	<!--
 	  Release signing for the Play upload.
 
 	  No secret lives in this file. The keystore path is supplied per machine,
