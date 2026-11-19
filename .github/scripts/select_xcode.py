@@ -17,7 +17,7 @@ already sitting in /Applications.
 The required version is NOT hardcoded anywhere. The caller reads it out of the SDK
 (`dotnet msbuild <ios csproj> -getProperty:_RecommendedXcodeVersion`) and passes it here,
 because it moves with the pinned SDK: the 10.0.2xx band wanted 26.4 and the currently
-pinned 10.0.302 wants a different one — visible in the committed lock file, whose target
+pinned 10.0.303 wants a different one — visible in the committed lock file, whose target
 framework reads `net10.0-ios26.5`.
 
 Usage:

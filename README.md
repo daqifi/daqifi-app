@@ -60,7 +60,7 @@ but the map they index is not in this repository.
 
 ## Building
 
-Requires the **.NET 10 SDK**, pinned in `global.json` to `10.0.302` with
+Requires the **.NET 10 SDK**, pinned in `global.json` to `10.0.303` with
 `rollForward: disable` — the exact version matters, because the mobile heads are
 sensitive to workload versions.
 

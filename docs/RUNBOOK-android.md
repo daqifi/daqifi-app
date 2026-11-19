@@ -103,7 +103,7 @@ adb install -r Daqifi.Avalonia.Android/bin/Debug/net10.0-android36.0/com.daqifi.
 Two things that are easy to get wrong:
 
 - **Use `~/.dotnet/dotnet`, not the one on `PATH`.** `global.json` pins SDK
-  10.0.302 with `rollForward: disable`; Homebrew's dotnet does not have it.
+  10.0.303 with `rollForward: disable`; Homebrew's dotnet does not have it.
 - **`-p:EmbedAssembliesIntoApk=true` is mandatory for a sideloadable Debug
   build.** Fast Deployment otherwise ships an APK with no assemblies in it. The
   csproj comment says the same.
