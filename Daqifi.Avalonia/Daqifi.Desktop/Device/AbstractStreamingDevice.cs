@@ -2829,6 +2829,23 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     {
         ArgumentNullException.ThrowIfNull(reported);
 
+        WriteReportedNetworkSettings(reported);
+
+        // A new instance, for the same reason as in HydrateDeviceMetadata (#565).
+        var networkConfiguration = NetworkConfiguration.Clone();
+        if (reported.Ssid != null) networkConfiguration.Ssid = reported.Ssid;
+        if (reported.Mode is { } newMode) networkConfiguration.Mode = newMode;
+        if (reported.SecurityType is { } newSecurity) networkConfiguration.SecurityType = newSecurity;
+        NetworkConfiguration = networkConfiguration;
+    }
+
+    /// <summary>
+    /// Writes WiFi settings that the device holds into the metadata of this device and of its Core
+    /// device. A null field is not known and keeps its value.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    private void WriteReportedNetworkSettings(ReportedNetworkSettings reported)
+    {
         // Core first, so that a status reply that arrives during this method copies the new values.
         foreach (var metadata in new[] { CoreDevice?.Metadata, Metadata })
         {
@@ -2837,13 +2854,6 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             if (reported.Mode is { } mode) metadata.WifiInfrastructureMode = (uint)mode;
             if (reported.SecurityType is { } security) metadata.WifiSecurityMode = (uint)security;
         }
-
-        // A new instance, for the same reason as in HydrateDeviceMetadata (#565).
-        var networkConfiguration = NetworkConfiguration.Clone();
-        if (reported.Ssid != null) networkConfiguration.Ssid = reported.Ssid;
-        if (reported.Mode is { } newMode) networkConfiguration.Mode = newMode;
-        if (reported.SecurityType is { } newSecurity) networkConfiguration.SecurityType = newSecurity;
-        NetworkConfiguration = networkConfiguration;
     }
 
     #endregion
@@ -2860,9 +2870,24 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             StopStreaming();
         }
 
+        // Read before the await: the drawer edits this configuration, and an edit made while the
+        // settings are sent was not sent.
+        var configuration = NetworkConfiguration;
+        var applied = new ReportedNetworkSettings(
+            configuration.Mode,
+            string.IsNullOrWhiteSpace(configuration.Ssid) ? null : configuration.Ssid.Trim(),
+            configuration.SecurityType);
+
         try
         {
-            await coreDevice.UpdateNetworkConfigurationAsync(NetworkConfiguration);
+            await coreDevice.UpdateNetworkConfigurationAsync(configuration);
+
+            // The device now holds these settings, and no status reply follows an apply (issue
+            // #644, review of PR #646). A firmware update compares what the device reports after
+            // it with this metadata. Without this write, it compared with the reply read at
+            // connect: an update that erased settings applied in this session said nothing, and
+            // one that kept them said the settings had changed.
+            WriteReportedNetworkSettings(applied);
         }
         finally
         {

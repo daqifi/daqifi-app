@@ -611,6 +611,45 @@ public class FirmwareUpdateOutcomeTests : IDisposable
         Assert.Same(harness.Device, Assert.Single(_host.NetworkSectionRequests));
     }
 
+    /// <summary>
+    /// Review of PR #646: no status reply follows APPLY NETWORK SETTINGS, so the "before" side must
+    /// be the settings applied in this session, not the reply read at connect. Here the device
+    /// connected as its own access point, the user put it on a site network, and the update erased
+    /// that. Compared with the connect reply, the access point it comes back as looked unchanged,
+    /// and the user was told nothing.
+    /// </summary>
+    [Fact]
+    public async Task Settings_applied_in_this_session_are_what_the_update_is_compared_with()
+    {
+        using var harness = ConnectedDevice(versionBeforeFlash: "3.9.0");
+        foreach (var metadata in new[] { harness.Core.Metadata, harness.Device.Metadata })
+        {
+            metadata.WifiInfrastructureMode = (uint)WifiMode.SelfHosted;
+            metadata.WifiSecurityMode = (uint)WifiSecurityType.None;
+            metadata.Ssid = AccessPointSsid;
+        }
+
+        harness.Device.NetworkConfiguration = new NetworkConfiguration
+        {
+            Mode = WifiMode.ExistingNetwork,
+            SecurityType = WifiSecurityType.WpaPskPhrase,
+            Ssid = "SiteNetwork",
+            Password = "site-passphrase",
+        };
+        await harness.Device.UpdateNetworkConfiguration().WaitAsync(Timeout);
+        Assert.Equal("SiteNetwork", harness.Core.Metadata.Ssid);
+        Assert.Equal((uint)WifiMode.ExistingNetwork, harness.Device.Metadata.WifiInfrastructureMode);
+
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        _postRestartVersion = "3.9.1";
+        _postRestartNetwork = ErasedSettings;
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        Assert.StartsWith("The WiFi settings were erased.", Assert.Single(_host.Notifications).Message);
+    }
+
     /// <summary>Issue #644, settings not changed: no WiFi warning in the dialog, and no notification.</summary>
     [Fact]
     public async Task Unchanged_settings_give_no_wifi_warning()
