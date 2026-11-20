@@ -229,6 +229,16 @@ public sealed class PendingUpdateMarkerTests : IDisposable
         Assert.Null(Start(Bob));
     }
 
+    /// <summary>Only the writer's own process keeps the note, not any other copy of DAQiFi that runs.</summary>
+    [Fact]
+    public void AnotherCopyOfDaqifi_DoesNotKeepTheNote()
+    {
+        AliceHandsOver();
+        _running = [new SessionProcess(5001, "DAQiFi", ALICE_SESSION)];
+
+        Assert.Null(Start(Bob));
+    }
+
     /// <summary>
     /// Review thread 2: Velopack's updater waits 10 minutes for its elevated copy, then restarts Alice
     /// while that copy still runs. Her restart must not end the note, and must not start either.
