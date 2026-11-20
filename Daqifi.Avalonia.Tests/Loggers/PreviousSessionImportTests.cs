@@ -712,10 +712,11 @@ public sealed class PreviousSessionImportTests : IDisposable
     private void ForgetSampleCount(long sessionId) =>
         Execute(_previous, $"UPDATE Sessions SET SampleCount = NULL WHERE ID = {sessionId};");
 
-    private void AddPreviousSample(long sessionId, long sampleId) =>
-        Execute(_previous,
-            "INSERT INTO Samples (ID, LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
-            $"VALUES ({sampleId}, {sessionId}, {sampleId}.5, {sampleId * 10}, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);");
+    private void AddPreviousSample(long sessionId, long sampleId) => Execute(_previous, SampleInsert(sessionId, sampleId));
+
+    private static string SampleInsert(long sessionId, long sampleId) =>
+        "INSERT INTO Samples (ID, LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+        $"VALUES ({sampleId}, {sessionId}, {sampleId}.5, {sampleId * 10}, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);";
 
     // The other app writes the old database once, after the first batch of the copy is in.
     private static SynchronousProgress AfterTheFirstBatch(Action write) => OncePast(0, write);
@@ -790,6 +791,100 @@ public sealed class PreviousSessionImportTests : IDisposable
         Assert.False(Import().HasSessionsToImport());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_session_copied_before_a_write_later_in_the_import_is_not_kept(bool writeAheadLog)
+    {
+        // The first session has no new sample during its own copy, so that copy finishes and looks
+        // complete. Its next sample comes while the second session is copied. The import sees that
+        // write, so it keeps neither copy, and the next import copies the first session in full.
+        CreatePreviousDatabase();
+        if (writeAheadLog)
+        {
+            Execute(_previous, "PRAGMA journal_mode = WAL;");
+        }
+
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Copied first", 1, 2);
+        AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Copied second", 3, 4, 5);
+
+        // Two of the five sample IDs are done when the first session's copy ends; the write comes
+        // after the second session's batch.
+        var outcome = await RunImport(progress: OncePast(0.4, () => AddPreviousSample(1, 6)));
+
+        Assert.Empty(outcome.Imported);
+        Assert.Equal(2, outcome.LeftForLater);
+        Assert.Equal(0L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
+        Assert.True(Import().HasSessionsToImport(), "Both sessions must be offered again.");
+
+        Assert.Equal(2, (await RunImport()).Imported.Count);
+        Assert.Equal(3L, Scalar<long>(_current,
+            "SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = (SELECT ID FROM Sessions WHERE Name = 'Copied first')"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task A_session_written_to_the_write_ahead_log_moments_ago_is_not_imported()
+    {
+        // The other app records in WAL mode. Its commit goes to the -wal file, and the database file
+        // keeps an older write time until a checkpoint. The import starts after that commit, so
+        // data_version does not change during the import either.
+        CreatePreviousDatabase();
+        Execute(_previous, "PRAGMA journal_mode = WAL;");
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Recording", 1, 2);
+        using var recorder = new SqliteConnection(TestDatabase.ConnectionString(_previous));
+        recorder.Open();
+        void Record(long sampleId)
+        {
+            using var insert = recorder.CreateCommand();
+            insert.CommandText = SampleInsert(1, sampleId);
+            insert.ExecuteNonQuery();
+        }
+
+        Record(3);
+        File.SetLastWriteTimeUtc(_previous, DateTime.UtcNow.AddHours(-1));
+        var import = new PreviousSessionImport(_previous, _current, _markers) { RecordingWindow = TimeSpan.FromMinutes(2) };
+
+        var outcome = await RunImport(import);
+
+        Assert.Empty(outcome.Imported);
+        Assert.Equal(1, outcome.LeftForLater);
+        Assert.Equal(0L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
+
+        // The recording adds another sample after the import, then stops.
+        Record(4);
+        recorder.Close();
+
+        Assert.Single((await RunImport()).Imported);
+        Assert.Equal(4L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples"));
+    }
+
+    [Fact]
+    public async Task An_import_stopped_by_an_error_after_a_write_keeps_no_copy()
+    {
+        // The import stops before its end, so the same rule applies where it stops.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Copied first", 1, 2);
+        AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Copied second", 3);
+        AddPreviousSession(3, "2026-03-31 18:51:41.7774381", "Not reached", 4);
+        using var cancel = new CancellationTokenSource();
+        var outcome = new ImportOutcome();
+
+        // Once the second session is copied (three of four sample IDs), the first session gets a
+        // sample, and the import is stopped before the third session.
+        await Assert.ThrowsAsync<OperationCanceledException>(() => Import().ImportAsync(outcome,
+            OncePast(0.5, () =>
+            {
+                AddPreviousSample(1, 5);
+                cancel.Cancel();
+            }),
+            cancel.Token));
+
+        Assert.Empty(outcome.Imported);
+        Assert.Equal(0L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions WHERE Status = 0"));
+        Assert.True(Import().HasSessionsToImport(), "All sessions must be offered again.");
+    }
+
     [Fact]
     public async Task A_session_with_no_recorded_end_is_imported_when_nothing_writes_the_old_database()
     {
@@ -853,24 +948,24 @@ public sealed class PreviousSessionImportTests : IDisposable
     [Fact]
     public async Task Without_AUTOINCREMENT_a_session_left_for_later_keeps_the_offer_open()
     {
-        // No copy can be proved here (sample IDs can be given twice), so the import skips nothing.
+        // No copy can be proved here (sample IDs can be given twice), so the import skips nothing,
+        // and it ends the offer itself, but only when it leaves nothing for later.
         CreatePreviousDatabase(autoincrement: false);
         AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Finished", 1);
         AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Maybe still recording", 2);
 
-        // The other app starts a new recording once the first session is copied, so the second
-        // session's copy is dropped.
+        // The other app starts a new recording while the second session is copied, so neither copy
+        // is kept.
         var first = await RunImport(progress: OncePast(0.5, () =>
             AddPreviousSession(3, "2026-11-19 09:00:00.0000000", "Started meanwhile", 3)));
 
-        Assert.Single(first.Imported);
-        Assert.Equal(1, first.LeftForLater);
+        Assert.Empty(first.Imported);
+        Assert.Equal(2, first.LeftForLater);
         Assert.True(Import().HasSessionsToImport(), "The sessions left for later must be offered again.");
 
-        // The next import copies those, and the finished one again: a duplicate, not a loss. Then
-        // the offer ends.
+        // The next import copies all three and leaves nothing for later, so the offer ends.
         Assert.Equal(3, (await RunImport()).Imported.Count);
-        Assert.Equal(2L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions WHERE Name = 'Finished'"));
+        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions WHERE Name = 'Finished'"));
         Assert.False(Import().HasSessionsToImport());
     }
 
