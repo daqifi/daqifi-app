@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Reflection;
 using Avalonia;
+using Avalonia.Animation;
 using Avalonia.Automation;
 using Avalonia.Automation.Peers;
 using Avalonia.Automation.Provider;
@@ -1504,13 +1505,16 @@ internal static class AvaloniaCapture
         public required Func<string?> Violation { get; init; }
     }
 
-    // Avalonia's SplitView template part that carries the pane, and the thing that actually
-    // animates: its Width is driven by a DoubleTransition from 0 to OpenPaneLength.
+    // Avalonia's SplitView template part that carries the pane, and the thing the theme
+    // animates: Fluent's SplitView ControlTheme gives it a DoubleTransition on Width (200 ms to
+    // open, 100 ms to close), and the harness takes that transition away - see
+    // RemovePaneTransitions.
     private const string PaneRootPart = "PART_PaneRoot";
 
     /// <summary>
     /// MainWindow's drawer pane is at the width the app declares for its current state — open at
-    /// <c>OpenPaneLength</c>, or closed — rather than somewhere on the way there.
+    /// <c>OpenPaneLength</c>, or closed — rather than somewhere on the way there. Also removes the
+    /// pane's width transition for the rest of the capture; see <see cref="RemovePaneTransitions"/>.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -1562,6 +1566,7 @@ internal static class AvaloniaCapture
         }
 
         var pane = panes[0];
+        RemovePaneTransitions(pane, prefix);
         Console.WriteLine(
             $"[INFO] {prefix} drawer end state: {PaneRootPart} must be {view.OpenPaneLength} " +
             $"wide when the pane is open and {ClosedPaneLength(view)} when it is closed " +
@@ -1586,12 +1591,70 @@ internal static class AvaloniaCapture
                 // NaN on either side falls through to a violation, which is correct: NaN is not
                 // a width the app declares, and an unmeasured pane must not read as at rest.
                 if (actual == expected) { return null; }
-                return $"it is {actual} wide (Bounds={pane.Bounds}) but the pane is " +
+                // Width (the property) next to Bounds (the layout result): the property at the
+                // declared value with Bounds short means a layout pass did not run; both short
+                // means something animated the property again (#657).
+                return $"it is {actual} wide (Bounds={pane.Bounds}, Width={pane.Width}) but the pane is " +
                        (view.IsPaneOpen
                             ? $"OPEN, and MainWindow.axaml declares OpenPaneLength={expected}"
                             : $"CLOSED, which for DisplayMode={view.DisplayMode} is {expected}");
             },
         };
+    }
+
+    /// <summary>
+    /// Takes the theme's width transition off the drawer pane, so that layout, not an animation,
+    /// puts the pane at its declared width (#657).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The animation is not the app's. Fluent's <c>SplitView</c> ControlTheme sets
+    /// <c>Transitions</c> on <c>PART_PaneRoot</c> in its <c>:right:open</c> and
+    /// <c>:right:closed</c> styles: a <c>DoubleTransition</c> on <c>Width</c>, 200 ms to open and
+    /// 100 ms to close, eased <c>0.1,0.9,0.2,1.0</c> (Avalonia 12.1.6,
+    /// <c>src/Avalonia.Themes.Fluent/Controls/SplitView.xaml</c>). The app's own markup adds
+    /// nothing to it.
+    /// </para>
+    /// <para>
+    /// The end-state guard above made a stalled transition fail by name instead of saving a
+    /// wrong frame (#278). It did not stop the stall: that transition still sometimes stops 1-4
+    /// px short of its end and does not move again, and a cheaper scene behind the drawer makes
+    /// it much more frequent on a loaded host (#616 took one loaded host from 0 refused screens in
+    /// 10 runs to 4 in 8). Its progress comes from the animation clock, which MediaContext pulses
+    /// only on a render pass that is not waiting for a composition batch, and passes are
+    /// scheduled by timers and batch completions that this harness drives by hand. That clock is
+    /// the one input to the frame that depends on wall time and host load.
+    /// </para>
+    /// <para>
+    /// A local value outranks a style setter, so an empty collection here removes both
+    /// transitions for the rest of the process, while the theme's <c>Width</c> setters still
+    /// apply: open is <c>OpenPaneLength</c>, closed is the closed width. The pane then gets its
+    /// width from one layout pass, which MediaContext schedules as a plain dispatcher operation
+    /// that <c>Pump</c> runs. That needs no clock and no timer, so host load can make it slower
+    /// but cannot make it stop short. The end state is the same as before: the committed
+    /// baselines record the pane after the transition had finished, and they do not move.
+    /// </para>
+    /// <para>
+    /// The same kind of edit as <see cref="SettleIndeterminateProgress"/>: the harness changes the
+    /// live tree in its own process to remove motion it is not trying to photograph. No product
+    /// code and no setting changes, so a user still sees the slide. The end-state guard stays as
+    /// a backstop: if something animates the pane again, the run fails by name, as before.
+    /// </para>
+    /// </remarks>
+    private static void RemovePaneTransitions(Control pane, string prefix)
+    {
+        // Once per process is enough while the template part lives, and later sweeps find the
+        // local value already in place. Report only the sweep that actually removed something.
+        if (pane.Transitions is not { Count: > 0 } theme) { return; }
+
+        var removed = string.Join(", ", theme.Select(t => t is TransitionBase { Property: { } p } b
+            ? $"{p.Name} over {b.Duration.TotalMilliseconds:0} ms"
+            : t.GetType().Name));
+        pane.Transitions = new Transitions();
+        Console.WriteLine(
+            $"[INFO] {prefix} drawer pane: removed {theme.Count} theme transition(s) " +
+            $"({removed}) from {PaneRootPart}, so layout puts the pane at its declared width " +
+            "without an animation (#657). A user still sees the slide.");
     }
 
     // What "closed" means for the pane's width, taken from Avalonia's own rule rather than
