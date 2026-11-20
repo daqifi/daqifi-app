@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using Avalonia;
 using Daqifi.Desktop.UpdateVersion;
 using Velopack;
@@ -35,9 +37,11 @@ internal static class Program
     // Too early for AppLogger, hence Trace.
     private static bool TryRunVelopack(string[] args)
     {
+        // Set by Run() when the updater started this copy after an install, whether it worked or not.
+        var restartedByUpdater = false;
         try
         {
-            VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
+            VelopackApp.Build().SetAutoApplyOnStartup(false).OnRestarted(_ => restartedByUpdater = true).Run();
         }
         catch (Exception ex)
         {
@@ -49,7 +53,17 @@ internal static class Program
 
         try
         {
-            AppUpdates.Current = new VelopackAppUpdateService();
+            var service = new VelopackAppUpdateService();
+            AppUpdates.Current = service;
+
+            // Another user's update for this install waits for its administrator prompt. Once the
+            // prompt is approved the updater closes this copy, with whatever it is doing (#509), so
+            // it stops here, before any work starts.
+            if (service.VersionBeingInstalledByAnotherUser(restartedByUpdater) is { } version)
+            {
+                SayUpdateInProgress(version);
+                return false;
+            }
         }
         catch (Exception ex)
         {
@@ -58,6 +72,29 @@ internal static class Program
 
         return true;
     }
+
+    // Before the app's own windows exist, so a plain Windows message box. Only Windows leaves the
+    // note that leads here.
+    private static void SayUpdateInProgress(string version)
+    {
+        var message = $"Another user is installing DAQiFi {version} on this PC. The update closes every copy of DAQiFi, " +
+                      "so DAQiFi cannot start now. Try again in a few minutes.";
+        if (OperatingSystem.IsWindows())
+        {
+            _ = MessageBoxW(IntPtr.Zero, message, "DAQiFi", MB_OK | MB_ICONINFORMATION);
+        }
+        else
+        {
+            System.Diagnostics.Trace.WriteLine(message);
+        }
+    }
+
+    private const uint MB_OK = 0x0;
+    private const uint MB_ICONINFORMATION = 0x40;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [SupportedOSPlatform("windows")]
+    private static extern int MessageBoxW(IntPtr owner, string text, string caption, uint type);
 
     public static AppBuilder BuildAvaloniaApp()
     {
