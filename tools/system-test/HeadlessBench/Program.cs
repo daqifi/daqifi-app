@@ -2084,7 +2084,7 @@ internal static partial class HeadlessBench
                 TimeSpan.FromSeconds(5));
             // The drop released the only channel, but the trace the user just recorded is still in
             // the plot, so the plot stays (#616 review).
-            var pointsAfterDrop = shell.Plotter.LoggedPoints.Values.Sum(l => l.Count);
+            var pointsAfterDrop = shell.Plotter?.LoggedPoints?.Values.Sum(l => l.Count) ?? -1;
             var plotShownAfterDrop = PlotShown(main, livePlot);
             var shot = Capture(main, "t1-connlost-dropped");
 
