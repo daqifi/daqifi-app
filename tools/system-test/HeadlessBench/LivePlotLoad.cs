@@ -146,12 +146,15 @@ internal static partial class HeadlessBench
         DeviceGapTally gaps, int commandedRate, string? shot)
     {
         var coreGaps = (device as AbstractStreamingDevice)?.StreamGapCount ?? -1;
+        var coreGapSeconds = (device as AbstractStreamingDevice)?.StreamGapTime.TotalSeconds ?? double.NaN;
         var notices = shell.NotificationList
             .Where(n => n.DeviceSerialNo == device.DeviceSerialNo && n.Message.Contains(": samples are missing. "))
             .Select(n => n.Message)
             .ToList();
         double periodTicks = commandedRate > 0 ? TimeSpan.TicksPerSecond / (double)commandedRate : double.NaN;
-        var rigGaps = gaps.Deltas.Count(d => d > 2 * periodTicks);
+        var rigGapDeltas = gaps.Deltas.Where(d => d > 2 * periodTicks).ToList();
+        var rigGaps = rigGapDeltas.Count;
+        var rigGapSeconds = rigGapDeltas.Sum(d => (double)d) / TimeSpan.TicksPerSecond;
         var pass = coreGaps >= 0
                    && notices.Count == (coreGaps > 0 ? 1 : 0)
                    && (_holdReaderSeconds <= 0 || coreGaps > 0);
@@ -168,7 +171,8 @@ internal static partial class HeadlessBench
 
         Step(2, "STREAM-GAP", "works", pass,
              $"{(_holdReaderSeconds > 0 ? $"reader held for {_holdReaderSeconds} s; " : "no hold; ")}" +
-             $"Core found {coreGaps} gaps (the rig's own device-timestamp tally: {rigGaps} over 2 periods); " +
+             $"Core found {coreGaps} gaps, {coreGapSeconds:F3} s in all (the rig's own device-timestamp tally: " +
+             $"{rigGaps} over 2 periods, {rigGapSeconds:F3} s); " +
              $"{notices.Count} gap notices in the bell for this device" +
              (notices.Count > 0 ? $": \"{notices[0]}\"" : ""),
              shot);

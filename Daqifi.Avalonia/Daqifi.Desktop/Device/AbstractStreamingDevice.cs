@@ -1053,6 +1053,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     public static event Action<AbstractStreamingDevice, string>? StreamGapDetected;
 
     private long _streamGapCount;
+    private long _streamGapTicks;
 
     /// <summary>
     /// How many gaps Core found in this device's stream since streaming last started. Each one is a
@@ -1062,6 +1063,12 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     public long StreamGapCount => Interlocked.Read(ref _streamGapCount);
 
     /// <summary>
+    /// The sum of the gaps' lengths (Core's device-clock interval across each gap) since streaming
+    /// last started: about how long this session has no samples for.
+    /// </summary>
+    public TimeSpan StreamGapTime => TimeSpan.FromTicks(Interlocked.Read(ref _streamGapTicks));
+
+    /// <summary>
     /// Counts a gap Core found, logs it (throttled the way every per-message report here is), and
     /// raises <see cref="StreamGapDetected"/> for the first gap of the session.
     /// </summary>
@@ -1069,11 +1076,13 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// Before this, the gap broke the live plot's line and nothing else: the session closed as a
     /// normal session, and the user was not told that samples were missing (issue #595). The reset
     /// in <see cref="InitializeStreaming"/> races a frame still in decode, as the sibling counters'
-    /// reset does; Core's frame gate keeps the previous session's frames out of the new one.
+    /// reset does; Core's frame gate keeps the previous session's frames out of the new one. The
+    /// throttle can hide the longest gap, so <see cref="StopStreaming"/> logs the totals.
     /// </remarks>
     private void ReportStreamGap(TimestampGapEventArgs gap)
     {
         var occurrence = Interlocked.Increment(ref _streamGapCount);
+        Interlocked.Add(ref _streamGapTicks, TimeSpan.FromSeconds(gap.SecondsSincePreviousMessage).Ticks);
 
         if (IsReportedDiscardOccurrence(occurrence))
         {
@@ -1093,19 +1102,23 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
 
     /// <summary>The notification text for the first gap of a session.</summary>
     /// <remarks>
+    /// <para>
     /// The gap starts at the frame before it. Core makes each host timestamp the one before plus the
     /// device-clock interval, so that frame's time is the gap frame's time less the interval.
+    /// </para>
+    /// <para>
+    /// No length, on purpose. On the bench Nq1, a reader held for 20 s gave 13 gaps, and the first
+    /// was 10 ms of a 7.6 s loss: the first gap of an outage says little about its size. The count
+    /// and the lost time go to the log when the stream stops.
+    /// </para>
     /// </remarks>
     internal static string DescribeStreamGap(string deviceName, TimestampGapEventArgs gap)
     {
-        var seconds = gap.SecondsSincePreviousMessage;
-        var length = seconds < 1
-            ? $"{(seconds * 1000).ToString("0", CultureInfo.CurrentCulture)} ms"
-            : $"{seconds.ToString("0.0", CultureInfo.CurrentCulture)} s";
-        var start = gap.Timestamp.AddSeconds(-seconds).ToString("T", CultureInfo.CurrentCulture);
+        var start = gap.Timestamp.AddSeconds(-gap.SecondsSincePreviousMessage)
+            .ToString("T", CultureInfo.CurrentCulture);
 
-        return $"{deviceName}: samples are missing. At {start} the data stream from the device stopped " +
-               $"for {length}. The live graph shows each gap as a break in the line.";
+        return $"{deviceName}: samples are missing. The data stream from the device had its first gap " +
+               $"at {start}. The live graph shows each gap as a break in the line.";
     }
 
     /// <summary>
@@ -2119,6 +2132,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         _nonFiniteReadingCounts.Clear();
         // Each session gets its own gap count, and with it its own notification (#595).
         Interlocked.Exchange(ref _streamGapCount, 0);
+        Interlocked.Exchange(ref _streamGapTicks, 0);
 
         // Each session gets its own count of samples the scale expression dropped, and with it its
         // own first-occurrence notification (#540). ToList: the channel list is replaced wholesale
@@ -2354,6 +2368,15 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         coreStreamingDevice.StopStreaming();
         IsStreaming = coreStreamingDevice.IsStreaming;
         AppLogger.AddBreadcrumb("streaming", "Streaming stopped");
+
+        // The totals, which the throttled per-gap lines can leave out (#595).
+        if (StreamGapCount > 0)
+        {
+            AppLogger.Warning(
+                $"Streaming stopped on {Name} with {StreamGapCount.ToString(CultureInfo.InvariantCulture)} gaps " +
+                $"in the data stream this session, " +
+                $"{StreamGapTime.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} s in all.");
+        }
 
         // The session's last frame has no next frame to complete it.
         if (_frameInProgress is { } lastFrame)

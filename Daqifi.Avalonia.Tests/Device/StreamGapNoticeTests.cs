@@ -52,6 +52,8 @@ public sealed class StreamGapNoticeTests : IDisposable
 
         Assert.Equal(2, gapsCoreFound.Count);
         Assert.Equal(2, _harness.Device.StreamGapCount);
+        // 3 periods and 5 periods at 100 Hz.
+        Assert.Equal(0.08, _harness.Device.StreamGapTime.TotalSeconds, precision: 6);
         var notice = Assert.Single(notices);
         Assert.Equal(
             AbstractStreamingDevice.DescribeStreamGap(_harness.Device.DeviceDisplayName, gapsCoreFound[0]),
@@ -69,6 +71,7 @@ public sealed class StreamGapNoticeTests : IDisposable
 
         Assert.Empty(notices);
         Assert.Equal(0, _harness.Device.StreamGapCount);
+        Assert.Equal(TimeSpan.Zero, _harness.Device.StreamGapTime);
     }
 
     /// <summary>
@@ -92,6 +95,8 @@ public sealed class StreamGapNoticeTests : IDisposable
 
         Assert.Equal(2, notices.Count);
         Assert.Equal(1, _harness.Device.StreamGapCount);
+        // Only the second session's gap: 4 periods at 100 Hz.
+        Assert.Equal(0.04, _harness.Device.StreamGapTime.TotalSeconds, precision: 6);
     }
 
     /// <summary>
@@ -144,13 +149,13 @@ public sealed class StreamGapNoticeTests : IDisposable
     }
 
     /// <summary>
-    /// The text says when the gap started (the frame before it, so the gap frame's time less the
-    /// interval) and how long it was: milliseconds under one second, seconds above.
+    /// The text says when the first gap started: at the frame before it, so the gap frame's time
+    /// less the interval. It gives no length (see <c>DescribeStreamGap</c>).
     /// </summary>
     [Theory]
-    [InlineData(7.0, "At 14:03:12 the data stream from the device stopped for 7.0 s.")]
-    [InlineData(0.03, "At 14:03:18 the data stream from the device stopped for 30 ms.")]
-    public void The_notice_says_when_the_gap_started_and_how_long_it_was(double seconds, string expected)
+    [InlineData(7.0, "The data stream from the device had its first gap at 14:03:12.")]
+    [InlineData(0.03, "The data stream from the device had its first gap at 14:03:18.")]
+    public void The_notice_says_when_the_first_gap_started(double seconds, string expected)
     {
         var previous = CultureInfo.CurrentCulture;
         CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
