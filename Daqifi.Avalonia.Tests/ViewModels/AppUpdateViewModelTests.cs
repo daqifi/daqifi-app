@@ -283,6 +283,28 @@ public class AppUpdateViewModelTests
         Assert.True(h.ViewModel.HasAction);
         Assert.False(h.ViewModel.CanCheckNow);
         Assert.Equal(0, h.Service.Downloads);
+
+        // A new check would replace the offer, or a download's progress, with a fresh offer.
+        await h.CheckNowAsync();
+        Assert.Equal(1, h.Service.Checks);
+    }
+
+    /// <summary>The timer's check and a "Check now" click can come together; only one check runs.</summary>
+    [Fact]
+    public async Task TimedCheck_WhileACheckRuns_DoesNotStartASecondOne()
+    {
+        using var h = new Harness();
+        h.Service.CheckGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var check = h.CheckNowAsync();
+
+        _ = h.ViewModel.RunAsync();
+        h.Waits.Release(AppUpdateViewModel.StartupDelay);
+        await h.Waits.Pending(AppUpdateViewModel.CheckInterval);
+
+        Assert.Equal(1, h.Service.Checks);
+
+        h.Service.CheckGate.SetResult();
+        await check;
     }
 
     [Fact]
