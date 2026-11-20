@@ -93,6 +93,30 @@ public class AppUpdateNotifierTests
         public Notifications Last => Shown.Last() ?? throw new InvalidOperationException("removed");
         public List<string> Messages => Shown.Select(n => n?.Message ?? "").ToList();
 
+        /// <summary>
+        /// Runs the notifier's watch for <paramref name="looks"/> looks, then stops it. <see cref="OnDelay"/>
+        /// runs before each look, so a test changes what the update would cut off there.
+        /// </summary>
+        public async Task WatchAsync(int looks)
+        {
+            using var stop = new CancellationTokenSource();
+            var last = Delays + looks;
+            var onDelay = OnDelay;
+            OnDelay = n =>
+            {
+                onDelay?.Invoke(n);
+                if (n > last) { stop.Cancel(); }
+            };
+            try
+            {
+                await Notifier.WatchAsync(stop.Token);
+            }
+            finally
+            {
+                OnDelay = onDelay;
+            }
+        }
+
         /// <summary>Clicks the button on the notification currently shown.</summary>
         public void ClickCurrent()
         {
@@ -291,7 +315,8 @@ public class AppUpdateNotifierTests
 
     /// <summary>
     /// The user decides when the app restarts: Cancel on a waiting update stops the wait, nothing is
-    /// installed, and the update is offered again (#503 review).
+    /// installed, and the update is offered again (#503 review). Logging still runs, so the offer
+    /// comes back with no button and says why, and gets its button back when logging stops (#348).
     /// </summary>
     [Fact]
     public async Task CancelWhileWaiting_StopsTheWait_AndOffersTheUpdateAgain()
@@ -307,7 +332,274 @@ public class AppUpdateNotifierTests
 
         Assert.Equal(0, h.Service.Applies);
         Assert.Equal(2, h.Delays);
+        Assert.Equal("DAQiFi 3.4.0 is available. Install it when logging stops.", h.Last.Message);
+        Assert.Null(h.Last.ActionText);
+
+        await h.WatchAsync(looks: 1);               // the next look sees logging stopped
+
+        Assert.Equal("DAQiFi 3.4.0 is available.", h.Last.Message);
         Assert.Equal("Install and restart", h.Last.ActionText);
+        Assert.Equal(0, h.Service.Applies);
+    }
+
+    /// <summary>
+    /// #348: while installing would cut work off, the offer has no button and says what it waits
+    /// for. The ticket's three states first, then the others the app already waits for.
+    /// </summary>
+    [Theory]
+    [InlineData(UpdateBlocker.Logging, "when logging stops")]
+    [InlineData(UpdateBlocker.FirmwareUpdate, "when the firmware update finishes")]
+    [InlineData(UpdateBlocker.SdCardTransfer, "when the SD card transfer finishes")]
+    [InlineData(UpdateBlocker.OtherWindowOpen, "when DAQiFi's other windows are closed")]
+    [InlineData(UpdateBlocker.LoggedDataBusy, "when the import or delete finishes")]
+    [InlineData(UpdateBlocker.ProfileBeingEdited, "when the profile editor is closed")]
+    public async Task OfferWhileBusy_HasNoButton_AndSaysWhy(UpdateBlocker blocker, string waitingFor)
+    {
+        var h = new Harness { Blocker = blocker };
+
+        var shown = await h.Notifier.CheckAsync();
+
+        Assert.Same(shown, Assert.Single(h.Shown));
+        Assert.Equal($"DAQiFi 3.4.0 is available. Install it {waitingFor}.", shown!.Message);
+        Assert.Null(shown.ActionText);
+        Assert.Null(shown.Action);
+        Assert.Equal(0, h.Service.Downloads);
+    }
+
+    /// <summary>
+    /// #348: when the work ends, the offer comes back by itself, with its button and with no new
+    /// check, and the button then installs. Looks that see no change replace nothing, so the
+    /// notification does not flicker. The watch itself never downloads or installs.
+    /// </summary>
+    [Theory]
+    [InlineData(UpdateBlocker.Logging)]
+    [InlineData(UpdateBlocker.FirmwareUpdate)]
+    [InlineData(UpdateBlocker.SdCardTransfer)]
+    public async Task OfferWhileBusy_GetsItsButtonBack_WhenTheWorkEnds(UpdateBlocker blocker)
+    {
+        var h = new Harness { Blocker = blocker };
+        await h.Notifier.CheckAsync();
+        h.OnDelay = n => { if (n == 3) { h.Blocker = UpdateBlocker.None; } };
+
+        await h.WatchAsync(looks: 5);
+
+        Assert.Equal(2, h.Shown.Count);
+        Assert.Equal("DAQiFi 3.4.0 is available.", h.Last.Message);
+        Assert.Equal("Install and restart", h.Last.ActionText);
+        Assert.Equal(1, h.Service.Checks);
+        Assert.Equal(0, h.Service.Downloads);
+        Assert.Equal(0, h.Service.Applies);
+
+        await ((IAsyncRelayCommand)h.Last.Action!).ExecuteAsync(null);
+
+        Assert.Equal(1, h.Service.Applies);
+    }
+
+    /// <summary>#348: work that starts while the offer is shown takes its button away until the work ends.</summary>
+    [Theory]
+    [InlineData(UpdateBlocker.Logging, "when logging stops")]
+    [InlineData(UpdateBlocker.FirmwareUpdate, "when the firmware update finishes")]
+    [InlineData(UpdateBlocker.SdCardTransfer, "when the SD card transfer finishes")]
+    public async Task WorkStartedWhileOffered_TakesTheButtonAway_UntilItEnds(UpdateBlocker blocker, string waitingFor)
+    {
+        var h = new Harness();
+        await h.Notifier.CheckAsync();
+        h.OnDelay = n =>
+        {
+            if (n == 2) { h.Blocker = blocker; }
+            if (n == 4) { h.Blocker = UpdateBlocker.None; }
+        };
+
+        await h.WatchAsync(looks: 5);
+
+        Assert.Equal(
+            ["DAQiFi 3.4.0 is available.", $"DAQiFi 3.4.0 is available. Install it {waitingFor}.", "DAQiFi 3.4.0 is available."],
+            h.Messages);
+        Assert.Equal(["Install and restart", null, "Install and restart"], h.Shown.Select(n => n!.ActionText));
+        Assert.Equal(0, h.Service.Applies);
+    }
+
+    /// <summary>
+    /// #348 review: work starts while the offer shows, and the user clicks Install before the watch
+    /// looks again. The click is refused: the offer shows the reason with no button, and nothing is
+    /// downloaded or installed. When the work ends, the button comes back and installs.
+    /// </summary>
+    [Theory]
+    [InlineData(UpdateBlocker.Logging, "when logging stops")]
+    [InlineData(UpdateBlocker.FirmwareUpdate, "when the firmware update finishes")]
+    [InlineData(UpdateBlocker.SdCardTransfer, "when the SD card transfer finishes")]
+    public async Task ClickBeforeTheNextLook_WhileWorkRuns_IsRefused(UpdateBlocker blocker, string waitingFor)
+    {
+        var h = new Harness();
+        await h.Notifier.CheckAsync();
+        Assert.Equal("Install and restart", h.Last.ActionText);
+
+        // A download that never ends, so a click that is wrongly accepted stops there.
+        h.Service.DownloadBody = _ => new TaskCompletionSource().Task;
+        h.Blocker = blocker;
+        h.ClickCurrent();
+
+        Assert.Equal($"DAQiFi 3.4.0 is available. Install it {waitingFor}.", h.Last.Message);
+        Assert.Null(h.Last.ActionText);
+        Assert.Equal(0, h.Service.Downloads);
+        Assert.Equal(0, h.Service.Applies);
+
+        h.Service.DownloadBody = null;
+        h.OnDelay = _ => h.Blocker = UpdateBlocker.None;
+        await h.WatchAsync(looks: 1);
+        Assert.Equal("Install and restart", h.Last.ActionText);
+
+        await ((IAsyncRelayCommand)h.Last.Action!).ExecuteAsync(null);
+
+        Assert.Equal(1, h.Service.Downloads);
+        Assert.Equal(1, h.Service.Applies);
+    }
+
+    /// <summary>
+    /// #348 review: "Try again" leads to an install too, so a click on it before the watch looks
+    /// again is refused in the same way. Nothing is asked or downloaded. ("Update ready." is in
+    /// <see cref="AllUsersInstall_WorkStartedBeforeTheSecondClick_IsRefused_ThenAsksAgain"/>.)
+    /// </summary>
+    [Fact]
+    public async Task RetryClick_BeforeTheNextLook_WhileWorkRuns_IsRefused()
+    {
+        var h = new Harness();
+        h.Service.ApplyNeedsElevation = true;
+        h.Service.DownloadFailure = new IOException("disk full");
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+        Assert.Equal("Try again", h.Last.ActionText);
+        Assert.Single(h.Confirms);
+
+        h.Service.DownloadFailure = null;
+        h.Service.DownloadBody = _ => new TaskCompletionSource().Task;
+        h.Blocker = UpdateBlocker.Logging;
+        h.ClickCurrent();
+
+        Assert.Equal("Couldn't download the update. Try again when logging stops.", h.Last.Message);
+        Assert.Null(h.Last.ActionText);
+        Assert.Single(h.Confirms);
+        Assert.Equal(1, h.Service.Downloads);
+        Assert.Equal(0, h.Service.Applies);
+    }
+
+    /// <summary>
+    /// While an install step shows its own notification, the watch leaves it alone. Here logging
+    /// starts during the download: the notification stays the download's, and the step then waits
+    /// for logging to stop, as before #348.
+    /// </summary>
+    [Fact]
+    public async Task Watch_LeavesAnInstallUnderWayAlone()
+    {
+        var h = new Harness();
+        var downloaded = new TaskCompletionSource();
+        h.Service.DownloadBody = _ => downloaded.Task;
+        await h.Notifier.CheckAsync();
+        var install = h.Notifier.InstallAsync(h.Service.Offer!);
+        var shownBefore = h.Shown.Count;
+
+        h.OnDelay = _ => h.Blocker = UpdateBlocker.Logging;
+        await h.WatchAsync(looks: 3);
+
+        Assert.Equal(shownBefore, h.Shown.Count);
+        Assert.Equal("Downloading DAQiFi 3.4.0... 0%", h.Last.Message);
+
+        h.OnDelay = _ => h.Blocker = UpdateBlocker.None;
+        downloaded.SetResult();
+        await install;
+
+        Assert.Contains("Update ready. Installs when logging stops.", h.Messages);
+        Assert.Equal(1, h.Service.Applies);
+    }
+
+    /// <summary>#348: "Try again" after a failure leads to an install too, so it follows the same rule.</summary>
+    [Fact]
+    public async Task FailedDownload_WhileWorkRuns_OffersNoRetryUntilItEnds()
+    {
+        var h = new Harness();
+        h.Service.DownloadFailure = new IOException("disk full");
+        h.Service.OnDownload = (_, _) => h.Blocker = UpdateBlocker.SdCardTransfer;
+
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+
+        Assert.Equal("Couldn't download the update. Try again when the SD card transfer finishes.", h.Last.Message);
+        Assert.Null(h.Last.ActionText);
+
+        h.OnDelay = _ => h.Blocker = UpdateBlocker.None;
+        await h.WatchAsync(looks: 1);
+
+        Assert.Equal("Couldn't download the update.", h.Last.Message);
+        Assert.Equal("Try again", h.Last.ActionText);
+    }
+
+    /// <summary>
+    /// #348: on an install for all users, "Update ready." waits for a click. Work that starts before
+    /// the click takes the button away, and the button comes back when the work ends.
+    /// </summary>
+    [Fact]
+    public async Task AllUsersInstall_ReadyLosesItsButton_WhileWorkRuns()
+    {
+        var h = new Harness { Blocker = UpdateBlocker.Logging };
+        h.Service.ApplyNeedsElevation = true;
+        h.OnDelay = n => { if (n == 1) { h.Blocker = UpdateBlocker.None; } };
+        await h.Notifier.InstallAsync(h.Service.Offer!);
+        Assert.Equal("Update ready.", h.Last.Message);
+
+        h.OnDelay = _ => h.Blocker = UpdateBlocker.FirmwareUpdate;
+        await h.WatchAsync(looks: 1);
+
+        Assert.Equal("Update ready. Install it when the firmware update finishes.", h.Last.Message);
+        Assert.Null(h.Last.ActionText);
+
+        h.OnDelay = _ => h.Blocker = UpdateBlocker.None;
+        await h.WatchAsync(looks: 1);
+
+        Assert.Equal("Update ready.", h.Last.Message);
+        Assert.Equal("Install and restart", h.Last.ActionText);
+        Assert.Equal(0, h.Service.Applies);
+    }
+
+    /// <summary>When the check cannot tell, the offer has no button until it can; the failure is logged once.</summary>
+    [Fact]
+    public async Task BlockerCheckThrowing_OfferHasNoButton_AndLogsOnce()
+    {
+        var h = new Harness();
+        var throwing = true;
+        h.BlockerSource = () => throwing ? throw new InvalidOperationException("view gone") : UpdateBlocker.None;
+
+        var shown = await h.Notifier.CheckAsync();
+
+        Assert.Equal("DAQiFi 3.4.0 is available. Install it when DAQiFi is idle.", shown!.Message);
+        Assert.Null(shown.ActionText);
+
+        h.OnDelay = n => { if (n == 3) { throwing = false; } };
+        await h.WatchAsync(looks: 3);
+
+        Assert.Equal("Install and restart", h.Last.ActionText);
+        Assert.Single(h.Logger.Warnings);
+    }
+
+    /// <summary>The offer's text while it waits stays one short line, for every reason it can give.</summary>
+    [Theory]
+    [InlineData(UpdateBlocker.Logging)]
+    [InlineData(UpdateBlocker.FirmwareUpdate)]
+    [InlineData(UpdateBlocker.SdCardTransfer)]
+    [InlineData(UpdateBlocker.OtherWindowOpen)]
+    [InlineData(UpdateBlocker.LoggedDataBusy)]
+    [InlineData(UpdateBlocker.ProfileBeingEdited)]
+    public async Task OfferWhileBusy_IsOneShortLine(UpdateBlocker blocker)
+    {
+        // The longest offer: the retry after an install for all users did not happen.
+        var marker = TempMarker();
+        marker.Remember("3.4.0");
+        var h = new Harness { Blocker = blocker, Attempts = marker };
+        h.Service.ApplyNeedsElevation = true;
+
+        var shown = await h.Notifier.CheckAsync();
+
+        Assert.StartsWith("DAQiFi 3.4.0 wasn't installed. Try again when ", shown!.Message);
+        Assert.Null(shown.ActionText);
+        Assert.DoesNotContain('\n', shown.Message);
+        Assert.True(shown.Message.Length <= 90, shown.Message);
     }
 
     /// <summary>Messages stay one short line.</summary>
@@ -514,24 +806,31 @@ public class AppUpdateNotifierTests
     }
 
     /// <summary>
-    /// Work that starts between "Update ready." and the click is waited for again, and the wait
-    /// again ends with a question, not with an install.
+    /// Work that starts between "Update ready." and the click: the click is refused and starts no
+    /// wait (#348 review). When the work ends the question comes back, and the click then installs.
     /// </summary>
     [Fact]
-    public async Task AllUsersInstall_WorkStartedBeforeTheSecondClick_IsWaitedFor_ThenAsksAgain()
+    public async Task AllUsersInstall_WorkStartedBeforeTheSecondClick_IsRefused_ThenAsksAgain()
     {
         var h = new Harness { Blocker = UpdateBlocker.Logging };
         h.Service.ApplyNeedsElevation = true;
-        h.OnDelay = n => { if (n == 1 || n == 2) { h.Blocker = UpdateBlocker.None; } };
+        h.OnDelay = n => { if (n == 1) { h.Blocker = UpdateBlocker.None; } };
 
         await h.Notifier.InstallAsync(h.Service.Offer!);
         Assert.Equal("Update ready.", h.Last.Message);
 
+        h.OnDelay = null;
+        var delays = h.Delays;
         h.Blocker = UpdateBlocker.FirmwareUpdate;   // a flash starts before the user clicks
         await ((IAsyncRelayCommand)h.Last.Action!).ExecuteAsync(null);
 
         Assert.Equal(0, h.Service.Applies);
-        Assert.Contains("Update ready. Asks to install when the firmware update finishes.", h.Messages);
+        Assert.Equal(delays, h.Delays);
+        Assert.Equal("Update ready. Install it when the firmware update finishes.", h.Last.Message);
+        Assert.Null(h.Last.Action);
+
+        h.OnDelay = _ => h.Blocker = UpdateBlocker.None;
+        await h.WatchAsync(looks: 1);
         Assert.Equal("Update ready.", h.Last.Message);
 
         await ((IAsyncRelayCommand)h.Last.Action!).ExecuteAsync(null);

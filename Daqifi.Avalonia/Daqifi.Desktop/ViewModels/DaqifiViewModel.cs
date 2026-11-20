@@ -2927,7 +2927,12 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             _appLogger,
             attempts: new UpdateAttemptMarker(Path.Combine(Daqifi.Desktop.Common.AppDataPaths.DataDirectory, "update-attempt")));
 
-        await notifier.CheckAsync();
+        // For the rest of the run, an offer has no Install button while logging, a firmware write
+        // or an SD card transfer runs, and gets it back when that ends (#348). It never installs.
+        if (await notifier.CheckAsync() is not null)
+        {
+            await notifier.WatchAsync();
+        }
     }
 
     private Notifications? _updateNotice;
