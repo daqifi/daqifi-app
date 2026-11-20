@@ -102,6 +102,9 @@ public sealed class AppUpdateNotifier
         _attempts = attempts;
     }
 
+    /// <summary>True when the last <see cref="CheckAsync"/> got no answer from the update service (#346).</summary>
+    public bool LastCheckFailed { get; private set; }
+
     /// <summary>
     /// Checks for a newer version and, when there is one, shows its notification. Returns the
     /// notification shown, or <c>null</c> when updates are unsupported, this copy is current, or the
@@ -116,12 +119,14 @@ public sealed class AppUpdateNotifier
         try
         {
             offer = await _service.CheckAsync(cancellationToken);
+            LastCheckFailed = false;
         }
         // A timed-out request also surfaces as a cancellation; only the caller's own cancel propagates.
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // Offline is normal for this app (field and lab networks), so this is not an error.
             _logger.Warning(ex, "Checking for an app update failed");
+            LastCheckFailed = true;
             return null;
         }
 
