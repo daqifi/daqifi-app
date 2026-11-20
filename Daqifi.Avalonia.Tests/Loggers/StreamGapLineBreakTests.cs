@@ -34,20 +34,27 @@ public sealed class StreamGapLineBreakTests : IDisposable
     /// the samples, and the plot draws them. Each series gets exactly one break, in front of its
     /// first point after the gap.
     /// </summary>
-    [Fact]
-    public void A_gap_in_a_real_Core_stream_breaks_each_series_once_in_front_of_the_next_sample()
+    /// <remarks>
+    /// Two frames are lost between the fourth frame and the fifth. In the second case the frame
+    /// after the gap comes again with the same device counter. Core gives both copies the same
+    /// timestamp and finds the gap once, so the copy must not break the line a second time (review
+    /// of PR #651).
+    /// </remarks>
+    [Theory]
+    [InlineData(new uint[] { 0, 1, 2, 3, 6, 7, 8 })]
+    [InlineData(new uint[] { 0, 1, 2, 3, 6, 6, 7, 8 })]
+    public void A_gap_in_a_real_Core_stream_breaks_each_series_once_in_front_of_the_next_sample(uint[] periodsFromStart)
     {
         var plotter = PlotterFor(_harness.EnableAnalog(0), _harness.EnableAnalog(1));
         _harness.Device.InitializeStreaming();
 
-        // Two frames lost between the fourth frame and the fifth.
-        Feed(0, 1, 2, 3, 6, 7, 8);
+        Feed(periodsFromStart);
         plotter.DrainPendingSamples();
 
         Assert.Equal(2, plotter.LoggedPoints.Count);
         Assert.All(plotter.LoggedPoints.Values, points =>
         {
-            Assert.Equal(8, points.Count);
+            Assert.Equal(periodsFromStart.Length + 1, points.Count);
             Assert.Equal(new[] { 4 }, Enumerable.Range(0, points.Count).Where(i => double.IsNaN(points[i].X)));
             // The break is between the last point before the gap and the first point after it.
             Assert.Equal(30.0, points[5].X - points[3].X, precision: 3);

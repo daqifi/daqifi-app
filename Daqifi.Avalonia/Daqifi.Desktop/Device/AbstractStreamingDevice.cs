@@ -366,12 +366,14 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     private readonly List<(Daqifi.Core.Channel.IChannel Channel, EventHandler<Daqifi.Core.Channel.SampleReceivedEventArgs> Handler)>
         _coreSampleSubscriptions = [];
 
-    // The host timestamp of the first frame after the latest gap Core found in this session's
-    // stream (issue #629), or null when Core has found none. Every sample of one frame carries the
-    // same timestamp, so a sample whose timestamp is this one follows the gap. Written and read only
-    // on Core's consumer thread: Core raises GapDetected on that thread, inside the decode of the
-    // frame and before the frame's samples. Cleared before each session starts, which is before
-    // Core can decode a frame of it.
+    // The host timestamp of the frame Core is decoding, when that frame follows a gap Core found in
+    // the stream (issue #629); otherwise null. Every sample of one frame carries the same timestamp,
+    // so a sample whose timestamp is this one follows the gap. Written and read only on Core's
+    // consumer thread: Core raises GapDetected on that thread, inside the decode of the frame and
+    // before the frame's samples. Cleared when the next raw frame arrives
+    // (OnStreamMessageReceived), and before each session starts. The timestamp must still match,
+    // because Core holds back the raw frame of the firmware's short warm-up frame (issue #351) but
+    // publishes its digital samples, and that frame does not clear it.
     private DateTime? _gapFrameTimestamp;
 
     // The device counter on the last stream frame of this session, for DeviceMessage.Rollover.
@@ -1299,6 +1301,12 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         // message. The name arrives via OnStatusMessageReceived instead. Capturing here too is
         // free and correct if firmware ever changes the streaming field set.
         CaptureFriendlyDeviceNameIfPresent(message);
+
+        // A new frame starts, so the gap mark of the frame before it stops here (review of PR
+        // #651). Core raises this raw frame before it decodes the frame, so before GapDetected for
+        // it. The timestamp alone cannot do this: a repeated device counter gives the next frame
+        // the same timestamp as the gap frame.
+        _gapFrameTimestamp = null;
 
         if (!IsStreaming || Mode != DeviceMode.StreamToApp)
         {

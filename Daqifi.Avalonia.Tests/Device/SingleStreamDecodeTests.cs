@@ -166,8 +166,17 @@ public sealed class SingleStreamDecodeTests : IDisposable
     /// per frame; every channel's sample of the frame after the gap must carry the mark, and no
     /// other sample may.
     /// </summary>
-    [Fact]
-    public void A_gap_Core_finds_marks_every_channels_sample_of_the_next_frame_and_no_other()
+    /// <remarks>
+    /// Frames 0 to 3 are one period apart, then three periods to the next: two frames lost. One
+    /// lost frame is not enough, because Core's test is strict: two periods is exactly two times
+    /// the average, not more. Then frames one period apart again. In the second case the frame after
+    /// the gap comes again with the same device counter, so Core gives the copy the same timestamp.
+    /// The copy is a different frame and must not carry the mark (review of PR #651).
+    /// </remarks>
+    [Theory]
+    [InlineData(new uint[] { 0, 1, 2, 3, 6, 7, 8 })]
+    [InlineData(new uint[] { 0, 1, 2, 3, 6, 6, 7, 8 })]
+    public void A_gap_Core_finds_marks_every_channels_sample_of_the_next_frame_and_no_other(uint[] periodsFromStart)
     {
         var harness = Harness(analogPorts: 3, digitalPorts: 8);
         var analog0 = harness.EnableAnalog(0);
@@ -178,10 +187,6 @@ public sealed class SingleStreamDecodeTests : IDisposable
         harness.Core.GapDetected += (_, _) => gapsCoreRaised++;
         harness.Device.InitializeStreaming();
 
-        // Frames 0 to 3 one period apart, then three periods to the next: two frames lost. One
-        // lost frame is not enough, because Core's test is strict: two periods is exactly two
-        // times the average, not more. Then two more frames one period apart.
-        uint[] periodsFromStart = [0, 1, 2, 3, 6, 7, 8];
         foreach (var periods in periodsFromStart)
         {
             var frame = CoreDecodingHarness.FloatFrame(
@@ -192,8 +197,51 @@ public sealed class SingleStreamDecodeTests : IDisposable
 
         // One gap for the device, not one for each channel.
         Assert.Equal(1, gapsCoreRaised);
-        bool[] expected = [false, false, false, false, true, false, false];
+        var expected = Enumerable.Range(0, periodsFromStart.Length).Select(i => i == 4);
         Assert.All(published, samples => Assert.Equal(expected, samples.Select(s => s.FollowsGap)));
+    }
+
+    /// <summary>
+    /// The mark stays with its own frame also when the app gets no raw message for the next frame.
+    /// Core withholds the raw message of the firmware's short warm-up frame (issue #351), but it
+    /// publishes the frame's digital samples. So the reset at the next raw message does not occur
+    /// for that frame, and only the timestamp keeps the mark off it.
+    /// </summary>
+    [Fact]
+    public void A_warm_up_frame_after_the_gap_frame_does_not_get_the_mark()
+    {
+        var harness = Harness(analogPorts: 3, digitalPorts: 8);
+        var analog = Published(harness.EnableAnalog(0));
+        harness.EnableAnalog(1);
+        var digital = Published(harness.EnableDigital(0));
+        var gapsCoreRaised = 0;
+        var framesCoreWithheld = 0;
+        harness.Core.GapDetected += (_, _) => gapsCoreRaised++;
+        harness.Core.StreamFrameDiscarded += (_, _) => framesCoreWithheld++;
+        harness.Device.InitializeStreaming();
+
+        void Feed(uint periods, params float[] volts)
+        {
+            var frame = CoreDecodingHarness.FloatFrame(
+                CoreDecodingHarness.FirstCounter + periods * harness.TicksPerSample, volts);
+            frame.DigitalData = ByteString.CopyFrom(0b0000_0001);
+            harness.Core.Feed(frame);
+        }
+
+        // Short frames (one analog value for two analog channels) at periods 0, 1, 4 and 5. The
+        // frame at period 4 follows a gap. Then full frames at periods 6 and 7.
+        Feed(0, 1f);
+        Feed(1, 1f);
+        Feed(4, 1f);
+        Feed(5, 1f);
+        Feed(6, 1f, 2f);
+        Feed(7, 1f, 2f);
+
+        // The premise: Core took the four short frames as warm-up frames and found one gap.
+        Assert.Equal(4, framesCoreWithheld);
+        Assert.Equal(2, analog.Count);
+        Assert.Equal(1, gapsCoreRaised);
+        Assert.Equal(new[] { false, false, true, false, false, false }, digital.Select(s => s.FollowsGap));
     }
 
     [Fact]
