@@ -263,7 +263,6 @@ internal static partial class HeadlessBench
                                 Color = "#FF4A9EFF",
                                 Value = Math.Sin((frame + c * 37) / 200.0),
                                 TimestampTicks = ticks,
-                                FirmwareDeltaMs = 1000.0 / IngestRateHz,
                             };
                             var phaseBefore = Volatile.Read(ref holdPhase);
                             var t0 = Stopwatch.GetTimestamp();
