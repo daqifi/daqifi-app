@@ -165,11 +165,9 @@ public sealed class PendingUpdateMarker
         try
         {
             var lines = File.ReadAllLines(file);
-            if (lines.Length < 2) { return null; }
-
-            var version = lines[0].Trim();
-            return version.Length > 0
-                   && DateTimeOffset.TryParse(lines[1].Trim(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var writtenAt)
+            var version = lines.ElementAtOrDefault(0)?.Trim();
+            return !string.IsNullOrEmpty(version)
+                   && DateTimeOffset.TryParse(lines.ElementAtOrDefault(1)?.Trim(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var writtenAt)
                 ? (version, writtenAt)
                 : null;
         }
