@@ -422,12 +422,14 @@
                                             Command="{Binding AppUpdate.CheckNowCommand}"
                                             IsVisible="{Binding AppUpdate.CanCheckNow}"
                                             Theme="{StaticResource PillButton}"
+                                            HorizontalAlignment="Left"
                                             Margin="0,10,0,0"
                                             Cursor="Hand"/>
                                     <Button Content="{Binding AppUpdate.ActionText}"
                                             Command="{Binding AppUpdate.ActionCommand}"
                                             IsVisible="{Binding AppUpdate.HasAction}"
                                             Theme="{StaticResource AccentPillButton}"
+                                            HorizontalAlignment="Left"
                                             Margin="0,10,0,0"
                                             Cursor="Hand"/>
                                 </StackPanel>
