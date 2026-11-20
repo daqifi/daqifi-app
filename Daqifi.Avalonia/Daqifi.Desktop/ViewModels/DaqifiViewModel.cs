@@ -1150,6 +1150,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // app dropped it. Said once per channel per session, here in the bell.
                     AbstractChannel.ScaleResultsRejected += OnScaleResultsRejected;
 
+                    // #595: Core found a gap in a device's stream, so samples are missing. Said
+                    // once per device per session, here in the bell.
+                    AbstractStreamingDevice.StreamGapDetected += OnStreamGapDetected;
+
                     // #353: data no longer follows elevation into %ProgramData%. If sessions are
                     // still there, offer to bring them over (checked in the background).
                     _ = OfferPreviousSessionImportAsync();
@@ -2123,13 +2127,29 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// notice for the same device is already in the list: a second session with the same fault
     /// does not stack a second copy of one sentence.
     /// </summary>
-    internal void AddScaleResultsRejectedNotice(AbstractChannel channel)
+    internal void AddScaleResultsRejectedNotice(AbstractChannel channel) =>
+        AddDeviceNoticeOnce(channel.DeviceSerialNo, channel.RejectedScaleResultsNotification);
+
+    /// <summary>
+    /// Raised from Core's consumer thread for the first gap in a device's stream (#595). Marshalled
+    /// for the same reason as <see cref="OnScaleResultsRejected"/>.
+    /// </summary>
+    private void OnStreamGapDetected(AbstractStreamingDevice device, string message)
+    {
+        var serial = device.DeviceSerialNo;
+        Dispatcher.UIThread.Post(() => AddDeviceNoticeOnce(serial, message));
+    }
+
+    /// <summary>
+    /// Adds <paramref name="message"/> as a notice owned by the device with
+    /// <paramref name="deviceSerialNo"/>, unless the same notice for that device is already there.
+    /// </summary>
+    internal void AddDeviceNoticeOnce(string? deviceSerialNo, string message)
     {
         // A device-owned notice, so the per-device pruning in RemoveNotification takes it away when
         // the device disconnects. An empty serial is stored as null instead: the pruning would
         // match an empty serial to no device and remove the notice on the same UpdateUi pass.
-        var serial = string.IsNullOrEmpty(channel.DeviceSerialNo) ? null : channel.DeviceSerialNo;
-        var message = channel.RejectedScaleResultsNotification;
+        var serial = string.IsNullOrEmpty(deviceSerialNo) ? null : deviceSerialNo;
 
         if (NotificationList.Any(n => n.Message == message && n.DeviceSerialNo == serial))
         {

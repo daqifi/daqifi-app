@@ -52,8 +52,8 @@ using DesktopApp = Daqifi.Desktop.App;
 //   DAQIFI_RESTORE_NAME=<name> HeadlessBench --port ... --out ...   (repair; see RunRestoreName)
 //
 // Exit code 1 on any [FAIL]. Rows covered with a board: CONN-USB, DEV-INFO, DEV-TILE, CH-TILE,
-// DEV-RATE, CH-AI, STREAM-AI, LOG-SESSION, GRAPH-LIVE, CH-DIO, CH-PWM, SD-LIST, CONN-DISC,
-// DEV-NAME. Rows covered by --scripted, which needs none: LOGGED-LIST, LOGGED-PLOT, EXPORT-FAIL
+// DEV-RATE, CH-AI, STREAM-AI, STREAM-GAP, LOG-SESSION, GRAPH-LIVE, CH-DIO, CH-PWM, SD-LIST,
+// CONN-DISC, DEV-NAME. Rows covered by --scripted, which needs none: LOGGED-LIST, LOGGED-PLOT, EXPORT-FAIL
 // (their double is a seeded database) and SD-LIST, CONN-LOST, CONN-DISC, LOG-MODE, DEV-NAME
 // (their double is a ScriptedDevice).
 // Add a Step per matrix row; keep the shape.
@@ -402,7 +402,7 @@ internal static partial class HeadlessBench
             // all (#281).
             var commandedRate = device.StreamingFrequency;
             var streamPumpsFrom = FrameLatenciesMs.Count;
-            if (started) { PumpStreamWindow(shell); }
+            if (started) { PumpStreamWindow(shell, ai); }
             var streamPumpsTo = FrameLatenciesMs.Count;
             var redraw = started ? MeasureLiveRedraw(main) : default;
             var counted = samples;
@@ -515,6 +515,7 @@ internal static partial class HeadlessBench
                  $"device-stamped span {deviceSpan:F2} s vs wall-clock {window:F2} s over the same {spanned} samples " +
                  $"(ratio {clockSkew:F3}; device counter {tsFreq} Hz) " +
                  $"-> {deviceRate:F2} Hz by device timestamps, {effective:F2} Hz by wall clock");
+            ReportStreamGap(shell, device, deviceGaps, commandedRate, shot);
             ReportStreamLoad(device, ai, started, counted, window, commandedRate, deviceSpan, deviceGaps,
                              streamPumpsFrom, streamPumpsTo, redraw, session, shot);
             if (_allAi)
@@ -2648,6 +2649,7 @@ internal static partial class HeadlessBench
                     case "--scripted": _scripted = Next(); break;
                     case "--all-ai": _allAi = true; break;
                     case "--hold-ui": _holdUiSeconds = int.Parse(Next(), CultureInfo.InvariantCulture); break;
+                    case "--hold-reader": _holdReaderSeconds = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                     default: Console.WriteLine($"unknown argument '{args[i]}'"); return false;
                 }
             }

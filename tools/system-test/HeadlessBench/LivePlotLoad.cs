@@ -88,23 +88,80 @@ internal static partial class HeadlessBench
     /// not read for 10 s, so N over 10 is the case that lost samples before the fix.</summary>
     private static int _holdUiSeconds;
 
-    /// <summary>STREAM-AI's window: <c>--seconds</c> of pumping, with the <c>--hold-ui</c> hold in
-    /// the middle of it when one was asked for.</summary>
-    private static void PumpStreamWindow(DaqifiViewModel shell)
+    /// <summary>Set by <c>--hold-reader N</c>: halfway through the stream, the device reader thread
+    /// is held for N seconds, once. That thread is Core's consumer, which also reads the port, so
+    /// the firmware drops what its buffer cannot keep and the stream has a real gap. Since #600 the
+    /// UI hold above can no longer cause one. STREAM-GAP then checks that the user is told (#595).</summary>
+    private static int _holdReaderSeconds;
+
+    /// <summary>STREAM-AI's window: <c>--seconds</c> of pumping, with the <c>--hold-ui</c> or
+    /// <c>--hold-reader</c> hold in the middle of it when one was asked for.</summary>
+    private static void PumpStreamWindow(DaqifiViewModel shell, IChannel ai)
     {
-        if (_holdUiSeconds <= 0 || shell.Plotter is null)
+        var holdUi = _holdUiSeconds > 0 && shell.Plotter is not null;
+        if (!holdUi && _holdReaderSeconds <= 0)
         {
             PumpFor(TimeSpan.FromSeconds(_seconds));
             return;
         }
 
         PumpFor(TimeSpan.FromSeconds(_seconds / 2.0));
-        Console.WriteLine($"[INFO] holding the live plot's lock on the UI thread for {_holdUiSeconds} s");
-        lock (shell.Plotter.PlotModel.SyncRoot)
+        if (holdUi)
         {
-            Thread.Sleep(TimeSpan.FromSeconds(_holdUiSeconds));
+            Console.WriteLine($"[INFO] holding the live plot's lock on the UI thread for {_holdUiSeconds} s");
+            lock (shell.Plotter!.PlotModel.SyncRoot)
+            {
+                Thread.Sleep(TimeSpan.FromSeconds(_holdUiSeconds));
+            }
         }
+        if (_holdReaderSeconds > 0) { HoldReader(ai); }
         PumpFor(TimeSpan.FromSeconds(_seconds / 2.0));
+    }
+
+    /// <summary>Holds the device reader thread for <see cref="_holdReaderSeconds"/> inside one
+    /// sample callback of <paramref name="ai"/>, which Core raises on that thread. The UI goes on
+    /// pumping, so the hold is the reader's alone. Returns when the reader is free again.</summary>
+    private static void HoldReader(IChannel ai)
+    {
+        var state = 0; // 0 armed, 1 holding, 2 released
+        OnChannelUpdatedHandler hold = (_, _) =>
+        {
+            if (Interlocked.CompareExchange(ref state, 1, 0) != 0) { return; }
+            Thread.Sleep(TimeSpan.FromSeconds(_holdReaderSeconds));
+            Volatile.Write(ref state, 2);
+        };
+        ai.OnChannelUpdated += hold;
+        Console.WriteLine($"[INFO] holding the device reader thread for {_holdReaderSeconds} s");
+        PumpUntil(() => Volatile.Read(ref state) == 2, TimeSpan.FromSeconds(_holdReaderSeconds + 10));
+        ai.OnChannelUpdated -= hold;
+    }
+
+    /// <summary>
+    /// STREAM-GAP/works: the user is told about a gap in the stream, once, and only when there is
+    /// one (#595). Core finds the gap; the bell must hold exactly one notice for this device when
+    /// Core counted any gap, and none when it counted none. With <c>--hold-reader</c>, the run must
+    /// also have a gap. The rig's own device-timestamp tally is reported beside Core's count.
+    /// </summary>
+    private static void ReportStreamGap(DaqifiViewModel shell, IStreamingDevice device, DeviceGapTally gaps,
+        int commandedRate, string? shot)
+    {
+        var coreGaps = (device as AbstractStreamingDevice)?.StreamGapCount ?? -1;
+        var notices = shell.NotificationList
+            .Where(n => n.DeviceSerialNo == device.DeviceSerialNo && n.Message.Contains(": samples are missing. "))
+            .Select(n => n.Message)
+            .ToList();
+        double periodTicks = commandedRate > 0 ? TimeSpan.TicksPerSecond / (double)commandedRate : double.NaN;
+        var rigGaps = gaps.Deltas.Count(d => d > 2 * periodTicks);
+        var pass = coreGaps >= 0
+                   && notices.Count == (coreGaps > 0 ? 1 : 0)
+                   && (_holdReaderSeconds <= 0 || coreGaps > 0);
+
+        Step(2, "STREAM-GAP", "works", pass,
+             $"{(_holdReaderSeconds > 0 ? $"reader held for {_holdReaderSeconds} s; " : "no hold; ")}" +
+             $"Core found {coreGaps} gaps (the rig's own device-timestamp tally: {rigGaps} over 2 periods); " +
+             $"{notices.Count} gap notices in the bell for this device" +
+             (notices.Count > 0 ? $": \"{notices[0]}\"" : ""),
+             shot);
     }
 
     /// <summary>The rest of the analog inputs, through the tile command a user clicks.</summary>

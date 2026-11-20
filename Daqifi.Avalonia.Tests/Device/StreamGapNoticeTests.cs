@@ -1,0 +1,216 @@
+using System.Globalization;
+using Daqifi.Avalonia.Tests.ViewModels;
+using Daqifi.Core.Device;
+using Daqifi.Desktop.DialogService;
+using Daqifi.Desktop.Device;
+using Daqifi.Desktop.ViewModels;
+using Xunit;
+
+namespace Daqifi.Avalonia.Tests.Device;
+
+/// <summary>
+/// Issue #595: when frames are lost in a stream, the user is told. Core finds the gap
+/// (<c>DaqifiStreamingDevice.GapDetected</c>); the device counts it and raises
+/// <see cref="AbstractStreamingDevice.StreamGapDetected"/> for the first gap of a session; the bell
+/// shows one notice. Before this, the gap only broke the live graph's line, and the session closed
+/// as a normal session.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Every frame goes through Core's real decode (<see cref="CoreDecodingHarness"/>), so the gap is
+/// the one Core finds.
+/// </para>
+/// <para>
+/// <c>DaqifiViewModel.OnStreamGapDetected</c> only posts to the UI thread, which this test host
+/// cannot pump, so the bell tests call the method it posts, with the text the event carried. That
+/// the app subscribes at all is shown on the bench (HeadlessBench <c>--hold-reader</c>), not here.
+/// </para>
+/// <para>
+/// On the app-host collection because the bell tests build a <see cref="DaqifiViewModel"/>.
+/// </para>
+/// </remarks>
+[Collection(AppHostCollection.Name)]
+public sealed class StreamGapNoticeTests : IDisposable
+{
+    private readonly CoreDecodingHarness _harness = CoreDecodingHarness.Create(analogPorts: 1);
+
+    public void Dispose() => _harness.Dispose();
+
+    /// <summary>
+    /// Two gaps in one session: frames at periods 4 and 5 are lost, then 10 to 13. Each gap is
+    /// counted, and one notice is raised, for the first gap, with Core's facts about it.
+    /// </summary>
+    [Fact]
+    public void A_session_with_gaps_raises_one_notice_and_counts_every_gap()
+    {
+        _harness.EnableAnalog(0);
+        var gapsCoreFound = new List<TimestampGapEventArgs>();
+        _harness.Core.GapDetected += (_, e) => gapsCoreFound.Add(e);
+        _harness.Device.InitializeStreaming();
+
+        var notices = NoticesRaisedWhile(() => Feed(0, 1, 2, 3, 6, 7, 8, 9, 14, 15, 16));
+
+        Assert.Equal(2, gapsCoreFound.Count);
+        Assert.Equal(2, _harness.Device.StreamGapCount);
+        var notice = Assert.Single(notices);
+        Assert.Equal(
+            AbstractStreamingDevice.DescribeStreamGap(_harness.Device.DeviceDisplayName, gapsCoreFound[0]),
+            notice);
+    }
+
+    /// <summary>The guard: a stream with no gap raises no notice and counts nothing.</summary>
+    [Fact]
+    public void A_steady_stream_raises_no_notice()
+    {
+        _harness.EnableAnalog(0);
+        _harness.Device.InitializeStreaming();
+
+        var notices = NoticesRaisedWhile(() => Feed(Enumerable.Range(0, 100).Select(i => (uint)i).ToArray()));
+
+        Assert.Empty(notices);
+        Assert.Equal(0, _harness.Device.StreamGapCount);
+    }
+
+    /// <summary>
+    /// Each session has its own count and its own notice: a gap in the second session is said
+    /// again, and the count starts from zero.
+    /// </summary>
+    [Fact]
+    public void Each_session_gets_its_own_count_and_notice()
+    {
+        _harness.EnableAnalog(0);
+
+        var notices = NoticesRaisedWhile(() =>
+        {
+            _harness.Device.InitializeStreaming();
+            Feed(0, 1, 2, 3, 6, 7, 8, 9, 14);
+            _harness.Device.StopStreaming();
+
+            _harness.Device.InitializeStreaming();
+            Feed(1000, 1001, 1002, 1003, 1007, 1008);
+        });
+
+        Assert.Equal(2, notices.Count);
+        Assert.Equal(1, _harness.Device.StreamGapCount);
+    }
+
+    /// <summary>
+    /// What the bell shows: a gap in a real Core stream gives one notice, owned by the device, so
+    /// the per-device pruning takes it away when the device goes. A clean stream gives none.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Only_a_stream_with_a_gap_puts_a_notice_in_the_bell(bool withGap)
+    {
+        var viewModel = NewViewModel();
+        // Attach replaced the probe's serial with Core's metadata, which has none.
+        _harness.Device.DeviceSerialNo = "SN-PROBE";
+        _harness.EnableAnalog(0);
+        _harness.Device.InitializeStreaming();
+
+        var periods = withGap ? new uint[] { 0, 1, 2, 3, 6, 7, 8, 9, 14 } : new uint[] { 0, 1, 2, 3, 4, 5, 6, 7, 8 };
+        foreach (var notice in NoticesRaisedWhile(() => Feed(periods)))
+        {
+            viewModel.AddDeviceNoticeOnce(_harness.Device.DeviceSerialNo, notice);
+        }
+
+        if (!withGap)
+        {
+            Assert.Empty(viewModel.NotificationList);
+            return;
+        }
+
+        var shown = Assert.Single(viewModel.NotificationList);
+        Assert.Equal("SN-PROBE", shown.DeviceSerialNo);
+        Assert.Contains("samples are missing", shown.Message);
+
+        // No device with that serial is connected, which is the state after it is unplugged.
+        viewModel.RemoveNotification();
+        Assert.Empty(viewModel.NotificationList);
+    }
+
+    [Fact]
+    public void The_same_notice_for_the_same_device_is_not_stacked()
+    {
+        var viewModel = NewViewModel();
+
+        viewModel.AddDeviceNoticeOnce("SN-1", "Nyquist: samples are missing.");
+        viewModel.AddDeviceNoticeOnce("SN-1", "Nyquist: samples are missing.");
+        viewModel.AddDeviceNoticeOnce("SN-2", "Nyquist: samples are missing.");
+
+        Assert.Equal(2, viewModel.NotificationList.Count);
+        Assert.Equal(2, viewModel.NotificationCount);
+    }
+
+    /// <summary>
+    /// The text says when the gap started (the frame before it, so the gap frame's time less the
+    /// interval) and how long it was: milliseconds under one second, seconds above.
+    /// </summary>
+    [Theory]
+    [InlineData(7.0, "At 14:03:12 the data stream from the device stopped for 7.0 s.")]
+    [InlineData(0.03, "At 14:03:18 the data stream from the device stopped for 30 ms.")]
+    public void The_notice_says_when_the_gap_started_and_how_long_it_was(double seconds, string expected)
+    {
+        var previous = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+        try
+        {
+            var gap = new TimestampGapEventArgs(new DateTime(2026, 11, 20, 14, 3, 19), seconds, 123);
+
+            var text = AbstractStreamingDevice.DescribeStreamGap("Nyquist 1", gap);
+
+            Assert.StartsWith("Nyquist 1: samples are missing. ", text);
+            Assert.Contains(expected, text);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = previous;
+        }
+    }
+
+    private static DaqifiViewModel NewViewModel()
+    {
+        Daqifi.Desktop.App.InitializeMobile();
+        return new DaqifiViewModel(new NullDialogService());
+    }
+
+    /// <summary>
+    /// The notice texts <see cref="AbstractStreamingDevice.StreamGapDetected"/> raised for this
+    /// harness's device while <paramref name="act"/> ran. The event is static, so other devices'
+    /// notices (from tests that run in parallel) are filtered out.
+    /// </summary>
+    private List<string> NoticesRaisedWhile(Action act)
+    {
+        var raised = new List<string>();
+        void Handler(AbstractStreamingDevice source, string notice)
+        {
+            if (ReferenceEquals(source, _harness.Device))
+            {
+                lock (raised) { raised.Add(notice); }
+            }
+        }
+
+        AbstractStreamingDevice.StreamGapDetected += Handler;
+        try
+        {
+            act();
+        }
+        finally
+        {
+            AbstractStreamingDevice.StreamGapDetected -= Handler;
+        }
+
+        return raised;
+    }
+
+    /// <summary>Feeds one one-channel frame at each of these whole sample periods from the start.</summary>
+    private void Feed(params uint[] periodsFromStart)
+    {
+        foreach (var periods in periodsFromStart)
+        {
+            _harness.Core.Feed(CoreDecodingHarness.FloatFrame(
+                CoreDecodingHarness.FirstCounter + periods * _harness.TicksPerSample, 1f));
+        }
+    }
+}
