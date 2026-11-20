@@ -204,11 +204,19 @@ public sealed class SingleStreamDecodeTests : IDisposable
     /// <summary>
     /// The mark stays with its own frame also when the app gets no raw message for the next frame.
     /// Core withholds the raw message of the firmware's short warm-up frame (issue #351), but it
-    /// publishes the frame's digital samples. So the reset at the next raw message does not occur
-    /// for that frame, and only the timestamp keeps the mark off it.
+    /// publishes the frame's digital samples. For that frame Core raises
+    /// <c>StreamFrameDiscarded</c> in place of the raw message, so that event must also end the
+    /// mark.
     /// </summary>
-    [Fact]
-    public void A_warm_up_frame_after_the_gap_frame_does_not_get_the_mark()
+    /// <remarks>
+    /// Four short frames, then full frames at periods 6 and 7. The third short frame (period 4)
+    /// follows a gap. In the second case the fourth short frame comes again with the same device
+    /// counter, so Core gives it the same timestamp as the gap frame (second review of PR #651).
+    /// </remarks>
+    [Theory]
+    [InlineData(new uint[] { 0, 1, 4, 5 })]
+    [InlineData(new uint[] { 0, 1, 4, 4 })]
+    public void A_warm_up_frame_after_the_gap_frame_does_not_get_the_mark(uint[] shortFramePeriods)
     {
         var harness = Harness(analogPorts: 3, digitalPorts: 8);
         var analog = Published(harness.EnableAnalog(0));
@@ -228,12 +236,12 @@ public sealed class SingleStreamDecodeTests : IDisposable
             harness.Core.Feed(frame);
         }
 
-        // Short frames (one analog value for two analog channels) at periods 0, 1, 4 and 5. The
-        // frame at period 4 follows a gap. Then full frames at periods 6 and 7.
-        Feed(0, 1f);
-        Feed(1, 1f);
-        Feed(4, 1f);
-        Feed(5, 1f);
+        // A short frame has one analog value for two analog channels.
+        foreach (var periods in shortFramePeriods)
+        {
+            Feed(periods, 1f);
+        }
+
         Feed(6, 1f, 2f);
         Feed(7, 1f, 2f);
 

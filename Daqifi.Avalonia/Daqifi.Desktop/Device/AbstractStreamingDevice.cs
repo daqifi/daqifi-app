@@ -370,10 +370,13 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     // the stream (issue #629); otherwise null. Every sample of one frame carries the same timestamp,
     // so a sample whose timestamp is this one follows the gap. Written and read only on Core's
     // consumer thread: Core raises GapDetected on that thread, inside the decode of the frame and
-    // before the frame's samples. Cleared when the next raw frame arrives
-    // (OnStreamMessageReceived), and before each session starts. The timestamp must still match,
-    // because Core holds back the raw frame of the firmware's short warm-up frame (issue #351) but
-    // publishes its digital samples, and that frame does not clear it.
+    // before the frame's samples. Cleared at the start of the next frame, and before each session
+    // starts. Core starts each frame with one of two events, before it decodes the frame: the raw
+    // frame (OnStreamMessageReceived), or StreamFrameDiscarded when it holds back the raw frame,
+    // as for the firmware's short warm-up frame (issue #351). Both events clear it. A repeated
+    // device counter gives the next frame the same timestamp, so the timestamp alone cannot end
+    // the mark; the comparison only keeps the mark on one timestamp if Core ever starts a frame
+    // with neither event.
     private DateTime? _gapFrameTimestamp;
 
     // The device counter on the last stream frame of this session, for DeviceMessage.Rollover.
@@ -1004,6 +1007,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         coreDevice.MessageReceived += OnCoreMessageReceived;
         coreDevice.StatusChanged += OnCoreStatusChanged;
         coreDevice.GapDetected += OnCoreGapDetected;
+        coreDevice.StreamFrameDiscarded += OnCoreStreamFrameDiscarded;
     }
 
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.UnsubscribeCoreDeviceEvents
@@ -1013,6 +1017,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         coreDevice.MessageReceived -= OnCoreMessageReceived;
         coreDevice.StatusChanged -= OnCoreStatusChanged;
         coreDevice.GapDetected -= OnCoreGapDetected;
+        coreDevice.StreamFrameDiscarded -= OnCoreStreamFrameDiscarded;
         UnsubscribeFromCoreSamples();
     }
 
@@ -1031,6 +1036,23 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     private void OnCoreGapDetected(object? sender, TimestampGapEventArgs e)
     {
         _gapFrameTimestamp = e.Timestamp;
+    }
+
+    /// <summary>
+    /// Ends the gap mark of the frame before, when Core holds back a frame (second review of PR
+    /// #651).
+    /// </summary>
+    /// <remarks>
+    /// For the firmware's short warm-up frame (issue #351), Core raises this event in place of the
+    /// raw frame, and then it decodes the frame's digital samples. So
+    /// <see cref="OnStreamMessageReceived"/> does not run for that frame, and this event is where
+    /// the frame starts. Core raises it before the decode, so before that frame's own GapDetected.
+    /// A frame from the previous session is held back without a decode; it also starts a new
+    /// frame, so every reason clears the mark.
+    /// </remarks>
+    private void OnCoreStreamFrameDiscarded(object? sender, StreamFrameDiscardedEventArgs e)
+    {
+        _gapFrameTimestamp = null;
     }
 
     /// <summary>
@@ -1305,7 +1327,8 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         // A new frame starts, so the gap mark of the frame before it stops here (review of PR
         // #651). Core raises this raw frame before it decodes the frame, so before GapDetected for
         // it. The timestamp alone cannot do this: a repeated device counter gives the next frame
-        // the same timestamp as the gap frame.
+        // the same timestamp as the gap frame. For a frame that Core holds back,
+        // OnCoreStreamFrameDiscarded does this.
         _gapFrameTimestamp = null;
 
         if (!IsStreaming || Mode != DeviceMode.StreamToApp)
