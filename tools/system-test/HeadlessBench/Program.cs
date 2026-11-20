@@ -2019,10 +2019,12 @@ internal static partial class HeadlessBench
             var pointsChannelOn = shell.Plotter.LoggedPoints.Values.Sum(l => l.Count);
             var plotShownChannelOn = PlotShown(main, livePlot);
             var emptyShownChannelOn = TextShown(main, "Turn on logging to see live data.");
+            Capture(main, "t1-connlost-channel-on");
 
             // The LOGGING toggle — disk-space check, session creation, LoggingFleet.Start.
             shell.IsLogging = true;
             PumpUntil(() => LoggingManager.Instance.Active, TimeSpan.FromSeconds(15));
+            var waitingShown = TextShown(main, "Waiting for the first sample from the device.");
 
             // Stream. Samples arrive the way the streaming path delivers them — by assigning
             // ActiveSample, which is what raises OnChannelUpdated — so LoggingManager, the live
@@ -2091,13 +2093,14 @@ internal static partial class HeadlessBench
                      && raisedByDrop == ChangesPerNotification && consumed && sessionClosed
                      && plotShownBefore == false
                      && pointsChannelOn == 0 && plotShownChannelOn == false && emptyShownChannelOn == true
-                     && plotShownMidStream == true && emptyShownMidStream == false
+                     && waitingShown == true && plotShownMidStream == true && emptyShownMidStream == false
                      && pointsAfterDrop > 0 && plotShownAfterDrop == true,
                  $"streaming when the link went: LoggingManager.Active={activeBefore}, " +
                  $"{subscribedBefore} subscribed channel(s), {plottedBefore} live plot point(s); " +
                  $"live plot view shown with no channel={Shown(plotShownBefore)}, " +
                  $"with the channel on and {pointsChannelOn} point(s)={Shown(plotShownChannelOn)} " +
-                 $"(empty state={Shown(emptyShownChannelOn)}), mid-stream={Shown(plotShownMidStream)} " +
+                 $"(empty state={Shown(emptyShownChannelOn)}, then 'waiting' with logging on=" +
+                 $"{Shown(waitingShown)}), mid-stream={Shown(plotShownMidStream)} " +
                  $"(empty state={Shown(emptyShownMidStream)}), after the drop with {pointsAfterDrop} " +
                  $"point(s)={Shown(plotShownAfterDrop)}; " +
                  $"after the drop the device left both lists in {sw.Elapsed.TotalSeconds:F1} s " +
