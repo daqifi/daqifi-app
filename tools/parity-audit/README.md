@@ -536,6 +536,20 @@ captures once and verifies against the one for the current host, failing on a ch
 screen, a missing one, and one the baseline does not list (`shasum -c` only checks the
 names it was given, so the extra-file direction is checked separately).
 
+Four desktop screens were re-recorded 2026-11-20 (macOS 26.5, Apple silicon, .NET SDK 10.0.303)
+for #346. `desktop-6-settings-drawer` and `desktop-min-6-settings-drawer` show the new UPDATES
+section below EXPORT, with the app's version. The harness sets no update service, so the section
+shows the version only; its state line and buttons are hidden there, as on a platform that does
+not update itself. `desktop-7-notifications-flyout` and `desktop-min-7-notifications-flyout` show
+the new empty-bell sentence, which also names app updates. The other thirty-six hashes did not
+move. The pre-change capture at `origin/main` (`031775e`) reproduced the manifest on all forty.
+After the change, every saved frame agreed over eleven runs, and the hashes are from a
+determinism run 1. The host was loaded (load 4 to 6) and `desktop-min-6` was refused 2 px short
+of open in four of the eleven runs; a load-matched `origin/main` control refused `desktop-min-6`
+and `-7` the same way, so see #657 before reading such a failure as a visual change. A version
+bump in `Directory.Build.props` now moves these two settings-drawer screens too, as it already
+moves the mobile stream screens.
+
 Twelve desktop screens were re-recorded 2026-11-19 (macOS 26.5, Apple silicon, .NET SDK 10.0.303)
 for #616: with no data, the Live Graph and Logged Data plots are hidden, and each pane shows the
 app-wide empty state (`emptyBadge` / `emptyTitle` / `emptyBody`) where it drew an invented 0 to 100 V
