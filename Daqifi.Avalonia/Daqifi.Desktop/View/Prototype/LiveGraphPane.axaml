@@ -391,19 +391,20 @@
 
             <!-- Plot area -->
             <Grid Grid.Column="0">
-                <!-- Chart host (hal: chart_plot_host). Drawn only when an input channel is
-                     active and the device is not logging to its own SD card (#616). With no
-                     channel the model has no series, so OxyPlot falls back to its default 0 to
-                     100 range, and the pane drew a "0 to 100 V" grid that no device measures.
-                     The empty state below takes the plot's place; `!!Count` is true when the
-                     collection has an item. -->
+                <!-- Chart host (hal: chart_plot_host). Drawn only when the plot holds a point
+                     and the device is not logging to its own SD card (#616). With no point
+                     OxyPlot falls back to its default 0 to 100 range, and the pane drew a
+                     "0 to 100 V" grid that no device measures. HasPlotData, not the
+                     active-channel count: a channel can be on with no sample yet, and a
+                     disconnect drops the channel but keeps the trace the user just recorded.
+                     The empty state below takes the plot's place. -->
                 <oxy:PlotView x:Name="DataLog"
                               Model="{Binding Plotter.PlotModel}"
                               Background="{DynamicResource Surface}"
                               TabIndex="0">
                     <oxy:PlotView.IsVisible>
                         <MultiBinding Converter="{StaticResource BoolAndToVis}">
-                            <Binding Path="!!ActiveInputChannels.Count"/>
+                            <Binding Path="Plotter.HasPlotData"/>
                             <Binding Path="!IsSdCardLoggingActive"/>
                         </MultiBinding>
                     </oxy:PlotView.IsVisible>
@@ -427,18 +428,17 @@
                     </oxy:PlotView.DefaultTrackerTemplate>
                 </oxy:PlotView>
 
-                <!-- Empty state: no input channel is active AND the device is not logging to
-                     its SD card (that state has its own panel below). The app-wide
+                <!-- Empty state: the plot holds no point AND the device is not logging to its
+                     SD card (that state has its own panel below). The app-wide
                      emptyBadge / emptyTitle / emptyBody design from Resources/Components.axaml,
-                     the same as Devices, Channels and Profiles (#616). Upstream MultiDataTrigger
-                     → BoolAndToVis MultiBinding; `!Count` is true only when the collection is
-                     empty. -->
+                     the same as Devices, Channels and Profiles (#616). The body says what to do
+                     next: `!Count` is true only when no input channel is on. -->
                 <StackPanel HorizontalAlignment="Center"
                             VerticalAlignment="Center"
                             MaxWidth="420">
                     <StackPanel.IsVisible>
                         <MultiBinding Converter="{StaticResource BoolAndToVis}">
-                            <Binding Path="!ActiveInputChannels.Count"/>
+                            <Binding Path="!Plotter.HasPlotData"/>
                             <Binding Path="!IsSdCardLoggingActive"/>
                         </MultiBinding>
                     </StackPanel.IsVisible>
@@ -453,7 +453,16 @@
                                Classes="emptyTitle"
                                Margin="0,0,0,10"/>
                     <TextBlock Text="Enable channels in the Channels tab to see live data."
-                               Classes="emptyBody"/>
+                               Classes="emptyBody"
+                               IsVisible="{Binding !ActiveInputChannels.Count}"/>
+                    <StackPanel IsVisible="{Binding !!ActiveInputChannels.Count}">
+                        <TextBlock Text="Turn on logging to see live data."
+                                   Classes="emptyBody"
+                                   IsVisible="{Binding !IsLogging}"/>
+                        <TextBlock Text="Waiting for the first sample from the device."
+                                   Classes="emptyBody"
+                                   IsVisible="{Binding IsLogging}"/>
+                    </StackPanel>
                 </StackPanel>
 
                 <!-- SD-card logging overlay: replaces the (necessarily empty)
