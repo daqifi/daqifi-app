@@ -3912,6 +3912,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         ConnectionManager.Instance.PropertyChanged -= UpdateUi;
         LoggingManager.Instance.PropertyChanged -= UpdateUi;
         AbstractChannel.ScaleResultsRejected -= OnScaleResultsRejected;
+        AbstractStreamingDevice.StreamGapDetected -= OnStreamGapDetected;
         ConnectedDevices.CollectionChanged -= OnConnectedDevicesCollectionChanged;
         NotificationList.CollectionChanged -= OnNotificationListCollectionChanged;
 

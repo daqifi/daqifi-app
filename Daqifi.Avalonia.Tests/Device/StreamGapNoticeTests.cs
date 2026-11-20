@@ -1,6 +1,8 @@
 using System.Globalization;
+using System.Reflection;
 using Daqifi.Avalonia.Tests.ViewModels;
 using Daqifi.Core.Device;
+using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.DialogService;
 using Daqifi.Desktop.Device;
 using Daqifi.Desktop.ViewModels;
@@ -173,6 +175,44 @@ public sealed class StreamGapNoticeTests : IDisposable
             CultureInfo.CurrentCulture = previous;
         }
     }
+
+    /// <summary>
+    /// When the window closes, the desktop view model drops its subscription to each static notice
+    /// event. A static event roots its subscribers, so without this the closed window's view model
+    /// stays alive until the app exits (sweep review of PR #663).
+    /// </summary>
+    /// <remarks>
+    /// The view model subscribes in its start-up block, which runs only in the app, so the test
+    /// subscribes the same private handler and reads the event's invocation list.
+    /// </remarks>
+    [Theory]
+    [InlineData(typeof(AbstractStreamingDevice), nameof(AbstractStreamingDevice.StreamGapDetected), "OnStreamGapDetected")]
+    [InlineData(typeof(AbstractChannel), nameof(AbstractChannel.ScaleResultsRejected), "OnScaleResultsRejected")]
+    public void Dispose_drops_the_view_models_static_notice_subscription(Type owner, string eventName, string handlerName)
+    {
+        var viewModel = NewViewModel();
+        var notice = owner.GetEvent(eventName, BindingFlags.Public | BindingFlags.Static)!;
+        var method = typeof(DaqifiViewModel).GetMethod(handlerName, BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var handler = Delegate.CreateDelegate(notice.EventHandlerType!, viewModel, method);
+        notice.AddEventHandler(null, handler);
+        try
+        {
+            Assert.True(IsSubscribed(owner, eventName, viewModel), "control: the handler must be subscribed first");
+
+            viewModel.Dispose();
+
+            Assert.False(IsSubscribed(owner, eventName, viewModel));
+        }
+        finally
+        {
+            notice.RemoveEventHandler(null, handler);
+        }
+    }
+
+    /// <summary>Whether a handler on <paramref name="target"/> is in the static event's list.</summary>
+    private static bool IsSubscribed(Type owner, string eventName, object target) =>
+        owner.GetField(eventName, BindingFlags.NonPublic | BindingFlags.Static)?.GetValue(null) is Delegate list
+        && list.GetInvocationList().Any(h => ReferenceEquals(h.Target, target));
 
     private static DaqifiViewModel NewViewModel()
     {
