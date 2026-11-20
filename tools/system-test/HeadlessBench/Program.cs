@@ -1512,6 +1512,10 @@ internal static partial class HeadlessBench
         main.GetVisualDescendants().OfType<OxyPlot.Avalonia.PlotView>()
             .FirstOrDefault(v => ReferenceEquals(v.Model, model))?.IsEffectivelyVisible;
 
+    private static bool? TextShown(Window main, string text) =>
+        main.GetVisualDescendants().OfType<TextBlock>()
+            .FirstOrDefault(t => t.Text == text)?.IsEffectivelyVisible;
+
     private static string Shown(bool? shown) => shown?.ToString() ?? "NO VIEW FOUND";
 
     /// <summary>The horizontal window the plot is showing, in hours. Reported alongside the point
@@ -2008,7 +2012,13 @@ internal static partial class HeadlessBench
             Pump();
             var tile = FindTile(channelsPane, ai);
             channelsPane.ToggleChannelCommand.Execute(tile);
-            Pump();
+            PumpFor(TimeSpan.FromMilliseconds(300));
+
+            // A channel is on but no sample has arrived, so there is still nothing to draw: the
+            // empty state stays (#616 review). The plot follows its points, not the channel count.
+            var pointsChannelOn = shell.Plotter.LoggedPoints.Values.Sum(l => l.Count);
+            var plotShownChannelOn = PlotShown(main, livePlot);
+            var emptyShownChannelOn = TextShown(main, "Turn on logging to see live data.");
 
             // The LOGGING toggle — disk-space check, session creation, LoggingFleet.Start.
             shell.IsLogging = true;
@@ -2025,13 +2035,13 @@ internal static partial class HeadlessBench
             }
             PumpFor(TimeSpan.FromMilliseconds(500));
 
-            // Read the plot BEFORE the drop: LoggingManager clears the PlotLogger when Active goes
-            // false, and this row has to be able to say it was genuinely mid-stream rather than
-            // asserting a teardown against an idle app.
+            // Read the plot BEFORE the drop: this row has to be able to say it was genuinely
+            // mid-stream rather than asserting a teardown against an idle app.
             var plottedBefore = shell.Plotter?.LoggedPoints?.Values.Sum(l => l.Count) ?? -1;
             var subscribedBefore = LoggingManager.Instance.SubscribedChannels.Count;
             var activeBefore = LoggingManager.Instance.Active;
             var plotShownMidStream = PlotShown(main, livePlot);
+            var emptyShownMidStream = TextShown(main, "NO CHANNELS STREAMING");
             var midStream = activeBefore && plottedBefore > 0 && subscribedBefore > 0;
             Capture(main, "t1-connlost-streaming");
 
@@ -2070,19 +2080,26 @@ internal static partial class HeadlessBench
             var sessionClosed = PumpUntil(
                 () => !shell.IsLogging && !LoggingManager.Instance.Active,
                 TimeSpan.FromSeconds(5));
-            // The channel the drop released was the only one, so the empty state is back (#616).
+            // The drop released the only channel, but the trace the user just recorded is still in
+            // the plot, so the plot stays (#616 review).
+            var pointsAfterDrop = shell.Plotter.LoggedPoints.Values.Sum(l => l.Count);
             var plotShownAfterDrop = PlotShown(main, livePlot);
             var shot = Capture(main, "t1-connlost-dropped");
 
             Step(1, "CONN-LOST", "works",
                  midStream && removed && subscribedAfter == 0
                      && raisedByDrop == ChangesPerNotification && consumed && sessionClosed
-                     && plotShownBefore == false && plotShownMidStream == true
-                     && plotShownAfterDrop == false,
+                     && plotShownBefore == false
+                     && pointsChannelOn == 0 && plotShownChannelOn == false && emptyShownChannelOn == true
+                     && plotShownMidStream == true && emptyShownMidStream == false
+                     && pointsAfterDrop > 0 && plotShownAfterDrop == true,
                  $"streaming when the link went: LoggingManager.Active={activeBefore}, " +
                  $"{subscribedBefore} subscribed channel(s), {plottedBefore} live plot point(s); " +
                  $"live plot view shown with no channel={Shown(plotShownBefore)}, " +
-                 $"mid-stream={Shown(plotShownMidStream)}, after the drop={Shown(plotShownAfterDrop)}; " +
+                 $"with the channel on and {pointsChannelOn} point(s)={Shown(plotShownChannelOn)} " +
+                 $"(empty state={Shown(emptyShownChannelOn)}), mid-stream={Shown(plotShownMidStream)} " +
+                 $"(empty state={Shown(emptyShownMidStream)}), after the drop with {pointsAfterDrop} " +
+                 $"point(s)={Shown(plotShownAfterDrop)}; " +
                  $"after the drop the device left both lists in {sw.Elapsed.TotalSeconds:F1} s " +
                  $"(shell.ConnectedDevices={shell.ConnectedDevices.Count}, " +
                  $"manager.ConnectedDevices={ConnectionManager.Instance.ConnectedDevices.Count}) and " +
