@@ -55,31 +55,15 @@ internal sealed class VelopackAppUpdateService : IAppUpdateService
         _manager.DownloadUpdatesAsync(PendingFor(offer), p => progress?.Report(p), cancellationToken);
 
     /// <summary>
-    /// On an install for all users, first leaves a note that stops a copy another user starts while
-    /// the administrator prompt waits (#509). See <see cref="PendingUpdateMarker"/>.
+    /// On an install for all users, first leaves a note that stops a copy that starts while the
+    /// updater can still close it (#509), and does not install without it. See <see cref="PendingUpdateMarker"/>.
     /// </summary>
     public void ApplyAndRestart(AppUpdateOffer offer)
     {
         var target = PendingFor(offer).TargetFullRelease;
-        if (_pendingNote is null)
-        {
-            _manager.ApplyUpdatesAndRestart(target);
-            return;
-        }
-
-        _pendingNote.Apply(offer.Version, ApplyNeedsElevation, IsInstallInUseElsewhere,
+        PendingUpdateMarker.HandOver(_pendingNote, offer.Version, ApplyNeedsElevation, IsInstallInUseElsewhere,
             () => _manager.ApplyUpdatesAndRestart(target));
     }
-
-    /// <summary>
-    /// The version that another user of this PC installs to this installation now, or <c>null</c>
-    /// when this copy can start (#509). Read once, at start, before any work.
-    /// </summary>
-    /// <param name="restartedByUpdater">True when the updater started this copy after an install.</param>
-    public string? VersionBeingInstalledByAnotherUser(bool restartedByUpdater) =>
-        Support == AppUpdateSupport.Supported && _pendingNote is not null && _manager.CurrentVersion is { } current
-            ? _pendingNote.VersionBeingInstalledByAnotherUser(current.ToString(), restartedByUpdater)
-            : null;
 
     /// <summary>
     /// Velopack's apply step ends every process whose image is under the install folder, in every
@@ -139,9 +123,10 @@ internal sealed class VelopackAppUpdateService : IAppUpdateService
     /// <summary>
     /// The note for this installation, in <c>%ProgramData%</c> so that every user of the PC can read
     /// it, or <c>null</c> when this copy cannot tell where it is installed. Windows only: no other
-    /// platform has an install for all users.
+    /// platform has an install for all users. Uses nothing from Velopack, so that a start can read
+    /// the note even when the updater cannot be set up (#509).
     /// </summary>
-    private static PendingUpdateMarker? PendingUpdateNote()
+    internal static PendingUpdateMarker? PendingUpdateNote()
     {
         if (!OperatingSystem.IsWindows() || InstallRoot() is not { } root) { return null; }
 
@@ -158,7 +143,9 @@ internal sealed class VelopackAppUpdateService : IAppUpdateService
             user = Environment.UserName;
         }
 
-        return new PendingUpdateMarker(Path.Combine(machineWide, "DAQiFi-updates"), root, user);
+        using var self = System.Diagnostics.Process.GetCurrentProcess();
+        var copy = new AppCopy(user, self.SessionId, self.Id, self.ProcessName);
+        return new PendingUpdateMarker(Path.Combine(machineWide, "DAQiFi-updates"), root, copy);
     }
 
     private static bool IsInstallFolderWritable()
