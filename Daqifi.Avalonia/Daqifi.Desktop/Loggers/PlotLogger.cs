@@ -226,6 +226,21 @@ public partial class PlotLogger : ObservableObject, ILogger
     // @port: Daqifi.Desktop.Logger.PlotLogger.FirstTime
     public DateTime? FirstTime { get; set; }
 
+    private bool _hasPlotData;
+
+    /// <summary>
+    /// True once a sample has been drained into the plot, false again after <see cref="ClearPlot"/>.
+    /// The Live Graph pane shows its plot only while this is true (#616): an empty model draws
+    /// OxyPlot's default 0 to 100 axes. The active-channel count is not a substitute, because a
+    /// channel can be on with no sample yet, and a disconnect drops the channel but keeps the trace.
+    /// Raised on the UI thread, outside the plot lock, only when the value changes.
+    /// </summary>
+    public bool HasPlotData
+    {
+        get => _hasPlotData;
+        private set => SetProperty(ref _hasPlotData, value);
+    }
+
     // @port: Daqifi.Desktop.Logger.PlotLogger.LoggedPoints
     public Dictionary<(string deviceSerial, string channelName), List<DataPoint>> LoggedPoints
     {
@@ -428,12 +443,25 @@ public partial class PlotLogger : ObservableObject, ILogger
             drained = DrainPendingSamplesLocked(out addedSeries);
         }
 
+        RaiseAfterDrain(drained, addedSeries);
+        return drained;
+    }
+
+    /// <summary>
+    /// The change notifications a drain owes, raised after the plot lock is released. Shared by
+    /// <see cref="DrainPendingSamples"/> and the render tick, so both drains notify the same way.
+    /// </summary>
+    private void RaiseAfterDrain(int drained, bool addedSeries)
+    {
         if (addedSeries)
         {
             OnPropertyChanged(nameof(PlotModel));
         }
 
-        return drained;
+        if (drained > 0)
+        {
+            HasPlotData = true;
+        }
     }
 
     /// <summary>
@@ -645,13 +673,14 @@ public partial class PlotLogger : ObservableObject, ILogger
 
         var tickStart = Stopwatch.GetTimestamp();
 
+        int drained;
         bool addedSeries;
         lock (PlotModel.SyncRoot)
         {
             // Move what the transport thread queued since the last redraw into the series. Here, on
             // the UI thread and on the redraw's own cadence, so the transport thread never waits for
             // this lock (issue #595).
-            DrainPendingSamplesLocked(out addedSeries);
+            drained = DrainPendingSamplesLocked(out addedSeries);
 
             // Mirror each subscribed channel's visibility onto its series. A change here needs a redraw
             // even when no new sample has arrived, e.g. a channel hidden while the device is idle.
@@ -700,10 +729,7 @@ public partial class PlotLogger : ObservableObject, ILogger
         _lastTickWorkMs = Stopwatch.GetElapsedTime(tickStart).TotalMilliseconds;
 
         // Raised outside the lock, like every other change notification here.
-        if (addedSeries)
-        {
-            OnPropertyChanged(nameof(PlotModel));
-        }
+        RaiseAfterDrain(drained, addedSeries);
     }
 
     /// <summary>
@@ -821,6 +847,7 @@ public partial class PlotLogger : ObservableObject, ILogger
         // Raised outside the lock, like every other change notification here: no binding handler may
         // run while the plot lock is held.
         PlotStatsSummary = EMPTY_PLOT_STATS_SUMMARY;
+        HasPlotData = false;
         OnPropertyChanged(nameof(LoggedChannels));
         OnPropertyChanged(nameof(LoggedPoints));
         OnPropertyChanged(nameof(PlotModel));

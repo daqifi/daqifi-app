@@ -6,27 +6,19 @@ using Xunit;
 namespace Daqifi.Avalonia.Tests.Loggers;
 
 /// <summary>
-/// Issue #251: with no session selected, the Logged Data pane's plot region was a featureless black
-/// rectangle — roughly the upper 57% of the window with no axes, no gridlines and no copy, while the
-/// list below it correctly said NO SESSIONS. The fix stops hiding the <c>PlotView</c> when there is
-/// nothing to plot, so the region draws the same empty labelled frame the Live Graph pane already
-/// draws in the identical state.
+/// Pins the frame <see cref="PlotModelFactory.CreateMainPlotModel"/> builds for the Logged Data plot:
+/// no series at construction, and three titled axes.
 ///
-/// <para>The swap itself is XAML and is verified by the parity-audit capture, not here: views in this
-/// repo carry no <c>x:DataType</c>, so <c>IsVisible</c> bindings resolve by reflection at run time and
-/// no test in this project can see them. What IS testable, and the whole reason the fix is safe, is
-/// the ASSUMPTION the always-visible view now rests on — that the model
-/// <see cref="DatabaseLogger"/> hands it at construction is already a complete, labelled, empty plot
-/// frame rather than a bare <see cref="PlotModel"/>.</para>
+/// <para>History. Issue #251 found the plot region a blank rectangle with no copy when no session was
+/// selected, and made the <c>PlotView</c> always visible, so the empty region drew this frame. Issue
+/// #616 reversed that: an empty model has no data range, OxyPlot then draws its default 0 to 100, and
+/// the pane showed a "0 to 100 V" grid that no device measures. The view is now hidden until
+/// <c>DatabaseLogger.HasSessionData</c> is true, and the app-wide empty state fills the region. That
+/// swap is XAML, so the parity-audit capture verifies it, not this file.</para>
 ///
-/// <para><see cref="DatabaseLogger"/>'s constructor assigns
-/// <c>PlotModel = _plotModelFactory.CreateMainPlotModel()</c> unconditionally, before any session is
-/// loaded, and nothing adds a series until <c>DisplayLoggingSession</c> runs. So these tests pin the
-/// factory's output. Were the axes ever moved out of construction and built on first data instead — a
-/// change that would look harmless, break no other test, and still compile and render green on both
-/// heads — the pane would silently go back to being the void this issue is about. That is the
-/// regression these tests exist to catch, because the only other thing that would catch it is a human
-/// looking at a screenshot.</para>
+/// <para>What these tests still guard is the frame the plot draws once a session HAS data:
+/// <see cref="DatabaseLogger"/>'s constructor assigns <c>PlotModel = CreateMainPlotModel()</c> before
+/// any session loads, and <c>DisplayLoggingSession</c> adds series to those keyed axes.</para>
 /// </summary>
 public class EmptyLoggedPlotFrameTests
 {

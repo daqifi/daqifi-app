@@ -536,6 +536,18 @@ captures once and verifies against the one for the current host, failing on a ch
 screen, a missing one, and one the baseline does not list (`shasum -c` only checks the
 names it was given, so the extra-file direction is checked separately).
 
+Twelve desktop screens were re-recorded 2026-11-19 (macOS 26.5, Apple silicon, .NET SDK 10.0.303)
+for #616: with no data, the Live Graph and Logged Data plots are hidden, and each pane shows the
+app-wide empty state (`emptyBadge` / `emptyTitle` / `emptyBody`) where it drew an invented 0 to 100 V
+grid. They are the twelve #585 moved, every screen that showed an empty plot frame:
+`desktop-1-livegraph`, `desktop-2-loggeddata`, and the four drawers and flyouts that open over the
+Live Graph (`-6` to `-9`), each also as `desktop-min-*`. The Device Logs, dialog and mobile screens
+are unchanged. The pre-change capture at `origin/main` (`93e721a`) reproduced the manifest on all
+forty, the post-change capture differed on exactly these twelve, five `--determinism` runs agreed on
+all forty after the change, and the hashes come from determinism run 1. On a loaded host (load 5 to
+9) this tree refused a `desktop-min-6`/`-7` frame with the pane 2 px short of open far more often
+than `main` did; see #657 before reading such a failure as a visual change.
+
 Three dialog screens were re-recorded 2026-11-14 (macOS 26.5, Apple silicon, .NET SDK 10.0.302)
 for #631: `DarkSecondaryButton` and `DarkPrimaryButton` now apply the `Padding="16,6"` they
 always set. `dialog-export-configure` shows the visible change: its Browse button has no fixed
