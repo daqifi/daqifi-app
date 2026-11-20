@@ -178,19 +178,21 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
 
         IsChecking = true;
         Notifications? offered = null;
+        var answered = false;
         try
         {
             offered = await _notifier.CheckAsync(_lifetime.Token);
+            answered = !_notifier.LastCheckFailed;
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
-            return;
+            // The app is closing. The check has no answer, and nothing more is shown.
         }
         finally
         {
             // Through the same queue as the notification, so that the offer is in Notice before
             // the end of the check is shown, and "Up to date" never shows for a moment first.
-            var failed = _notifier.LastCheckFailed;
+            var failed = !answered;
             var endedAt = _now();
             _post(() =>
             {
