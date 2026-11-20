@@ -546,7 +546,9 @@ move. The pre-change capture at `origin/main` (`031775e`) reproduced the manifes
 After the change, every saved frame agreed over eleven runs, and the hashes are from a
 determinism run 1. The host was loaded (load 4 to 6) and `desktop-min-6` was refused 2 px short
 of open in four of the eleven runs; a load-matched `origin/main` control refused `desktop-min-6`
-and `-7` the same way, so see #657 before reading such a failure as a visual change. A version
+and `-7` the same way. That was #657, and #659 has since removed the pane's transition from the
+capture, so the slide can no longer cause that refusal (see the sixth settle problem above). A
+drawer that is refused short of open now needs a look. A version
 bump in `Directory.Build.props` now moves these two settings-drawer screens too, as it already
 moves the mobile stream screens.
 
