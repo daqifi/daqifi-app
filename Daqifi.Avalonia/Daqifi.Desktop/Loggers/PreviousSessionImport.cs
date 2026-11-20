@@ -41,14 +41,15 @@ namespace Daqifi.Desktop.Logger;
 /// </para>
 /// <para>
 /// <b>Guarding against cut-short sessions.</b> The other app may still be recording, and two copies
-/// of it can record at once. A session that gains samples during its copy is dropped, and so is the
-/// newest session when the old file was written in the last couple of minutes. The other app writes
-/// a session's sample count only when its recording stops, so while it writes the old database a
-/// session is copied only if it has that count and the copy holds exactly that many samples (#514).
-/// Anything dropped is left for later: the offer is only retired once nothing is left to import, so it
-/// comes back at the next launch. A session with no count (the other app stopped before it wrote
-/// one) is copied once nothing writes the old file. One case is still not caught: a count written
-/// while the session recorded (by a second copy starting up), then no sample until after the copy.
+/// of it can record at once, so any session may be recording, not only the newest (#514). Nothing in
+/// the old database proves that a session has ended (a second copy of the app writes the sample
+/// count at start-up, for a recording session too). So no session is copied while the old database
+/// is being written: its file was written in the last couple of minutes, or another connection has
+/// written it since the import started (SQLite's <c>data_version</c>). A copy made before such a
+/// write is dropped, and so is one whose session gained samples during it. Anything dropped is left
+/// for later: the offer is only retired once nothing is left to import, so it comes back at the next
+/// launch. One case is still not caught: a recording that writes nothing for longer than that window,
+/// then writes to the same session again after the import.
 /// </para>
 /// <para>
 /// <b>Short locks.</b> Samples are copied in small batches, each in its own transaction, so the
@@ -233,22 +234,17 @@ public sealed class PreviousSessionImport
             }
         }
 
-        // The other app may be recording into its newest session right now; a copy of it would be
-        // a prefix, marked complete. Leave it for later if the file was written very recently.
-        if (pending.Count > 0 && recentlyWritten
-            && pending[^1].Id == Scalar<long>(connection, "SELECT MAX(ID) FROM old.Sessions"))
-        {
-            pending.RemoveAt(pending.Count - 1);
-            outcome.LeftForLater++;
-        }
-
-        // Two copies of the earlier version can record at once, so an older session can be
-        // recording too (#514). That version writes a session's sample count only when its
-        // recording stops, so a session with no count may still be recording. Left for later here,
-        // before the disk check, so a long recording does not count against the space needed.
+        // While the other app writes the old database, any of these sessions may still be
+        // recording: two copies of it can record at once, so not only the newest one (#514). A copy
+        // of such a session would be a prefix marked complete, and the rest never offered again.
+        // Nothing in the old database proves that a session has ended: the sample count is written
+        // when a recording stops, but a second copy of the app also writes it at start-up for each
+        // session that has none, a recording one included. So nothing is copied now; all is left
+        // for later, before the disk check, so a long recording does not count against the space.
         if (OldDatabaseIsBeingWritten())
         {
-            outcome.LeftForLater += pending.RemoveAll(s => s.Count is null);
+            outcome.LeftForLater += pending.Count;
+            pending.Clear();
         }
 
         var total = pending.Sum(s => s.Last - s.First + 1);
@@ -260,9 +256,9 @@ public sealed class PreviousSessionImport
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            // The other app started to write during this import: a session with no count is left
-            // for later now, not copied only to be dropped below.
-            if (count is null && OldDatabaseIsBeingWritten())
+            // The other app started to write during this import: the rest is left for later now,
+            // not copied only to be dropped below.
+            if (OldDatabaseIsBeingWritten())
             {
                 done += last - first + 1;
                 outcome.LeftForLater++;
@@ -323,17 +319,14 @@ public sealed class PreviousSessionImport
                     progress?.Report((double)done / total);
                 }
 
-                // Samples arrived during the copy: the session is still being recorded. And while
-                // the other app writes the old database, a session counts as finished only when
-                // that app recorded its end (the sample count) and the copy holds exactly that many
-                // samples: an older session can be recording with a gap between its samples longer
-                // than its copy, and a count written while it recorded is short (#514). Either way,
-                // drop the copy rather than keep a prefix marked complete; it is offered again later.
+                // Samples arrived during the copy: the session is still being recorded. Or the other
+                // app wrote the old database during the copy: this session may be recording too,
+                // with a gap between its samples longer than its copy (#514). Either way, drop the
+                // copy rather than keep a prefix marked complete; it is offered again later.
                 using (var grown = Command(connection, "SELECT MAX(ID) FROM old.Samples WHERE LoggingSessionID = $old"))
                 {
                     grown.Parameters.AddWithValue("$old", oldId);
-                    if (Convert.ToInt64(grown.ExecuteScalar()) > last
-                        || (count != copied && OldDatabaseIsBeingWritten()))
+                    if (Convert.ToInt64(grown.ExecuteScalar()) > last || OldDatabaseIsBeingWritten())
                     {
                         // Flagged failed first, so a crash during the deletion is cleaned up next time.
                         using (var flag = Command(connection, "UPDATE main.Sessions SET Status = $failed WHERE ID = $new"))
