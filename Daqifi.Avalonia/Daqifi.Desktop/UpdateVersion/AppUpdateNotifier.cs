@@ -45,7 +45,8 @@ public enum UpdateBlocker
 /// A button that would install is never offered while the restart would cut something off (#348):
 /// a logging session, a firmware write, an SD card transfer, or any other <see cref="UpdateBlocker"/>.
 /// The notification says what the install waits for and has no button, and <see cref="WatchAsync"/>
-/// puts the button back when that work ends.
+/// puts the button back when that work ends. A click that comes after the work starts but before
+/// the watch looks again is refused in the same way.
 /// </para>
 /// </remarks>
 public sealed class AppUpdateNotifier
@@ -306,7 +307,7 @@ public sealed class AppUpdateNotifier
     {
         Message = message,
         ActionText = actionText,
-        Action = new AsyncRelayCommand(() => InstallAsync(offer)),
+        Action = Click(() => InstallAsync(offer)),
     };
 
     // A downloaded update for all users that waited: the click applies it, unless something started again.
@@ -314,8 +315,22 @@ public sealed class AppUpdateNotifier
     {
         Message = "Update ready.",
         ActionText = INSTALL,
-        Action = new AsyncRelayCommand(() => RunAsync(offer, WaitThenApplyAsync)),
+        Action = Click(() => RunAsync(offer, WaitThenApplyAsync)),
     };
+
+    /// <summary>
+    /// The command of a button that would install. The watch takes the button away at its next look
+    /// after work starts, so a click can come before that look. Such a click is refused (#348
+    /// review): the offer shows what the install waits for, with no button, and nothing is asked,
+    /// downloaded or installed.
+    /// </summary>
+    private AsyncRelayCommand Click(Func<Task> install) => new(() =>
+    {
+        if (OwnWaitingFor() is not { } waitingFor) { return install(); }
+
+        if (_offered is { } offered) { Show(offered, waitingFor); }
+        return Task.CompletedTask;
+    });
 
     // A step under way: its only button stops it.
     private Notifications Busy(string message) => new()
