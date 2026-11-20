@@ -1,10 +1,13 @@
 using System.Collections.ObjectModel;
+using System.Reflection;
 using Daqifi.Avalonia.Tests.ViewModels;
 using Daqifi.Avalonia.Tests.Views;
 using Daqifi.Core.Firmware;
+using Daqifi.Desktop;
 using Daqifi.Desktop.Device.Firmware;
 using Daqifi.Desktop.Device.SerialDevice;
 using Daqifi.Desktop.Models;
+using Daqifi.Desktop.ViewModels;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using DesktopStreamingDevice = Daqifi.Desktop.Device.IStreamingDevice;
@@ -31,11 +34,22 @@ namespace Daqifi.Avalonia.Tests.Device.Firmware;
 /// as Avalonia's dispatcher does, so the <see cref="Progress{T}"/> sink posts to it in the order
 /// production does. Thus these tests can assert the order the user sees, not only that a write
 /// occurred at some time. No hardware: a scripted <see cref="ILanChipInfoProvider"/> answers for
-/// the module. Two tests spend the app's real two-second pause, so they take about four and two
+/// the module. Three tests spend the app's real two-second pause, so the class takes about eight
 /// seconds.
 /// </para>
+///
+/// <para>
+/// The ticket has two callers. The flash path must announce each retry. The connect-time probe in
+/// <see cref="DaqifiViewModel"/> uses the same retry policy, but it must not write the status line
+/// (issue #241). The last test runs that probe, not only the shared policy (review of PR #652).
+/// </para>
 /// </summary>
-[Collection(AppHostCollection.Name)]
+/// <remarks>
+/// In <see cref="ConnectionManagerSingletonCollection"/> because the connect-time probe reads its
+/// devices from <c>ConnectionManager.Instance</c>, and the last test registers one there. The
+/// coordinator tests use no process-wide state.
+/// </remarks>
+[Collection(ConnectionManagerSingletonCollection.Name)]
 public class WifiChipInfoRetryStatusTests : IDisposable
 {
     private const string Checking = "Checking WiFi firmware version...";
@@ -45,6 +59,7 @@ public class WifiChipInfoRetryStatusTests : IDisposable
 
     private readonly SerialTestUi _ui = new();
     private readonly RecordingHost _host = new();
+    private readonly List<DesktopStreamingDevice> _registered = [];
     private readonly string _dataDirectory =
         Path.Combine(Path.GetTempPath(), "daqifi-wifi-retry-status-tests", Guid.NewGuid().ToString("N"));
 
@@ -65,6 +80,12 @@ public class WifiChipInfoRetryStatusTests : IDisposable
     public void Dispose()
     {
         _ui.Dispose();
+        foreach (var device in _registered)
+        {
+            try { ConnectionManager.Instance.UnregisterConnectedDevice(device); }
+            catch { /* best-effort cleanup */ }
+        }
+
         if (Directory.Exists(_dataDirectory))
         {
             Directory.Delete(_dataDirectory, recursive: true);
@@ -138,19 +159,80 @@ public class WifiChipInfoRetryStatusTests : IDisposable
     }
 
     /// <summary>
-    /// The other half of the ticket: the connect-time probe in <c>DaqifiViewModel</c> must not write
-    /// the status line (issue #241). It uses the shared policy as is, so the shared policy must give
-    /// Core no sink. The flash path adds its sink to a copy.
+    /// The other caller. The connect-time probe runs when a device connects, not during an update,
+    /// so it must not write the firmware status line (issue #241). That line can still show the
+    /// last update's outcome. The test runs the real probe in <see cref="DaqifiViewModel"/> with a
+    /// module that misses the first attempt. Core retries, so the module is asked a second time and
+    /// its version reaches the device. The status line keeps its text the whole time. If this caller
+    /// gave Core a progress sink that writes the line, as the flash path does, the write would occur
+    /// between the two attempts and this test would fail.
     /// </summary>
     [Fact]
-    public void The_shared_policy_that_the_connect_time_probe_uses_reports_to_no_one()
+    public async Task The_connect_time_probe_retries_and_does_not_write_the_status_line()
     {
-        Assert.Null(FirmwareUpdateCoordinator.WifiChipInfoRetryOptions.Progress);
+        const string LastUpdateOutcome = "Firmware update complete.";
+        var device = ScriptedWincDevice.That(
+            [null, Chip(FirmwareUpdateCoordinator.MinimumWifiFirmwareVersion)], connected: true);
+        ConnectionManager.Instance.RegisterConnectedDevice(device);
+        _registered.Add(device);
+        var shell = ShellReadyToProbe();
+        shell.FirmwareUpdateStatusText = LastUpdateOutcome;
+        var statusWrites = new List<string>();
+        shell.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(DaqifiViewModel.FirmwareUpdateStatusText))
+            {
+                statusWrites.Add(shell.FirmwareUpdateStatusText);
+            }
+        };
+
+        await _ui.RunAsync(() => RunConnectTimeProbe(shell));
+
+        Assert.Equal(2, device.Queries);
+        Assert.Equal(FirmwareUpdateCoordinator.MinimumWifiFirmwareVersion, device.WifiFirmwareVersion);
+        Assert.Empty(await _ui.Get(() => statusWrites.ToList()));
+        Assert.Equal(LastUpdateOutcome, shell.FirmwareUpdateStatusText);
     }
 
     #region Helpers
     private static LanChipInfo Chip(string version) =>
         new() { ChipId = 0x1503A0, FwVersion = version, BuildDate = "2020-01-01" };
+
+    /// <summary>
+    /// The shell, with debug mode on and its UI-thread check answering "yes". Debug mode gates the
+    /// probe. The test sets the field behind it, because the property's change handler clears the
+    /// debug log through a blocking <c>Dispatcher.UIThread.Invoke</c>, and with no Avalonia
+    /// application that call never returns. The answer "yes" is true: the probe runs on the
+    /// <see cref="SerialTestUi"/> thread, which stands in for the UI thread. Neither service is
+    /// reached: the probe downloads and flashes nothing.
+    /// </summary>
+    private static DaqifiViewModel ShellReadyToProbe()
+    {
+        var shell = new DaqifiViewModel(
+            new NullDialogService(), new UnreachableUpdateService(), new UnreachableDownloadService());
+        SetPrivateField(shell, "_isDebugModeEnabled", true);
+        SetPrivateField(shell, "_checkUiThreadAccess", (Func<bool>)(() => true));
+        return shell;
+    }
+
+    /// <summary>
+    /// Starts the probe through the method that every trigger calls (a connect and debug mode on),
+    /// and returns its task, so the test can wait until the probe has finished.
+    /// </summary>
+    private static Task RunConnectTimeProbe(DaqifiViewModel shell)
+    {
+        var probe = typeof(DaqifiViewModel).GetMethod(
+            "CheckWifiFirmwareAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(probe);
+        return (Task)probe.Invoke(shell, null)!;
+    }
+
+    private static void SetPrivateField(DaqifiViewModel shell, string fieldName, object value)
+    {
+        var field = typeof(DaqifiViewModel).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field.SetValue(shell, value);
+    }
     #endregion
 
     #region Fakes
@@ -163,16 +245,26 @@ public class WifiChipInfoRetryStatusTests : IDisposable
     private sealed class ScriptedWincDevice : SerialStreamingDevice, ILanChipInfoProvider
     {
         private readonly LanChipInfo?[] _answers;
+        private readonly bool _connected;
 
-        private ScriptedWincDevice(LanChipInfo?[] answers)
+        private ScriptedWincDevice(LanChipInfo?[] answers, bool connected)
             : base("COM-TEST-308", "Nq1", "SN-0308", firmwareVersion: "3.9.0")
         {
             _answers = answers;
+            _connected = connected;
             Metadata.Capabilities.HasWincWifiModule = true;
         }
 
-        /// <summary>Answers in order; an attempt past the end of the script reads nothing.</summary>
-        public static ScriptedWincDevice That(LanChipInfo?[] answers) => new(answers);
+        /// <summary>
+        /// Answers in order; an attempt past the end of the script reads nothing. The connect-time
+        /// probe skips a device that is not connected, so its test asks for
+        /// <paramref name="connected"/>. The coordinator tests keep the default: with no Core
+        /// device, <see cref="IsConnected"/> is false, as before.
+        /// </summary>
+        public static ScriptedWincDevice That(LanChipInfo?[] answers, bool connected = false) =>
+            new(answers, connected);
+
+        public override bool IsConnected => _connected;
 
         /// <summary>How many times the module was asked for its version.</summary>
         public int Queries { get; private set; }
