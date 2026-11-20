@@ -142,8 +142,8 @@ internal static partial class HeadlessBench
     /// Core counted any gap, and none when it counted none. With <c>--hold-reader</c>, the run must
     /// also have a gap. The rig's own device-timestamp tally is reported beside Core's count.
     /// </summary>
-    private static void ReportStreamGap(DaqifiViewModel shell, IStreamingDevice device, DeviceGapTally gaps,
-        int commandedRate, string? shot)
+    private static void ReportStreamGap(Window main, DaqifiViewModel shell, IStreamingDevice device,
+        DeviceGapTally gaps, int commandedRate, string? shot)
     {
         var coreGaps = (device as AbstractStreamingDevice)?.StreamGapCount ?? -1;
         var notices = shell.NotificationList
@@ -155,6 +155,16 @@ internal static partial class HeadlessBench
         var pass = coreGaps >= 0
                    && notices.Count == (coreGaps > 0 ? 1 : 0)
                    && (_holdReaderSeconds <= 0 || coreGaps > 0);
+
+        // What the user sees: the bell's panel, open, with the notice in it.
+        if (notices.Count > 0)
+        {
+            shell.IsNotificationsOpen = true;
+            PumpFor(TimeSpan.FromMilliseconds(600));
+            shot = Capture(main, "t2-07b-gap-notice");
+            shell.IsNotificationsOpen = false;
+            Pump();
+        }
 
         Step(2, "STREAM-GAP", "works", pass,
              $"{(_holdReaderSeconds > 0 ? $"reader held for {_holdReaderSeconds} s; " : "no hold; ")}" +

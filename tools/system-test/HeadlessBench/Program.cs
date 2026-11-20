@@ -515,7 +515,7 @@ internal static partial class HeadlessBench
                  $"device-stamped span {deviceSpan:F2} s vs wall-clock {window:F2} s over the same {spanned} samples " +
                  $"(ratio {clockSkew:F3}; device counter {tsFreq} Hz) " +
                  $"-> {deviceRate:F2} Hz by device timestamps, {effective:F2} Hz by wall clock");
-            ReportStreamGap(shell, device, deviceGaps, commandedRate, shot);
+            ReportStreamGap(main, shell, device, deviceGaps, commandedRate, shot);
             ReportStreamLoad(device, ai, started, counted, window, commandedRate, deviceSpan, deviceGaps,
                              streamPumpsFrom, streamPumpsTo, redraw, session, shot);
             if (_allAi)

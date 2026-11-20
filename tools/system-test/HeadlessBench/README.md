@@ -193,6 +193,21 @@ the same on a board run, for N seconds halfway through the stream (over 10 s is 
 call waited the whole 2 s, which on a board is the USB reader stopping. It is not in CI's list,
 because its timings depend on the machine's load.
 
+Since #600 the reader no longer waits for the plot, so `--hold-ui` cannot make a gap any more.
+`--hold-reader N` can: halfway through the stream it holds the device reader thread for N seconds,
+inside one sample callback. That thread is Core's consumer, and it also reads the port, so the
+firmware drops what its buffer cannot keep and the stream has a real gap. Every board run reports
+`STREAM-GAP/works`: Core's gap count, the rig's own device-timestamp tally, and the gap notices in
+the bell for the device. It passes when the bell holds exactly one notice if Core found any gap and
+none if it found none, and with `--hold-reader`, only if there was a gap (#595). On the bench Nq1 a
+long hold at a high data rate is needed, because the host buffers several seconds of USB data:
+
+```bash
+dotnet run --project tools/system-test/HeadlessBench/HeadlessBench.csproj --no-restore -- \
+  --port /dev/cu.usbmodem1101 --rate 22000 --seconds 40 --all-ai --hold-reader 20 \
+  --out "/tmp/hb-gap-$(date +%H%M%S)"
+```
+
 A *frame* here is one dispatcher drain plus the render tick after it. Avalonia lays out, and OxyPlot
 draws, on the render tick, so the older "UI pump" number (the drain alone) never sees the plot's draw.
 And since #595 `Pump` posts one empty job per drain: headless, `RunJobs` only runs queued jobs and a
