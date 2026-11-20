@@ -1619,11 +1619,12 @@ internal static class AvaloniaCapture
     /// The end-state guard above made a stalled transition fail by name instead of saving a
     /// wrong frame (#278). It did not stop the stall: that transition still sometimes stops 1-4
     /// px short of its end and does not move again, and a cheaper scene behind the drawer makes
-    /// it much more frequent on a loaded host (#616 took one loaded host from 0 refused screens in
-    /// 10 runs to 4 in 8). Its progress comes from the animation clock, which MediaContext pulses
-    /// only on a render pass that is not waiting for a composition batch, and passes are
-    /// scheduled by timers and batch completions that this harness drives by hand. That clock is
-    /// the one input to the frame that depends on wall time and host load.
+    /// it much more frequent on a loaded host (#657 measured 4 refused screens in 8 loaded runs
+    /// after #616, against 0 in 10 before it). Its progress comes from the animation clock,
+    /// which MediaContext pulses only on a render pass that is not waiting for a composition
+    /// batch, and passes are scheduled by timers and batch completions that this harness drives
+    /// by hand. That clock is the one input to the pane's width that depends on wall time and
+    /// host load.
     /// </para>
     /// <para>
     /// A local value outranks a style setter, so an empty collection here removes both
@@ -1647,14 +1648,15 @@ internal static class AvaloniaCapture
         // local value already in place. Report only the sweep that actually removed something.
         if (pane.Transitions is not { Count: > 0 } theme) { return; }
 
-        var removed = string.Join(", ", theme.Select(t => t is TransitionBase { Property: { } p } b
+        var active = string.Join(", ", theme.Select(t => t is TransitionBase { Property: { } p } b
             ? $"{p.Name} over {b.Duration.TotalMilliseconds:0} ms"
             : t.GetType().Name));
         pane.Transitions = new Transitions();
         Console.WriteLine(
-            $"[INFO] {prefix} drawer pane: removed {theme.Count} theme transition(s) " +
-            $"({removed}) from {PaneRootPart}, so layout puts the pane at its declared width " +
-            "without an animation (#657). A user still sees the slide.");
+            $"[INFO] {prefix} drawer pane: transitions are off on {PaneRootPart} for this " +
+            $"capture (the theme's active one was {active}; the local value outranks the open " +
+            "one too), so layout puts the pane at its declared width without an animation " +
+            "(#657). A user still sees the slide.");
     }
 
     // What "closed" means for the pane's width, taken from Avalonia's own rule rather than
