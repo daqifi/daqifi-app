@@ -199,8 +199,9 @@ inside one sample callback. That thread is Core's consumer, and it also reads th
 firmware drops what its buffer cannot keep and the stream has a real gap. Every board run reports
 `STREAM-GAP/works`: Core's gap count, the rig's own device-timestamp tally, and the gap notices in
 the bell for the device. It passes when the bell holds exactly one notice if Core found any gap and
-none if it found none, and with `--hold-reader`, only if there was a gap (#595). On the bench Nq1 a
-long hold at a high data rate is needed, because the host buffers several seconds of USB data:
+none if it found none, and with `--hold-reader`, only if there was a gap (#595). On the bench Nq1
+(fw 3.9.1, 16 inputs at 3518 Hz) a 5 s hold lost nothing, because the host buffers several seconds
+of USB data; a 20 s hold gave 13 to 15 gaps, about 7.5 s in all:
 
 ```bash
 dotnet run --project tools/system-test/HeadlessBench/HeadlessBench.csproj --no-restore -- \
