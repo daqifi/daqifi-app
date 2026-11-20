@@ -250,6 +250,24 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     // any byte that lands while the WINC is bridging corrupts the program (bricks the module).
     private Task? _wifiProbeTask;
 
+    /// <summary>
+    /// How the connect-time WiFi probe asks "am I on the UI thread?". Nothing in the app reassigns
+    /// it. It is a field only so that a test can replace it by reflection (not <c>readonly</c>, for
+    /// the same reason as <c>DatabaseLogger._marshalToUiThread</c>). The default is the same
+    /// <c>Dispatcher.UIThread.CheckAccess()</c> call that the probe made before, at the same two
+    /// points, so the shipping path does not change. The lambda reads the dispatcher only when it
+    /// runs, so making the view model does not touch it.
+    ///
+    /// <para>The seam is necessary. Outside a running Avalonia application the dispatcher binds to
+    /// the first thread that touches it and is never pumped. In the full test suite another test
+    /// touches it first, so the probe takes the <c>InvokeAsync</c> branch, which never completes:
+    /// without this seam, <c>WifiChipInfoRetryStatusTests</c>' connect-time test timed out after
+    /// 10 s (run alone, it passed). With an answer of "yes", the test runs the real probe on a thread
+    /// that stands in for the UI thread, and shows that the probe does not write the firmware status
+    /// line (issue #308, #241).</para>
+    /// </summary>
+    private Func<bool> _checkUiThreadAccess = static () => Dispatcher.UIThread.CheckAccess();
+
     private readonly LoggingSessionListViewModel _loggingSessionList;
     private ConnectionDialogViewModel? _connectionDialogViewModel;
     private string _selectedLoggingMode = "Stream to App";
@@ -3159,7 +3177,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         // Snapshot the UI-owned ConnectedDevices list on the dispatcher: this probe is fire-and-forget
         // and can resume on a thread-pool thread, while the list is mutated on the UI thread. One
         // snapshot is reused for both the prune below and the loop, so we never enumerate the live list.
-        var connectedDevices = !Dispatcher.UIThread.CheckAccess()
+        var connectedDevices = !_checkUiThreadAccess()
             ? await Dispatcher.UIThread.InvokeAsync(() => ConnectionManager.Instance.ConnectedDevices.ToList())
             : ConnectionManager.Instance.ConnectedDevices.ToList();
 
@@ -3243,7 +3261,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     }
                 }
 
-                if (!Dispatcher.UIThread.CheckAccess())
+                if (!_checkUiThreadAccess())
                 {
                     // InvokeAsync (awaited) rather than a blocking Invoke — this probe runs on a
                     // thread-pool thread and shouldn't block it waiting on the UI thread. Avalonia's
