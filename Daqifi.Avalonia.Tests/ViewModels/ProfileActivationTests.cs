@@ -501,6 +501,88 @@ public sealed class ProfileActivationTests : IDisposable
     }
 
     /// <summary>
+    /// PR #678 review, round 4: a profile is on for a board with no serial number and no MAC
+    /// address, and then a second such board is connected. Turning the profile off, or switching to
+    /// another profile, must still turn off the board the profile turned on. Matching again cannot
+    /// say which of the two boards that was, and the old code left AI1 on while the tile said off.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Turning_a_profile_off_turns_off_the_board_it_turned_on_after_a_second_board_connects(bool bySwitching)
+    {
+        var board = Connect(string.Empty, name: "Nq1 bare");
+        var other = Connect("PROFILE-OFF2-S", partNumber: "Nq3");
+        var profile = SaveNewProfile("Bare board on", board, board.DataChannels[1]);
+        var otherProfile = SaveNewProfile("Other model", other, other.DataChannels[2]);
+        await Activate(profile);
+        Assert.Equal(["AI1"], ActiveNames(board));
+
+        Connect(string.Empty, name: "Nq1 bare");
+        if (bySwitching)
+        {
+            var switching = Activate(otherProfile);
+            _pane.ConfirmOverlay.AffirmativeCommand.Execute(null);
+            await switching;
+            Assert.True(otherProfile.IsProfileActive);
+        }
+        else
+        {
+            await Activate(profile); // the same tile again: toggle off
+        }
+
+        Assert.False(profile.IsProfileActive);
+        Assert.Empty(ActiveNames(board));
+        Assert.Empty(SubscribedNames(board));
+    }
+
+    /// <summary>
+    /// The other half: the board the profile turned on is replaced by another board with no
+    /// identifier, which the user gives AI3. Turning the profile off must not clear the replacement,
+    /// which the profile never turned on.
+    /// </summary>
+    [Fact]
+    public async Task Turning_a_profile_off_does_not_clear_a_board_that_replaced_the_one_it_turned_on()
+    {
+        var board = Connect(string.Empty, name: "Nq1 bare");
+        var profile = SaveNewProfile("Bare board on", board, board.DataChannels[1]);
+        await Activate(profile);
+        Disable(board, "AI1");
+        Disconnect(board);
+        var replacement = Connect(string.Empty, name: "Nq1 bare");
+        Enable(replacement, "AI3");
+
+        await Activate(profile); // the same tile again: toggle off
+
+        Assert.Equal(["AI3"], ActiveNames(replacement));
+        Assert.Equal(["AI3"], SubscribedNames(replacement));
+        Assert.False(profile.IsProfileActive);
+    }
+
+    /// <summary>
+    /// A board with a serial number that disconnects and connects again is a new device object but
+    /// the same board, so turning the profile off still clears it, as it clears every channel on
+    /// the profile's board (#529 audit).
+    /// </summary>
+    [Fact]
+    public async Task Turning_a_profile_off_still_clears_its_board_after_a_reconnect()
+    {
+        var first = Connect("PROFILE-RECON-1");
+        var profile = SaveNewProfile("Reconnect", first, first.DataChannels[1]);
+        await Activate(profile);
+        Disable(first, "AI1");
+        Disconnect(first);
+        var again = Connect("PROFILE-RECON-1");
+        Enable(again, "AI3");
+
+        await Activate(profile); // the same tile again: toggle off
+
+        Assert.False(profile.IsProfileActive);
+        Assert.Empty(ActiveNames(again));
+        Assert.Empty(SubscribedNames(again));
+    }
+
+    /// <summary>
     /// An older profile (no input numbers) from a board with no serial also looks for its board by
     /// MAC address first, so its channel names are checked on the right board.
     /// </summary>
