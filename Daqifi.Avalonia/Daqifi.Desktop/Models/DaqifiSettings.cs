@@ -170,7 +170,7 @@ public class DaqifiSettings
         /// <summary>The delimiter was replaced and saved.</summary>
         Copied,
 
-        /// <summary>The file says someone chose the delimiter, so it was kept.</summary>
+        /// <summary>Someone chose the delimiter (in this copy, or the file says so), so it was kept.</summary>
         KeptChosen,
 
         /// <summary>The file could not be read, locked or written. Nothing changed; a later try can work.</summary>
@@ -192,7 +192,12 @@ public class DaqifiSettings
             EnsureSettingsDirectory();
             using var held = AppDataFile.HoldWriteLock(_settingsXmlPath);
 
-            if (ReadStoredDelimiter(_settingsXmlPath) is { } stored && stored.ChosenByUser != false)
+            // This copy's own choice first, at the moment of the copy: the user may have set the
+            // delimiter here after the import began, and that save may have failed because
+            // another writer held the lock, so the file alone still says "first-launch default"
+            // (#512 review round 5). Then the file, for a choice saved by another copy.
+            if (!_csvDelimiterIsFirstLaunchDefault
+                || (ReadStoredDelimiter(_settingsXmlPath) is { } stored && stored.ChosenByUser != false))
             {
                 return DelimiterImportResult.KeptChosen;
             }
