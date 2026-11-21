@@ -231,12 +231,12 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
             _post(() =>
             {
                 // A failed check leaves an offer on screen as it was, so the line has to say that
-                // the feed was not reached; see Status.
+                // the feed was not reached; see Status. Set before IsChecking, whose change (always
+                // true to false here) tells the view to read Status again.
                 _noticeAtFailedCheck = failed ? Notice : null;
                 LastCheckFailed = failed;
                 if (!failed) { LastChecked = endedAt; }
                 IsChecking = false;
-                OnPropertyChanged(nameof(Status));
             });
         }
 

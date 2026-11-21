@@ -685,6 +685,25 @@ public class AppUpdateViewModelTests
         Assert.Equal("DAQiFi 3.4.0 is available.", h.ViewModel.Status);
     }
 
+    /// <summary>The view reads the failure line when it is told: the last Status change after a failed refresh carries it.</summary>
+    [Fact]
+    public async Task FailedRefresh_TellsTheViewTheNewLine()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        await h.CheckNowAsync();
+        var lines = new List<string>();
+        h.ViewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(AppUpdateViewModel.Status)) { lines.Add(h.ViewModel.Status); }
+        };
+
+        h.Service.CheckFailure = new HttpRequestException("offline");
+        await h.CheckNowAsync();
+
+        Assert.Equal("Couldn't check for updates. DAQiFi 3.4.0 is available.", lines.Last());
+    }
+
     /// <summary>The failure belongs to the offer it was checked over: a download that starts after it shows its own line.</summary>
     [Fact]
     public async Task FailedRefresh_ThenDownload_ShowsTheDownloadAlone()
