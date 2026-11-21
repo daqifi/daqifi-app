@@ -23,21 +23,23 @@ namespace Daqifi.Desktop.Logger;
 /// shared with another app, and is never moved, copied as a file, migrated or deleted.
 /// </para>
 /// <para>
-/// <b>Repeatable.</b> Each copy records the ID of its old session's first sample
-/// (<c>PreviousFirstSampleId</c>), which a rename does not touch. A session that only looks like a
-/// copy (an SD card log from the same second, say) is never taken for one (see <c>IsCopy</c>).
-/// Sessions already present (and complete) are skipped. When the old database can give a sample ID
-/// twice (no AUTOINCREMENT), no copy is proved, so nothing is skipped or deleted, and an import
-/// ends the offer itself (see <c>ProvedCopy</c>). Each new session is written as <see cref="SessionStatus.Importing"/> and marked
+/// <b>Repeatable, and nothing is deleted.</b> Each copy records the ID of its old session's first
+/// sample (<c>PreviousFirstSampleId</c>), which a rename does not touch. A session that only looks
+/// like a copy (an SD card log of another board from the same second, a recording in a new database
+/// at the same path) is never taken for one (see <c>IsCopy</c>). Sessions already present are
+/// skipped. When the old database can give a sample ID twice (no AUTOINCREMENT), no copy is proved,
+/// so nothing is skipped, and an import ends the offer itself (see <c>ProvedCopy</c>). A new copy is
+/// written as <see cref="SessionStatus.Importing"/>, and each batch records the last old sample in
+/// it (<c>PreviousLastSampleId</c>) with its samples. The copy is marked
 /// <see cref="SessionStatus.Complete"/> only once all its samples are in. If the process dies
 /// part-way, startup turns the leftover into <see cref="SessionStatus.ImportFailed"/> (see
-/// <c>LoggingManager.MarkAbandonedImportsFailed</c>), and the next import deletes that partial copy
-/// and starts the session again; when the old database cannot prove the copy's source (see
-/// <c>RemoveFailedImports</c>), the partial copy is kept and a complete copy is made beside it.
-/// A failure this import sees itself is flagged the same way at once.
-/// Only <see cref="SessionStatus.ImportFailed"/> copies are replaced: an <c>Importing</c> one may be
-/// another instance's import still running. <see cref="ImportLease"/> keeps startup from failing a
-/// live import, and lets only one copy of the app import earlier sessions at a time.
+/// <c>LoggingManager.MarkAbandonedImportsFailed</c>), and the next import continues it from its last
+/// sample ID. A failure this import sees itself is flagged the same way at once. The import never
+/// deletes a session or a sample: a copy that does not continue from its old session (the old
+/// database was replaced, say) is left as it is, and the session is copied again beside it. An
+/// <c>Importing</c> copy may be another instance's import still running and is left alone.
+/// <see cref="ImportLease"/> keeps startup from failing a live import, and lets only one copy of the
+/// app import earlier sessions at a time.
 /// </para>
 /// <para>
 /// <b>Sessions still being recorded.</b> The other app may still be recording, and two copies of it
@@ -47,11 +49,12 @@ namespace Daqifi.Desktop.Logger;
 /// later. So the import never decides that a session has ended. Each copy records the ID of the last
 /// old sample it holds (<c>PreviousLastSampleId</c>). Sample IDs only grow (AUTOINCREMENT), so a
 /// copy is behind exactly when its old session has a sample with a higher ID. The check for the
-/// offer and every import compare this again (see <c>BehindCopies</c>), also after the offer of new
+/// offer and every import compare this again (see <c>CopiesToContinue</c>), also after the offer of new
 /// sessions is retired, and an import copies the missing samples into the copy. A session that is
 /// still being recorded is copied as far as it goes, and a later import copies the rest. A copy is
-/// continued only from the same recording: its old session has the same first sample ID and start,
-/// and the old sample at the copy's last sample ID is the copy's last sample (see <c>Continues</c>).
+/// continued only from the same recording: its old session has the same first sample ID, start and
+/// first sample, and the old sample at the copy's last sample ID is the copy's last sample (see
+/// <c>Continues</c>).
 /// Sample IDs are unique only within one database file, so they alone cannot show this.
 /// </para>
 /// <para>
@@ -150,10 +153,10 @@ public sealed class PreviousSessionImport
                 return false;
             }
 
-            // Samples an old session got after its copy are offered even once the offer is retired:
-            // the user chose to import that session, and the copy is short of it.
+            // A copy that is behind its old session, or stopped part-way, is offered even once the
+            // offer is retired: the user chose to import that session, and the copy is short of it.
             if (SampleIdsAreNeverReused(connection)
-                && Scalar<long>(connection, $"SELECT COUNT(*) {BehindCopies(PreviousIsComplete(connection))}") > 0)
+                && Scalar<long>(connection, $"SELECT COUNT(*) {CopiesToContinue(PreviousIsComplete(connection))}") > 0)
             {
                 return true;
             }
@@ -203,12 +206,10 @@ public sealed class PreviousSessionImport
 
         var complete = PreviousIsComplete(connection);
         var copyOf = ProvedCopy(connection);
-        var hasSampleCount = HasColumn(connection, "old", "Sessions", "SampleCount");
         var hasMetadata = HasTable(connection, "old", "SessionDeviceMetadata");
 
-        // Taken before any deletion: the logger or SD importer may already have read the next ID
-        // from the current maximum, and deleting the highest rows below would lower it. Raised after
-        // every allocation for the same reason (a failed copy is deleted by the next import).
+        // Taken first: the logger or SD importer may already have read the next ID from the current
+        // maximum. Raised after every allocation for the same reason.
         long idFloor;
         using (var transaction = connection.BeginTransaction(deferred: false))
         {
@@ -216,150 +217,78 @@ public sealed class PreviousSessionImport
             transaction.Commit();
         }
 
-        outcome.Removed.AddRange(RemoveFailedImports(connection, complete, copyOf));
-
         // The sessions to bring over and the sample ID range each spans in the old database. None
-        // once the offer is retired: then only the copies made earlier are brought up to date.
-        var pending = new List<(long Id, string Start, string Name, long? Count, long First, long Last)>();
+        // once the offer is retired: then only the copies made earlier are continued. A session that
+        // has a copy is skipped, unless that copy failed and does not continue from it (see
+        // CopiesToContinue). Such a copy is left as it is, and the session is copied again beside it.
+        var pending = new List<(long Id, string Start, string Name, long First, long Last)>();
         if (!OfferRetired)
         {
             using (var read = Command(connection,
-                       $"SELECT o.ID, o.SessionStart, o.Name, {(hasSampleCount ? "o.SampleCount" : "NULL")}, " +
+                       "SELECT o.ID, o.SessionStart, o.Name, " +
                        // Two subqueries, not MIN(ID), MAX(ID) together: each alone is a single index
                        // lookup, while the pair scans every sample of the session (minutes for the
                        // largest real sessions, which hold hundreds of millions of samples).
                        "(SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID), " +
                        "(SELECT MAX(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) " +
                        $"FROM old.Sessions o WHERE {complete} AND {HasSamples} " +
-                       // A failed copy must never stop a complete copy. With ProvedCopy none can: a
-                       // proved one was deleted just above, and an unproved one never matches. The
-                       // status check stays as a guard, so no test can fail without it.
-                       $"AND NOT EXISTS (SELECT 1 FROM main.Sessions m WHERE m.Status <> {(int)SessionStatus.ImportFailed} AND {copyOf}) ORDER BY o.ID"))
+                       $"AND NOT EXISTS (SELECT 1 FROM main.Sessions m WHERE {copyOf} AND (m.Status <> {(int)SessionStatus.ImportFailed} " +
+                       $"OR {Continues("m.ID", "o.ID", "m.PreviousLastSampleId")})) ORDER BY o.ID"))
             using (var reader = read.ExecuteReader())
             {
                 while (reader.Read())
                 {
-                    pending.Add((reader.GetInt64(0), reader.GetString(1), reader.GetString(2),
-                        reader.IsDBNull(3) ? null : reader.GetInt64(3), reader.GetInt64(4), reader.GetInt64(5)));
+                    pending.Add((reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3), reader.GetInt64(4)));
                 }
             }
         }
 
-        // The copies made earlier that are behind their old session, with the last old sample each
-        // holds, the old session's last sample now, and the samples in between. Those are counted
-        // (an index range): other sessions can hold most of the IDs in between.
-        var behind = new List<(long CopyId, long OldId, long Cursor, long Last, long Missing)>();
+        // The copies made earlier to continue: behind their old session, or stopped part-way. With
+        // the last old sample each holds, the old session's last sample now, and the samples in
+        // between. Those are counted (an index range): other sessions can hold most of the IDs.
+        var unfinished = new List<(long CopyId, long OldId, long Cursor, long Last, long Missing)>();
         if (SampleIdsAreNeverReused(connection))
         {
-            using var read = Command(connection, "SELECT m.ID, x.Id, m.PreviousLastSampleId, x.LastId, " +
-                $"(SELECT COUNT(*) FROM old.Samples WHERE LoggingSessionID = x.Id AND ID > m.PreviousLastSampleId) {BehindCopies(complete)} ORDER BY m.ID");
+            using var read = Command(connection,
+                "SELECT m.ID, x.Id, m.PreviousLastSampleId, x.LastId, " +
+                $"(SELECT COUNT(*) FROM old.Samples WHERE LoggingSessionID = x.Id AND ID > m.PreviousLastSampleId) {CopiesToContinue(complete)} ORDER BY m.ID");
             using var reader = read.ExecuteReader();
             while (reader.Read())
             {
-                behind.Add((reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetInt64(4)));
+                unfinished.Add((reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetInt64(4)));
             }
         }
 
-        var total = pending.Sum(s => s.Last - s.First + 1) + behind.Sum(c => c.Missing);
+        var total = pending.Sum(s => s.Last - s.First + 1) + unfinished.Sum(c => c.Missing);
         CheckDiskSpace(connection, total);
         long done = 0;
         progress?.Report(0);
 
-        foreach (var (oldId, start, name, count, first, last) in pending)
+        // The copy being written for a new session, so a failure can flag it.
+        long writing = 0;
+
+        foreach (var (oldId, start, name, first, last) in pending)
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            // The row goes in only now, so an interruption leaves at most this one session partial.
-            // Its ID comes from the allocator the app's other writers use, so it can never pick up
-            // orphan samples or metadata an old delete left behind. It is also kept above idFloor,
-            // the highest "next ID" anyone may have read: the logger and the SD card importer read
-            // the maximum and insert a moment later, outside any shared transaction, so that ID may
-            // already be promised to one of them.
-            // BEGIN IMMEDIATE (deferred: false, which is also the library's default; spelled out
-            // here and on every transaction in this class): the write lock is taken up front, where
-            // the busy timeout applies, never upgraded from a read lock part-way through.
-            long newId;
-            using (var transaction = connection.BeginTransaction(deferred: false))
-            {
-                newId = Math.Max(idFloor, SessionIdAllocator.NextSessionId(connection, transaction)) + 1;
-                idFloor = newId + 1;
-                using var insert = Command(connection,
-                    "INSERT INTO main.Sessions (ID, SessionStart, Name, SampleCount, Status, PreviousFirstSampleId) " +
-                    "VALUES ($id, $start, $name, $count, $status, $first)",
-                    transaction);
-                insert.Parameters.AddWithValue("$id", newId);
-                insert.Parameters.AddWithValue("$first", first);
-                insert.Parameters.AddWithValue("$start", start);
-                insert.Parameters.AddWithValue("$name", name);
-                insert.Parameters.AddWithValue("$count", (object?)count ?? DBNull.Value);
-                insert.Parameters.AddWithValue("$status", (int)SessionStatus.Importing);
-                insert.ExecuteNonQuery();
-                transaction.Commit();
-            }
-
+            writing = 0;
             try
             {
-                long copied = 0;
-                for (var from = first; from <= last; from += BatchSpan)
+                var (copyId, at) = CopySamples(0, oldId, first - 1, last, (start, name, first));
+                if (copyId != 0 && MarkComplete(copyId, at))
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var to = Math.Min(last, from + BatchSpan - 1);
-
-                    using (var transaction = connection.BeginTransaction(deferred: false))
-                    {
-                        using var copy = Command(connection,
-                            "INSERT INTO main.Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
-                            "SELECT $new, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type FROM old.Samples " +
-                            "WHERE ID BETWEEN $from AND $to AND LoggingSessionID = $old ORDER BY ID", transaction);
-                        copy.Parameters.AddWithValue("$new", newId);
-                        copy.Parameters.AddWithValue("$old", oldId);
-                        copy.Parameters.AddWithValue("$from", from);
-                        copy.Parameters.AddWithValue("$to", to);
-                        copied += copy.ExecuteNonQuery();
-                        transaction.Commit();
-                    }
-
-                    done += to - from + 1;
-                    progress?.Report((double)done / total);
-                }
-
-                using (var transaction = connection.BeginTransaction(deferred: false))
-                {
-                    if (hasMetadata)
-                    {
-                        using var metadata = Command(connection,
-                            "INSERT OR IGNORE INTO main.SessionDeviceMetadata (LoggingSessionID, DeviceSerialNo, DeviceName, SamplingFrequencyHz) " +
-                            "SELECT $new, DeviceSerialNo, DeviceName, SamplingFrequencyHz FROM old.SessionDeviceMetadata WHERE LoggingSessionID = $old",
-                            transaction);
-                        metadata.Parameters.AddWithValue("$new", newId);
-                        metadata.Parameters.AddWithValue("$old", oldId);
-                        metadata.ExecuteNonQuery();
-                    }
-
-                    // The rows actually copied, so the session list never has to count samples on load.
-                    using var finish = Command(connection,
-                        "UPDATE main.Sessions SET Status = $complete, SampleCount = $count, PreviousLastSampleId = $last WHERE ID = $new", transaction);
-                    finish.Parameters.AddWithValue("$complete", (int)SessionStatus.Complete);
-                    finish.Parameters.AddWithValue("$count", copied);
-                    // Every old sample of the session up to the last one listed is in now, and a later one
-                    // gets a higher ID: the next check and import compare against this.
-                    finish.Parameters.AddWithValue("$last", last);
-                    finish.Parameters.AddWithValue("$new", newId);
-                    finish.ExecuteNonQuery();
-                    transaction.Commit();
+                    outcome.Imported.Add((int)copyId);
                 }
             }
             catch
             {
-                // Flag the partial copy now, as startup would after a crash, so the next Import
-                // (in this run or a later one) replaces it. Best effort: if even this fails,
-                // startup still flags it.
+                // Flag the partial copy now, as startup would after a crash. The next import goes
+                // on from its last sample ID. Best effort: if even this fails, startup still flags it.
                 try
                 {
-                    using var failed = Command(connection, "UPDATE main.Sessions SET Status = $failed WHERE ID = $new AND Status = $importing");
+                    using var failed = Command(connection, "UPDATE main.Sessions SET Status = $failed WHERE ID = $copy AND Status = $importing");
                     failed.Parameters.AddWithValue("$failed", (int)SessionStatus.ImportFailed);
                     failed.Parameters.AddWithValue("$importing", (int)SessionStatus.Importing);
-                    failed.Parameters.AddWithValue("$new", newId);
+                    failed.Parameters.AddWithValue("$copy", writing);
                     failed.ExecuteNonQuery();
                 }
                 catch
@@ -369,92 +298,12 @@ public sealed class PreviousSessionImport
 
                 throw;
             }
-
-            outcome.Imported.Add((int)newId);
         }
 
-        // The samples each copy made earlier is behind. Each batch moves the copy's last sample ID to
-        // the last sample it adds, with its samples and the devices, in one transaction: a crash
-        // leaves them in step, and the next import goes on from there. The copy stays complete
-        // throughout: it always holds every old sample up to its last sample ID. Each batch checks
-        // first that the copy still continues from the old session (see Continues): the user can
-        // delete the copy meanwhile, and a new session can get its ID.
-        foreach (var (copyId, oldId, cursor, last, _) in behind)
+        foreach (var (copyId, oldId, cursor, last, _) in unfinished)
         {
-            var at = cursor;
-            var added = false;
-            for (var from = cursor + 1; from <= last; from += BatchSpan)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var to = Math.Min(last, from + BatchSpan - 1);
-
-                long? next;
-                using (var find = Command(connection, "SELECT MAX(ID) FROM old.Samples WHERE LoggingSessionID = $old AND ID BETWEEN $from AND $to"))
-                {
-                    find.Parameters.AddWithValue("$old", oldId);
-                    find.Parameters.AddWithValue("$from", from);
-                    find.Parameters.AddWithValue("$to", to);
-                    next = find.ExecuteScalar() is long id ? id : null;
-                }
-
-                // Other sessions' samples only.
-                if (next is null)
-                {
-                    continue;
-                }
-
-                using (var transaction = connection.BeginTransaction(deferred: false))
-                {
-                    using var move = Command(connection,
-                        $"UPDATE main.Sessions SET PreviousLastSampleId = $next WHERE ID = $copy AND {Continues("$copy", "$old", "$at")}",
-                        transaction);
-                    move.Parameters.AddWithValue("$next", next.Value);
-                    move.Parameters.AddWithValue("$copy", copyId);
-                    move.Parameters.AddWithValue("$old", oldId);
-                    move.Parameters.AddWithValue("$at", at);
-                    if (move.ExecuteNonQuery() == 0)
-                    {
-                        break;
-                    }
-
-                    using var copy = Command(connection,
-                        "INSERT INTO main.Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
-                        "SELECT $copy, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type FROM old.Samples " +
-                        "WHERE ID BETWEEN $from AND $next AND LoggingSessionID = $old ORDER BY ID", transaction);
-                    copy.Parameters.AddWithValue("$copy", copyId);
-                    copy.Parameters.AddWithValue("$old", oldId);
-                    copy.Parameters.AddWithValue("$from", from);
-                    copy.Parameters.AddWithValue("$next", next.Value);
-                    var copied = copy.ExecuteNonQuery();
-
-                    using var count = Command(connection,
-                        "UPDATE main.Sessions SET SampleCount = COALESCE(SampleCount, 0) + $copied WHERE ID = $copy", transaction);
-                    count.Parameters.AddWithValue("$copied", copied);
-                    count.Parameters.AddWithValue("$copy", copyId);
-                    count.ExecuteNonQuery();
-
-                    // A device the recording picked up after the copy.
-                    if (hasMetadata)
-                    {
-                        using var metadata = Command(connection,
-                            "INSERT OR IGNORE INTO main.SessionDeviceMetadata (LoggingSessionID, DeviceSerialNo, DeviceName, SamplingFrequencyHz) " +
-                            "SELECT $copy, DeviceSerialNo, DeviceName, SamplingFrequencyHz FROM old.SessionDeviceMetadata WHERE LoggingSessionID = $old",
-                            transaction);
-                        metadata.Parameters.AddWithValue("$copy", copyId);
-                        metadata.Parameters.AddWithValue("$old", oldId);
-                        metadata.ExecuteNonQuery();
-                    }
-
-                    transaction.Commit();
-                    at = next.Value;
-                    added = true;
-                    done += copied;
-                }
-
-                progress?.Report((double)done / total);
-            }
-
-            if (added)
+            var (continued, at) = CopySamples(copyId, oldId, cursor, last, null);
+            if (continued != 0 && MarkComplete(copyId, at))
             {
                 outcome.Imported.Add((int)copyId);
             }
@@ -469,6 +318,134 @@ public sealed class PreviousSessionImport
         }
 
         progress?.Report(1);
+        return;
+
+        // Copies the old session's samples with IDs after `at` up to `last` into the copy, in
+        // batches. Each batch, in one transaction, adds its samples, the count and the devices, and
+        // moves the copy's last sample ID to the last sample it adds: a crash leaves them in step,
+        // and the next import goes on from there. A new copy (copy 0) gets its row in the first
+        // batch's transaction, so it never exists without its first samples. Each later batch first
+        // checks that the copy still has the last sample ID it had, and still continues from the old
+        // session (see Continues): the user can delete the copy meanwhile, and a new session can get
+        // its ID. Returns the copy and its last sample ID, or copy 0 when that check fails: the copy
+        // is then left as it is.
+        (long Copy, long At) CopySamples(long copy, long oldId, long at, long last, (string Start, string Name, long First)? newSession)
+        {
+            for (var from = at + 1; from <= last; from += BatchSpan)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var to = Math.Min(last, from + BatchSpan - 1);
+
+                long? next;
+                using (var find = Command(connection, "SELECT MAX(ID) FROM old.Samples WHERE LoggingSessionID = $old AND ID BETWEEN $from AND $to"))
+                {
+                    find.Parameters.AddWithValue("$old", oldId);
+                    find.Parameters.AddWithValue("$from", from);
+                    find.Parameters.AddWithValue("$to", to);
+                    next = find.ExecuteScalar() is long id ? id : null;
+                }
+
+                long copied = 0;
+                if (next is not null)
+                {
+                    // BEGIN IMMEDIATE (deferred: false, which is also the library's default; spelled
+                    // out on every transaction in this class): the write lock is taken up front, where
+                    // the busy timeout applies, never upgraded from a read lock part-way through.
+                    using var transaction = connection.BeginTransaction(deferred: false);
+                    if (copy == 0)
+                    {
+                        // Its ID comes from the allocator the app's other writers use, so it can never
+                        // pick up orphan samples or metadata an old delete left behind. It is also kept
+                        // above idFloor, the highest "next ID" anyone may have read: the logger and the
+                        // SD card importer read the maximum and insert a moment later, outside any
+                        // shared transaction, so that ID may already be promised to one of them.
+                        copy = Math.Max(idFloor, SessionIdAllocator.NextSessionId(connection, transaction)) + 1;
+                        idFloor = copy + 1;
+                        using var insert = Command(connection,
+                            "INSERT INTO main.Sessions (ID, SessionStart, Name, SampleCount, Status, PreviousFirstSampleId, PreviousLastSampleId) " +
+                            "VALUES ($id, $start, $name, 0, $status, $first, $next)",
+                            transaction);
+                        insert.Parameters.AddWithValue("$id", copy);
+                        insert.Parameters.AddWithValue("$start", newSession!.Value.Start);
+                        insert.Parameters.AddWithValue("$name", newSession.Value.Name);
+                        insert.Parameters.AddWithValue("$status", (int)SessionStatus.Importing);
+                        insert.Parameters.AddWithValue("$first", newSession.Value.First);
+                        insert.Parameters.AddWithValue("$next", next.Value);
+                        insert.ExecuteNonQuery();
+                        writing = copy;
+                    }
+                    else
+                    {
+                        using var move = Command(connection,
+                            "UPDATE main.Sessions SET PreviousLastSampleId = $next WHERE ID = $copy AND PreviousLastSampleId = $at " +
+                            $"AND {Continues("$copy", "$old", "$at")}",
+                            transaction);
+                        move.Parameters.AddWithValue("$next", next.Value);
+                        move.Parameters.AddWithValue("$copy", copy);
+                        move.Parameters.AddWithValue("$old", oldId);
+                        move.Parameters.AddWithValue("$at", at);
+                        if (move.ExecuteNonQuery() == 0)
+                        {
+                            return (0, at);
+                        }
+                    }
+
+                    using (var insert = Command(connection,
+                               "INSERT INTO main.Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+                               "SELECT $copy, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type FROM old.Samples " +
+                               "WHERE ID BETWEEN $from AND $next AND LoggingSessionID = $old ORDER BY ID", transaction))
+                    {
+                        insert.Parameters.AddWithValue("$copy", copy);
+                        insert.Parameters.AddWithValue("$old", oldId);
+                        insert.Parameters.AddWithValue("$from", from);
+                        insert.Parameters.AddWithValue("$next", next.Value);
+                        copied = insert.ExecuteNonQuery();
+                    }
+
+                    // The rows actually copied, so the session list never has to count samples on load.
+                    using (var count = Command(connection,
+                               "UPDATE main.Sessions SET SampleCount = COALESCE(SampleCount, 0) + $copied WHERE ID = $copy", transaction))
+                    {
+                        count.Parameters.AddWithValue("$copied", copied);
+                        count.Parameters.AddWithValue("$copy", copy);
+                        count.ExecuteNonQuery();
+                    }
+
+                    // The devices, also one the recording picked up after an earlier batch.
+                    if (hasMetadata)
+                    {
+                        using var metadata = Command(connection,
+                            "INSERT OR IGNORE INTO main.SessionDeviceMetadata (LoggingSessionID, DeviceSerialNo, DeviceName, SamplingFrequencyHz) " +
+                            "SELECT $copy, DeviceSerialNo, DeviceName, SamplingFrequencyHz FROM old.SessionDeviceMetadata WHERE LoggingSessionID = $old",
+                            transaction);
+                        metadata.Parameters.AddWithValue("$copy", copy);
+                        metadata.Parameters.AddWithValue("$old", oldId);
+                        metadata.ExecuteNonQuery();
+                    }
+
+                    transaction.Commit();
+                    at = next.Value;
+                }
+
+                // A new session is sized by its ID span, a copy to continue by its rows.
+                done += newSession is null ? copied : to - from + 1;
+                progress?.Report((double)done / total);
+            }
+
+            return (copy, at);
+        }
+
+        // Every old sample of the session up to the last one listed is in the copy now. Only if the
+        // copy still has that last sample ID: else it is not this import's copy any more.
+        bool MarkComplete(long copy, long at)
+        {
+            using var finish = Command(connection,
+                "UPDATE main.Sessions SET Status = $complete WHERE ID = $copy AND PreviousLastSampleId = $at");
+            finish.Parameters.AddWithValue("$complete", (int)SessionStatus.Complete);
+            finish.Parameters.AddWithValue("$copy", copy);
+            finish.Parameters.AddWithValue("$at", at);
+            return finish.ExecuteNonQuery() == 1;
+        }
     }
 
     /// <summary>Records that the offer is finished with, so it is not made again. Best effort.</summary>
@@ -579,95 +556,31 @@ public sealed class PreviousSessionImport
         }
     }
 
-    /// <summary>
-    /// Deletes copies an earlier, interrupted import left behind (flagged
-    /// <see cref="SessionStatus.ImportFailed"/>), so they are redone. Rows still marked
-    /// <see cref="SessionStatus.Importing"/> may belong to an import running in another copy of the
-    /// app and are left alone. Startup turns them into failed ones only when no import holds
-    /// <see cref="ImportLease"/>, so a failed row here is never a live import's. A copy is deleted
-    /// only when its source is proved to be in the old database still (<see cref="ProvedCopy"/>), so
-    /// a failed SD card import keeps its samples, a copy whose deletion stopped part-way is still
-    /// found and finished, and a copy whose old session was deleted or recreated is kept: it may be
-    /// the only copy of that data left. When the old database cannot prove a source at all (no
-    /// AUTOINCREMENT on its samples), every failed copy is kept.
-    /// </summary>
-    /// <param name="copyOf">The <see cref="ProvedCopy"/> condition for this old database.</param>
-    /// <returns>The IDs deleted.</returns>
-    private static List<int> RemoveFailedImports(SqliteConnection connection, string complete, string copyOf)
-    {
-        var ids = new List<int>();
-        using (var find = Command(connection,
-                   $"SELECT m.ID FROM main.Sessions m WHERE m.Status = {(int)SessionStatus.ImportFailed} AND EXISTS " +
-                   $"(SELECT 1 FROM old.Sessions o WHERE {complete} AND {copyOf})"))
-        using (var reader = find.ExecuteReader())
-        {
-            while (reader.Read())
-            {
-                ids.Add(reader.GetInt32(0));
-            }
-        }
-
-        if (ids.Count > 0)
-        {
-            DeleteSessions(connection, string.Join(",", ids));
-        }
-
-        return ids;
-    }
-
-    /// <summary>
-    /// Deletes sessions of this user's database, with their samples and metadata. Samples go in
-    /// batches, each its own transaction, for the same reason the copy is batched: a partial copy can
-    /// hold hundreds of millions of samples, and one transaction over them would hold the write lock
-    /// (and grow the journal) for minutes. The session rows go last, so until then they stay marked
-    /// failed and a crash part-way is finished off by the next import.
-    /// </summary>
-    private static void DeleteSessions(SqliteConnection connection, string idList)
-    {
-        int deleted;
-        do
-        {
-            using var transaction = connection.BeginTransaction(deferred: false);
-            using var batch = Command(connection,
-                $"DELETE FROM main.Samples WHERE ID IN (SELECT ID FROM main.Samples WHERE LoggingSessionID IN ({idList}) LIMIT {BatchSpan})",
-                transaction);
-            deleted = batch.ExecuteNonQuery();
-            transaction.Commit();
-        }
-        while (deleted > 0);
-
-        using (var transaction = connection.BeginTransaction(deferred: false))
-        {
-            using var metadata = Command(connection, $"DELETE FROM main.SessionDeviceMetadata WHERE LoggingSessionID IN ({idList})", transaction);
-            metadata.ExecuteNonQuery();
-            using var sessions = Command(connection, $"DELETE FROM main.Sessions WHERE ID IN ({idList})", transaction);
-            sessions.ExecuteNonQuery();
-            transaction.Commit();
-        }
-    }
-
     /// <summary>How long to wait for a database another connection has locked. Shorter in tests.</summary>
     internal int LockTimeoutSeconds { get; init; } = 30;
 
     /// <summary>
-    /// The copies that are behind their old session and continue from it: the old session has a
-    /// sample with a higher ID than the last one the copy holds, and <see cref="Continues"/> holds. A
-    /// <c>FROM</c> clause with the copy as <c>m</c>, and its old session as <c>x</c> with <c>x.Id</c>
-    /// and <c>x.LastId</c>. Only a complete copy has a last sample ID: it is written when the copy is
-    /// marked complete, and bringing it up to date keeps it complete. Only for an old database that
-    /// never gives a sample ID twice (see <see cref="SampleIdsAreNeverReused"/>): there a new sample
-    /// always gets a higher ID, so every old sample at or below a copy's last sample ID is in the
-    /// copy. A copy with no last sample ID (none made by a release) is never behind.
+    /// The copies to continue: copies that continue from their old session (see
+    /// <see cref="Continues"/>) and are behind it (it has a sample with a higher ID than the last one
+    /// the copy holds) or stopped part-way (<see cref="SessionStatus.ImportFailed"/>). A <c>FROM</c>
+    /// clause with the copy as <c>m</c>, and its old session as <c>x</c> with <c>x.Id</c> and
+    /// <c>x.LastId</c>. A copy another import may still be writing (<see cref="SessionStatus.Importing"/>)
+    /// is left alone. Only for an old database that never gives a sample ID twice (see
+    /// <see cref="SampleIdsAreNeverReused"/>): there a new sample always gets a higher ID, so every
+    /// old sample at or below a copy's last sample ID is in the copy. A copy with no last sample ID
+    /// (none made by a release) is never continued.
     /// </summary>
     /// <remarks>
     /// The first and last sample of each old session are two index lookups, and a copy is matched to
-    /// its old session as <c>IsCopy</c> does: the first sample ID and the start.
+    /// its old session as <c>IsCopy</c> does: the first sample ID, the start, and the first sample.
     /// </remarks>
-    private static string BehindCopies(string complete) =>
+    private static string CopiesToContinue(string complete) =>
         "FROM (SELECT o.ID AS Id, o.SessionStart AS Start, (SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) AS FirstId, " +
         $"(SELECT MAX(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) AS LastId FROM old.Sessions o WHERE {complete}) x " +
         "JOIN main.Sessions m ON m.PreviousFirstSampleId = x.FirstId AND m.SessionStart = x.Start " +
-        $"WHERE m.PreviousLastSampleId < x.LastId AND {Continues("m.ID", "x.Id", "m.PreviousLastSampleId")}";
+        $"WHERE m.Status <> {(int)SessionStatus.Importing} " +
+        $"AND (m.PreviousLastSampleId < x.LastId OR m.Status = {(int)SessionStatus.ImportFailed}) " +
+        $"AND {SameSample("x.FirstId", "x.Id", "m.ID", "MIN")} AND {Continues("m.ID", "x.Id", "m.PreviousLastSampleId")}";
 
     /// <summary>
     /// The condition that copy <paramref name="copy"/> continues from old session
@@ -678,12 +591,20 @@ public sealed class PreviousSessionImport
     /// Sample IDs are unique only within one database file. A new database at the same path (a
     /// reinstall, a restored backup) starts them again at 1, and this user's database can give a
     /// deleted copy's ID to a new session. Either way the IDs still match, but the samples do not.
-    /// When this does not hold, the copy is left as it is. Three index lookups.
+    /// When this does not hold, the copy is left as it is.
     /// </remarks>
-    private static string Continues(string copy, string old, string cursor) =>
+    private static string Continues(string copy, string old, string cursor) => SameSample(cursor, old, copy, "MAX");
+
+    /// <summary>
+    /// The condition that old sample <paramref name="oldSample"/> belongs to old session
+    /// <paramref name="old"/> and is the same as the first (<c>MIN</c>) or last (<c>MAX</c>) sample of
+    /// copy <paramref name="copy"/>: the same time, value, channel and board serial number. The board
+    /// serial number is what the old schema keeps that is unique to a board. Three index lookups.
+    /// </summary>
+    private static string SameSample(string oldSample, string old, string copy, string end) =>
         "EXISTS (SELECT 1 FROM old.Samples s JOIN main.Samples c " +
-        $"ON c.ID = (SELECT MAX(ID) FROM main.Samples WHERE LoggingSessionID = {copy}) " +
-        $"WHERE s.ID = {cursor} AND s.LoggingSessionID = {old} AND s.TimestampTicks = c.TimestampTicks " +
+        $"ON c.ID = (SELECT {end}(ID) FROM main.Samples WHERE LoggingSessionID = {copy}) " +
+        $"WHERE s.ID = {oldSample} AND s.LoggingSessionID = {old} AND s.TimestampTicks = c.TimestampTicks " +
         "AND s.Value IS c.Value AND s.ChannelName = c.ChannelName AND s.DeviceSerialNo = c.DeviceSerialNo)";
 
     /// <summary>
@@ -698,27 +619,26 @@ public sealed class PreviousSessionImport
     /// </summary>
     /// <remarks>
     /// Each copy records the ID of its old session's first sample (<c>PreviousFirstSampleId</c>),
-    /// and nothing else writes that column. The data alone cannot tell a copy apart (#511): an SD
-    /// card session starts on a whole second (the time in the log's file name), so two different
-    /// card logs can share a start and even a first sample, and a partial copy loses its first
-    /// samples while its clean-up runs. The old session's ID and start are not enough either: the
-    /// earlier version gives a new session the maximum ID plus one, so a different log from the same
-    /// second can get both again. Its samples cannot get the same IDs when the samples table has
-    /// AUTOINCREMENT (see <see cref="SampleIdsAreNeverReused"/>), but only within one database file:
-    /// a new database at the same path (a reinstall, a restored backup) starts them again at 1. So the
-    /// start must match too. The import writes the old start unchanged, and nothing rewrites it. The
-    /// old first sample is one index lookup.
+    /// and nothing else writes that column. Its samples cannot get the same IDs again when the
+    /// samples table has AUTOINCREMENT (see <see cref="SampleIdsAreNeverReused"/>), but only within
+    /// one database file: a new database at the same path (a reinstall, a restored backup) starts
+    /// them again at 1. The start is not enough either: an SD card session starts on a whole second
+    /// (the time in the log's file name), so card logs of two boards can share it (#511). So the
+    /// copy's first sample must also be the old first sample: the same time, value, channel and board
+    /// serial number. A copy always keeps its first sample: the import never deletes, and the first
+    /// batch writes the copy's row together with its first samples. The import writes the old start
+    /// unchanged, and nothing rewrites it. Each part is an index lookup.
     /// </remarks>
-    private const string IsCopy =
-        "m.PreviousFirstSampleId = (SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) AND m.SessionStart = o.SessionStart";
+    private static readonly string IsCopy =
+        "m.PreviousFirstSampleId = (SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) AND m.SessionStart = o.SessionStart " +
+        $"AND {SameSample("m.PreviousFirstSampleId", "o.ID", "m.ID", "MIN")}";
 
     /// <summary>
     /// The one rule that decides if session <c>m</c> is proved to be this import's copy of old
-    /// session <c>o</c>, for all three uses: the offer, the list of sessions to copy, and the
-    /// clean-up of partial copies. It is <c>IsCopy</c> when the old samples table never gives an ID
-    /// twice, and false otherwise: there a recreated old session can have its predecessor's first
-    /// sample ID, so a copy proves nothing. The import then skips nothing and deletes nothing; a
-    /// duplicate copy is better than a lost session.
+    /// session <c>o</c>, for both uses: the offer and the list of sessions to copy. It is
+    /// <c>IsCopy</c> when the old samples table never gives an ID twice, and false otherwise: there a
+    /// recreated old session can have its predecessor's first sample ID, so a copy proves nothing. The
+    /// import then skips nothing; a duplicate copy is better than a lost session.
     /// </summary>
     private static string ProvedCopy(SqliteConnection connection) =>
         SampleIdsAreNeverReused(connection) ? IsCopy : "0 = 1";
@@ -792,7 +712,10 @@ public sealed class ImportOutcome
     /// </summary>
     public List<int> Imported { get; } = [];
 
-    /// <summary>Partial copies from an earlier, interrupted import that were deleted to be redone.</summary>
+    /// <summary>
+    /// Sessions this import deleted. Always empty: the import never deletes (#514). Kept so that
+    /// callers can still apply it.
+    /// </summary>
     public List<int> Removed { get; } = [];
 }
 

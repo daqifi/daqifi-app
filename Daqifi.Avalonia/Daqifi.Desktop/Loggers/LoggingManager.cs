@@ -941,7 +941,7 @@ public partial class LoggingManager : ObservableObject
     /// <para>Only when no import is running in any copy of the app (#510). Every import holds
     /// <see cref="ImportLease"/> while it can leave an <c>Importing</c> row, and this flags rows
     /// only while holding that lease alone. Otherwise a second instance would flag the first's live
-    /// import, and its next import of earlier sessions would delete the session being copied. When
+    /// import, and its next import of earlier sessions would write into the session being copied. When
     /// an import is running, flagging waits for a later launch. There is no timer to wait out: a
     /// crashed import's handle is closed by the OS, so its rows are flagged at the next launch.
     /// </para>
