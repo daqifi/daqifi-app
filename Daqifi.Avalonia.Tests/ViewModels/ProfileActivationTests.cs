@@ -534,12 +534,13 @@ public sealed class ProfileActivationTests : IDisposable
         Assert.False(profile.IsProfileActive);
         Assert.Empty(ActiveNames(board));
         Assert.Empty(SubscribedNames(board));
+        Assert.False(_pane.HasNotice);
     }
 
     /// <summary>
     /// The other half: the board the profile turned on is replaced by another board with no
     /// identifier, which the user gives AI3. Turning the profile off must not clear the replacement,
-    /// which the profile never turned on.
+    /// which the profile never turned on, and the status line says why nothing changed.
     /// </summary>
     [Fact]
     public async Task Turning_a_profile_off_does_not_clear_a_board_that_replaced_the_one_it_turned_on()
@@ -557,6 +558,7 @@ public sealed class ProfileActivationTests : IDisposable
         Assert.Equal(["AI3"], ActiveNames(replacement));
         Assert.Equal(["AI3"], SubscribedNames(replacement));
         Assert.False(profile.IsProfileActive);
+        Assert.Equal(ProfilesPaneViewModel.ActivatedDeviceGoneNotice, _pane.Notice);
     }
 
     /// <summary>
@@ -580,6 +582,7 @@ public sealed class ProfileActivationTests : IDisposable
         Assert.False(profile.IsProfileActive);
         Assert.Empty(ActiveNames(again));
         Assert.Empty(SubscribedNames(again));
+        Assert.False(_pane.HasNotice);
     }
 
     /// <summary>

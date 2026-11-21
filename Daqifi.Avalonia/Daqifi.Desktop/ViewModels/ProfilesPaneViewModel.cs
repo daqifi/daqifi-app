@@ -119,6 +119,14 @@ public partial class ProfilesPaneViewModel : ObservableObject
     // Downstream-only: no upstream counterpart.
     public const string LoggingActiveNotice = "Stop logging to change the active profile.";
 
+    /// <summary>
+    /// What the pane says when a profile is turned off and a device that it turned on is no longer
+    /// connected. Nothing else is changed in that device's place (PR #678 review).
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    public const string ActivatedDeviceGoneNotice =
+        "The profile is off. A device that it turned on is not connected now, so the profile did not change any other device.";
+
     /// <summary>What the drawer says when a matched device has none of the channels the profile switches on for it.</summary>
     // Downstream-only: no upstream counterpart.
     public const string NoChannelsMatchedMessage = "A connected device has none of the channels this profile switches on.";
@@ -397,11 +405,11 @@ public partial class ProfilesPaneViewModel : ObservableObject
 
         var anyActive = Profiles.FirstOrDefault(p => p.IsProfileActive);
 
-        // Case 1: same tile clicked — toggle off. (If no matched devices remain,
-        // ApplyProfileToDevices still flips IsProfileActive so the UI stays consistent.)
+        // Case 1: same tile clicked — toggle off. (If none of its devices remain,
+        // DeactivateProfile still flips IsProfileActive so the UI stays consistent.)
         if (anyActive != null && anyActive.ProfileId == profile.ProfileId)
         {
-            ApplyProfileToDevices(profile, MatchProfileToConnected(profile), activate: false);
+            DeactivateProfile(profile);
             return;
         }
 
@@ -425,13 +433,12 @@ public partial class ProfilesPaneViewModel : ObservableObject
             newMatches = MatchProfileToConnected(profile);
             if (RefusedMatches(profile, newMatches)) return;
 
-            var oldMatches = MatchProfileToConnected(anyActive);
-            ApplyProfileToDevices(anyActive, oldMatches, activate: false);
+            DeactivateProfile(anyActive);
         }
 
         // Case 2 (post-confirm) and Case 3 (no profile active): activate the new one.
         DrawerError = string.Empty;
-        ApplyProfileToDevices(profile, newMatches, activate: true);
+        ApplyProfileToDevices(profile, newMatches);
     }
 
     /// <summary>
@@ -583,10 +590,10 @@ public partial class ProfilesPaneViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Apply the channel + frequency intent of a profile to its matched devices.
-    /// Both directions first clear the device with <see cref="ClearDevice"/>. Activating then sets
-    /// the streaming frequency, adds the profile's active channels and subscribes them.
-    /// Flips <see cref="Profile.IsProfileActive"/> last.
+    /// Apply the channel + frequency intent of a profile to its matched devices: clear each device
+    /// with <see cref="ClearDevice"/>, then set the streaming frequency, add the profile's active
+    /// channels and subscribe them. Records the devices in <see cref="Profile.ActivatedDevices"/>
+    /// and flips <see cref="Profile.IsProfileActive"/> last.
     /// </summary>
     /// <remarks>
     /// Activation clears first because a profile is the device's whole channel set, not an
@@ -596,26 +603,62 @@ public partial class ProfilesPaneViewModel : ObservableObject
     /// on before stayed active and subscribed in the app.
     /// </remarks>
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.ApplyProfileToDevices
-    private void ApplyProfileToDevices(
-        Profile profile,
-        Dictionary<ProfileDevice, IStreamingDevice> matches,
-        bool activate)
+    private void ApplyProfileToDevices(Profile profile, Dictionary<ProfileDevice, IStreamingDevice> matches)
     {
         foreach (var (pd, device) in matches)
         {
             ClearDevice(device);
-            if (!activate) continue;
-
             var channels = ResolveChannels(pd, device);
             device.StreamingFrequency = pd.SamplingFrequency;
             device.AddChannels(channels);
             foreach (var ch in channels) LoggingManager.Instance.Subscribe(ch);
         }
 
-        profile.IsProfileActive = activate;
-        _logger.AddBreadcrumb("profile",
-            $"Profile {(activate ? "activated" : "deactivated")}: {profile.Name}");
+        profile.ActivatedDevices.Clear();
+        profile.ActivatedDevices.AddRange(matches.Values);
+        profile.IsProfileActive = true;
+        _logger.AddBreadcrumb("profile", $"Profile activated: {profile.Name}");
     }
+
+    /// <summary>
+    /// Switch a profile off: clear, with <see cref="ClearDevice"/>, each connected device that its
+    /// activation configured (<see cref="IsSameBoard"/>), then flip
+    /// <see cref="Profile.IsProfileActive"/>. When a device it configured is no longer connected,
+    /// the status line says so, because no other device changes in its place.
+    /// </summary>
+    /// <remarks>
+    /// This used to match the profile to the connected devices again. A board with no serial number
+    /// and no MAC address cannot be found that way once a second such board is connected (the
+    /// profile went off and left its inputs on), or once it is replaced (the profile went off and
+    /// cleared the replacement) (PR #678 review).
+    /// </remarks>
+    // Downstream-only: split from ApplyProfileToDevices, which upstream also uses to deactivate.
+    private void DeactivateProfile(Profile profile)
+    {
+        var connected = ConnectionManager.Instance.ConnectedDevices.ToList();
+        var anyGone = profile.ActivatedDevices.Any(activated => !connected.Any(cd => IsSameBoard(activated, cd)));
+        foreach (var device in connected.Where(cd => profile.ActivatedDevices.Any(activated => IsSameBoard(activated, cd))))
+        {
+            ClearDevice(device);
+        }
+
+        profile.ActivatedDevices.Clear();
+        profile.IsProfileActive = false;
+        if (anyGone) Notice = ActivatedDeviceGoneNotice;
+        _logger.AddBreadcrumb("profile", $"Profile deactivated: {profile.Name}");
+    }
+
+    /// <summary>
+    /// Whether a connected device is a device the profile's activation configured: the same device
+    /// object, or the same board connected again, by the rule <c>ConnectionManager</c> uses to tell
+    /// boards apart (Core's <see cref="Daqifi.Core.Device.DeviceIdentity"/>). A board with no
+    /// serial number and no MAC address is only ever the same device object.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    private static bool IsSameBoard(IStreamingDevice activated, IStreamingDevice device) =>
+        ReferenceEquals(activated, device)
+        || Daqifi.Core.Device.DeviceIdentity.Create(activated.DeviceSerialNo, activated.MacAddress)
+            .Matches(Daqifi.Core.Device.DeviceIdentity.Create(device.DeviceSerialNo, device.MacAddress));
 
     /// <summary>
     /// Switch every channel on the device off, in the app and on the board. Every active channel,
