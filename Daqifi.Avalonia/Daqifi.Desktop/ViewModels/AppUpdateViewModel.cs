@@ -43,8 +43,17 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
     private readonly Action<Action> _post;
     private readonly Func<DateTime> _now;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+    private readonly Func<CancellationToken, Task<string>>? _fetchReleaseNotes;
+    private readonly string? _installedVersion;
+    private readonly IAppLogger _logger;
     private readonly CancellationTokenSource _lifetime = new();
     private bool _watching;
+
+    // The version whose notes ReleaseNotes shows or a fetch gets now, and whether that fetch failed.
+    // Changed on the UI thread only (through _post), so a slow answer for a version no longer on
+    // offer is dropped.
+    private string? _notesVersion;
+    private bool _notesFailed;
 
     /// <param name="service">The update service for this head.</param>
     /// <param name="blocker">What, if anything, installing would interrupt now.</param>
@@ -56,6 +65,8 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
     /// <param name="post">Runs an action on the UI thread. The notifier reports download progress from another thread. Runs the action at once when not given.</param>
     /// <param name="now">The local time; <see cref="DateTime.Now"/> unless a test supplies one.</param>
     /// <param name="delay">Waits between checks; <see cref="Task.Delay(TimeSpan, CancellationToken)"/> unless a test supplies one.</param>
+    /// <param name="fetchReleaseNotes">Reads the releases API answer the notes come from (#347). Without it, no notes are shown.</param>
+    /// <param name="installedVersion">The version of this copy; <see cref="AppVersion.Semantic"/> unless a test supplies one.</param>
     public AppUpdateViewModel(
         IAppUpdateService service,
         Func<UpdateBlocker> blocker,
@@ -66,7 +77,9 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
         UpdateAttemptMarker? attempts = null,
         Action<Action>? post = null,
         Func<DateTime>? now = null,
-        Func<TimeSpan, CancellationToken, Task>? delay = null)
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        Func<CancellationToken, Task<string>>? fetchReleaseNotes = null,
+        string? installedVersion = null)
     {
         _service = service;
         _showInBell = showInBell;
@@ -74,6 +87,9 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
         _post = post ?? (action => action());
         _now = now ?? (() => DateTime.Now);
         _delay = delay ?? Task.Delay;
+        _fetchReleaseNotes = fetchReleaseNotes;
+        _installedVersion = installedVersion ?? AppVersion.Semantic;
+        _logger = logger;
         _notifier = new AppUpdateNotifier(service, blocker, confirm, ShowNotice, logger, _delay, attempts);
         // Concurrent runs allowed: the download's own Cancel goes through this same button while
         // the download it started is still running.
@@ -101,6 +117,19 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(Status), nameof(ActionText), nameof(ActionCommand), nameof(HasAction), nameof(CanCheckNow))]
     private Notifications? _notice;
+
+    /// <summary>
+    /// The release notes of the pending update (#347): every release after this copy's version up to
+    /// the one on offer, newest first, each under its version. A release whose notes cannot be
+    /// fetched or read has a line that says so, with a link to its page. Empty while nothing is on
+    /// offer. The notes only inform: the update's button never waits for them.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasReleaseNotes))]
+    private IReadOnlyList<ReleaseNotesSection> _releaseNotes = [];
+
+    /// <summary>True when the section shows release notes.</summary>
+    public bool HasReleaseNotes => ReleaseNotes.Count > 0;
 
     /// <summary>True while a check runs.</summary>
     [ObservableProperty]
@@ -245,6 +274,65 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
             _watching = true;
             _ = _notifier.WatchAsync(_lifetime.Token);
         }
+
+        if (answered)
+        {
+            var version = _notifier.OfferedVersion;
+            _post(() => FollowOffer(version));
+        }
+    }
+
+    /// <summary>
+    /// Keeps the release notes on the version on offer (#347). A new version starts a fetch; the same
+    /// version fetches again only when its last fetch failed. No version, no notes and no fetch: the
+    /// releases API allows few requests without a token. Runs on the UI thread.
+    /// </summary>
+    private void FollowOffer(string? version)
+    {
+        if (version == _notesVersion && !_notesFailed) { return; }
+
+        _notesVersion = version;
+        _notesFailed = false;
+        if (version is null || _fetchReleaseNotes is null)
+        {
+            ReleaseNotes = [];
+            return;
+        }
+
+        _ = FetchReleaseNotesAsync(version, _fetchReleaseNotes);
+    }
+
+    /// <summary>
+    /// Fetches the notes of <paramref name="version"/> and shows them. Never throws, and nothing
+    /// waits for it: the update downloads and installs whether the notes come or not.
+    /// </summary>
+    private async Task FetchReleaseNotesAsync(string version, Func<CancellationToken, Task<string>> fetch)
+    {
+        IReadOnlyList<ReleaseNotesSection> notes;
+        var failed = false;
+        try
+        {
+            var json = await fetch(_lifetime.Token);
+            notes = GitHubReleaseNotes.Sections(json, _installedVersion, version);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            // Offline or rate-limited, like a failed check: a line in the section, not an error.
+            _logger.Warning(ex, $"Fetching the release notes of {version} failed");
+            notes = GitHubReleaseNotes.Unavailable(version);
+            failed = true;
+        }
+
+        _post(() =>
+        {
+            if (version != _notesVersion) { return; }
+            _notesFailed = failed;
+            ReleaseNotes = notes;
+        });
     }
 
     // The notifier calls this from any thread; the drawer and the bell are changed on the UI thread.

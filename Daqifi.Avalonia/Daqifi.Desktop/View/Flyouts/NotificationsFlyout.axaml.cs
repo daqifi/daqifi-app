@@ -6,6 +6,7 @@
 using System.Diagnostics;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Daqifi.Desktop.UpdateVersion;
 
 namespace Daqifi.Desktop.View.Flyouts;
 
@@ -22,13 +23,31 @@ public partial class NotificationsFlyout : UserControl
 
     // WPF Hyperlink/RequestNavigate → Button carrying the target URI in Tag;
     // opening the browser stays a view-only concern like upstream.
+    // Static, so that the links of the release notes in the settings drawer (#347) use this same
+    // handler: ReleaseNotesText wires each link button's Click to it.
     // @port: Daqifi.Desktop.View.Flyouts.NotificationsFlyout.Hyperlink_RequestNavigate
-    private void Hyperlink_RequestNavigate(object? sender, RoutedEventArgs e)
+    internal static void Hyperlink_RequestNavigate(object? sender, RoutedEventArgs e)
     {
-        if ((sender as Control)?.Tag is string uri && !string.IsNullOrWhiteSpace(uri))
-        {
-            Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true });
-        }
+        Navigate((sender as Control)?.Tag);
         e.Handled = true;
     }
+
+    /// <summary>
+    /// Opens <paramref name="target"/>, the Tag of the clicked link, in the system browser when it is
+    /// an http or https address, and returns whether it did. Anything else opens nothing: the release
+    /// notes are remote content, and shell-opening a <c>file:</c> address or another scheme can start
+    /// a program (#347).
+    /// </summary>
+    /// <param name="target">The clicked control's Tag.</param>
+    /// <param name="open">Opens the address; the system browser unless a test supplies its own.</param>
+    internal static bool Navigate(object? target, Action<string>? open = null)
+    {
+        if (target is not string uri || !NotesMarkdown.IsWebLink(uri)) { return false; }
+
+        (open ?? OpenInBrowser)(uri);
+        return true;
+    }
+
+    private static void OpenInBrowser(string uri) =>
+        Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true });
 }

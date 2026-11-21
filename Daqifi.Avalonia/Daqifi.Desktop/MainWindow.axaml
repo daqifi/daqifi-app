@@ -8,6 +8,7 @@
         xmlns:converters="using:Daqifi.Desktop.Converters"
         xmlns:service="using:Daqifi.Desktop.DialogService"
         xmlns:vm="using:Daqifi.Desktop.ViewModels"
+        xmlns:updates="using:Daqifi.Desktop.UpdateVersion"
         x:DataType="vm:DaqifiViewModel"
         x:CompileBindings="True"
         service:DialogService.IsRegisteredView="True"
@@ -224,6 +225,52 @@
             <Setter Property="TextWrapping" Value="Wrap"/>
             <Setter Property="Margin" Value="0,4,0,0"/>
         </Style>
+
+        <!-- The release notes in the UPDATES section (#347). A link is a plain accent-coloured
+             button, as the notifications flyout's links are, with no hover fill. -->
+        <Style Selector="TextBlock.releaseNotesVersion">
+            <Setter Property="FontSize" Value="{DynamicResource FontSizeLabel}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+        </Style>
+        <Style Selector="TextBlock.releaseNotes">
+            <Setter Property="FontSize" Value="{DynamicResource FontSizeSmall}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="Margin" Value="0,4,0,0"/>
+        </Style>
+        <Style Selector="TextBlock.releaseNotes.heading">
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+            <Setter Property="Margin" Value="0,8,0,0"/>
+        </Style>
+        <Style Selector="TextBlock.releaseNotes.code">
+            <Setter Property="FontFamily" Value="{DynamicResource MonoFontFamily}"/>
+        </Style>
+        <Style Selector="Run.noteCode">
+            <Setter Property="FontFamily" Value="{DynamicResource MonoFontFamily}"/>
+        </Style>
+        <Style Selector="Border.releaseNotesCode">
+            <Setter Property="Background" Value="{DynamicResource Surface}"/>
+            <Setter Property="CornerRadius" Value="3"/>
+            <Setter Property="Padding" Value="8,2,8,6"/>
+            <Setter Property="Margin" Value="0,4,0,0"/>
+        </Style>
+        <Style Selector="Button.noteLink">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="MinHeight" Value="0"/>
+            <Setter Property="FontSize" Value="{DynamicResource FontSizeSmall}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Accent}"/>
+        </Style>
+        <Style Selector="Button.noteLink:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.noteLink:pressed /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource Accent}"/>
+        </Style>
+        <Style Selector="Button.noteLink:pointerover TextBlock">
+            <Setter Property="TextDecorations" Value="Underline"/>
+        </Style>
     </Window.Styles>
 
     <Grid RowDefinitions="Auto,*">
@@ -434,6 +481,54 @@
                                                 Theme="{StaticResource PillButton}"
                                                 Margin="0,10,0,0"
                                                 Cursor="Hand"/>
+                                    </StackPanel>
+
+                                    <!-- The release notes of the version on offer (#347): every
+                                         release after this copy's version up to that one, newest
+                                         first, each under its version. ReleaseNotesText builds the
+                                         text of each block: runs, and link buttons that open the
+                                         browser only on a click, through the notifications flyout's
+                                         handler. Notes that cannot be fetched are one line with a
+                                         link to the release page; the button above never waits for
+                                         them. Shown only while an update is on offer, which no
+                                         capture has. -->
+                                    <StackPanel IsVisible="{Binding AppUpdate.HasReleaseNotes}" Margin="0,16,0,0">
+                                        <TextBlock Text="WHAT'S NEW" Classes="drawerRowLabel"/>
+                                        <ItemsControl ItemsSource="{Binding AppUpdate.ReleaseNotes}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate x:DataType="updates:ReleaseNotesSection">
+                                                    <StackPanel Margin="0,10,0,0">
+                                                        <TextBlock Text="{Binding Version}" Classes="releaseNotesVersion"/>
+                                                        <ItemsControl ItemsSource="{Binding Blocks}">
+                                                            <ItemsControl.DataTemplates>
+                                                                <DataTemplate x:DataType="updates:NoteHeading">
+                                                                    <TextBlock Classes="releaseNotes heading"
+                                                                               local:ReleaseNotesText.Spans="{Binding Spans}"/>
+                                                                </DataTemplate>
+                                                                <DataTemplate x:DataType="updates:NoteListItem">
+                                                                    <Grid ColumnDefinitions="Auto,Auto,*">
+                                                                        <Border Width="{Binding Indent}"/>
+                                                                        <TextBlock Grid.Column="1" Classes="releaseNotes"
+                                                                                   Text="{Binding Marker}" Margin="0,4,6,0"/>
+                                                                        <TextBlock Grid.Column="2" Classes="releaseNotes"
+                                                                                   local:ReleaseNotesText.Spans="{Binding Spans}"/>
+                                                                    </Grid>
+                                                                </DataTemplate>
+                                                                <DataTemplate x:DataType="updates:NoteCode">
+                                                                    <Border Classes="releaseNotesCode">
+                                                                        <TextBlock Classes="releaseNotes code" Text="{Binding Text}"/>
+                                                                    </Border>
+                                                                </DataTemplate>
+                                                                <DataTemplate x:DataType="updates:NoteParagraph">
+                                                                    <TextBlock Classes="releaseNotes"
+                                                                               local:ReleaseNotesText.Spans="{Binding Spans}"/>
+                                                                </DataTemplate>
+                                                            </ItemsControl.DataTemplates>
+                                                        </ItemsControl>
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
                                     </StackPanel>
                                 </StackPanel>
                                 </StackPanel>
