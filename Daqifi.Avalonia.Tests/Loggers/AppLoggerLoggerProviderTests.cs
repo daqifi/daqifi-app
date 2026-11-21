@@ -33,7 +33,7 @@ namespace Daqifi.Avalonia.Tests.Loggers;
 /// <para><b>How the tests see the output.</b> The provider takes no logger argument. It reads
 /// <see cref="AppLogger.Instance"/> into a private field, and under a test runner that logger has
 /// no NLog target. So each test replaces the field with a <see cref="BridgeTarget"/> that records
-/// each call, with its method, exception and message.
+/// each call, with its overload, exception and message.
 /// <see cref="A_new_provider_forwards_to_the_apps_own_logger"/> pins that the field holds the
 /// app's logger before the test replaces it, so the tests examine the real target and not a
 /// fake that production never uses.</para>
@@ -115,7 +115,7 @@ public sealed class AppLoggerLoggerProviderTests
         logger.LogInformation(Message);
 
         var entry = Assert.Single(target.Entries);
-        Assert.Equal(new Entry("Information", null, $"[{CoreDeviceCategory}] {Message}"), entry);
+        Assert.Equal(new Entry(InformationCall, null, $"[{CoreDeviceCategory}] {Message}"), entry);
     }
 
     /// <summary>
@@ -131,9 +131,9 @@ public sealed class AppLoggerLoggerProviderTests
 
         logger.LogInformation(exception, Message);
 
-        var entry = Assert.Single(target.Entries);
-        Assert.Equal("Information", entry.Method);
-        Assert.Equal($"[{CoreDeviceCategory}] {Message}{Environment.NewLine}{exception}", entry.Message);
+        Assert.Equal(
+            new Entry(InformationCall, null, $"[{CoreDeviceCategory}] {Message}{Environment.NewLine}{exception}"),
+            Assert.Single(target.Entries));
     }
 
     [Fact]
@@ -143,7 +143,7 @@ public sealed class AppLoggerLoggerProviderTests
 
         logger.LogWarning(Message);
 
-        Assert.Equal(new Entry("Warning", null, $"[{CoreDeviceCategory}] {Message}"), Assert.Single(target.Entries));
+        Assert.Equal(new Entry(WarningCall, null, $"[{CoreDeviceCategory}] {Message}"), Assert.Single(target.Entries));
     }
 
     [Fact]
@@ -154,7 +154,7 @@ public sealed class AppLoggerLoggerProviderTests
 
         logger.LogWarning(exception, Message);
 
-        Assert.Equal(new Entry("Warning", exception, $"[{CoreDeviceCategory}] {Message}"), Assert.Single(target.Entries));
+        Assert.Equal(new Entry(WarningWithExceptionCall, exception, $"[{CoreDeviceCategory}] {Message}"), Assert.Single(target.Entries));
     }
 
     #endregion
@@ -175,7 +175,7 @@ public sealed class AppLoggerLoggerProviderTests
 
         logger.Log(level, exception, Message);
 
-        Assert.Equal(new Entry("Error", exception, $"[{CoreDeviceCategory}] {Message}"), Assert.Single(target.Entries));
+        Assert.Equal(new Entry(ErrorWithExceptionCall, exception, $"[{CoreDeviceCategory}] {Message}"), Assert.Single(target.Entries));
     }
 
     [Theory]
@@ -187,7 +187,7 @@ public sealed class AppLoggerLoggerProviderTests
 
         logger.Log(level, Message);
 
-        Assert.Equal(new Entry("Error", null, $"[{CoreDeviceCategory}] {Message}"), Assert.Single(target.Entries));
+        Assert.Equal(new Entry(ErrorCall, null, $"[{CoreDeviceCategory}] {Message}"), Assert.Single(target.Entries));
     }
 
     /// <summary>
@@ -204,7 +204,7 @@ public sealed class AppLoggerLoggerProviderTests
 
         logger.LogError(Message);
 
-        Assert.Equal("Error", Assert.Single(target.Entries).Method);
+        Assert.Equal(ErrorCall, Assert.Single(target.Entries).Call);
     }
 
     /// <summary>
@@ -222,7 +222,7 @@ public sealed class AppLoggerLoggerProviderTests
         logger.Log(level, exception, Message);
 
         Assert.Equal(
-            new Entry("Warning", exception, $"[{level}] [{FrameworkCategory}] {Message}"),
+            new Entry(WarningWithExceptionCall, exception, $"[{level}] [{FrameworkCategory}] {Message}"),
             Assert.Single(target.Entries));
     }
 
@@ -234,7 +234,7 @@ public sealed class AppLoggerLoggerProviderTests
         logger.LogError(Message);
 
         Assert.Equal(
-            new Entry("Warning", null, $"[Error] [{FrameworkCategory}] {Message}"),
+            new Entry(WarningCall, null, $"[Error] [{FrameworkCategory}] {Message}"),
             Assert.Single(target.Entries));
     }
 
@@ -249,7 +249,7 @@ public sealed class AppLoggerLoggerProviderTests
 
         logger.LogError(Message);
 
-        Assert.Equal("Warning", Assert.Single(target.Entries).Method);
+        Assert.Equal(WarningCall, Assert.Single(target.Entries).Call);
     }
 
     /// <summary>
@@ -269,7 +269,7 @@ public sealed class AppLoggerLoggerProviderTests
         logger.Log(level, exception, Message);
 
         Assert.Equal(
-            new Entry("Warning", exception, $"[{level}] [{FirmwareCategory}] {Message}"),
+            new Entry(WarningWithExceptionCall, exception, $"[{level}] [{FirmwareCategory}] {Message}"),
             Assert.Single(target.Entries));
     }
 
@@ -280,7 +280,7 @@ public sealed class AppLoggerLoggerProviderTests
 
         logger.LogError(Message);
 
-        Assert.Equal("Warning", Assert.Single(target.Entries).Method);
+        Assert.Equal(WarningCall, Assert.Single(target.Entries).Call);
     }
 
     /// <summary>
@@ -294,7 +294,7 @@ public sealed class AppLoggerLoggerProviderTests
 
         logger.LogInformation(Message);
 
-        Assert.Equal(new Entry("Information", null, $"[{FirmwareCategory}] {Message}"), Assert.Single(target.Entries));
+        Assert.Equal(new Entry(InformationCall, null, $"[{FirmwareCategory}] {Message}"), Assert.Single(target.Entries));
     }
 
     #endregion
@@ -315,7 +315,7 @@ public sealed class AppLoggerLoggerProviderTests
 
         logger.LogInformation(Message);
 
-        Assert.Equal(new Entry("Information", null, $"[Unknown] {Message}"), Assert.Single(target.Entries));
+        Assert.Equal(new Entry(InformationCall, null, $"[Unknown] {Message}"), Assert.Single(target.Entries));
     }
 
     /// <summary><c>Unknown</c> does not start with <c>Daqifi</c>, so its errors go to Warning.</summary>
@@ -326,7 +326,7 @@ public sealed class AppLoggerLoggerProviderTests
 
         logger.LogError(Message);
 
-        Assert.Equal(new Entry("Warning", null, $"[Error] [Unknown] {Message}"), Assert.Single(target.Entries));
+        Assert.Equal(new Entry(WarningCall, null, $"[Error] [Unknown] {Message}"), Assert.Single(target.Entries));
     }
 
     [Fact]
@@ -348,7 +348,7 @@ public sealed class AppLoggerLoggerProviderTests
 
         logger.Log(LogLevel.Warning, default, "state", exception, (_, _) => string.Empty);
 
-        Assert.Equal(new Entry("Warning", exception, $"[{CoreDeviceCategory}] "), Assert.Single(target.Entries));
+        Assert.Equal(new Entry(WarningWithExceptionCall, exception, $"[{CoreDeviceCategory}] "), Assert.Single(target.Entries));
     }
 
     [Fact]
@@ -389,7 +389,7 @@ public sealed class AppLoggerLoggerProviderTests
         logger.Log(LogLevel.Error, default, "state", null, (_, _) => throw failure);
 
         Assert.Equal(
-            new Entry("Warning", failure, $"[{CoreDeviceCategory}] AppLogger logging bridge failed to forward an entry."),
+            new Entry(WarningWithExceptionCall, failure, $"[{CoreDeviceCategory}] AppLogger logging bridge failed to forward an entry."),
             Assert.Single(target.Entries));
     }
 
@@ -406,10 +406,10 @@ public sealed class AppLoggerLoggerProviderTests
 
         Assert.Collection(
             target.Entries,
-            first => Assert.Equal(new Entry("Error", null, $"[{CoreDeviceCategory}] {Message}"), first),
+            first => Assert.Equal(new Entry(ErrorCall, null, $"[{CoreDeviceCategory}] {Message}"), first),
             second =>
             {
-                Assert.Equal("Warning", second.Method);
+                Assert.Equal(WarningWithExceptionCall, second.Call);
                 Assert.Equal($"[{CoreDeviceCategory}] AppLogger logging bridge failed to forward an entry.", second.Message);
                 Assert.Equal("sink is down", second.Exception?.Message);
             });
@@ -436,7 +436,7 @@ public sealed class AppLoggerLoggerProviderTests
 
         Assert.StartsWith("Daqifi.Core.Firmware", FirmwareCategory, StringComparison.Ordinal);
         Assert.Equal(
-            new Entry("Warning", exception, $"[Error] [{FirmwareCategory}] {Message}"),
+            new Entry(WarningWithExceptionCall, exception, $"[Error] [{FirmwareCategory}] {Message}"),
             Assert.Single(target.Entries));
     }
 
@@ -449,7 +449,7 @@ public sealed class AppLoggerLoggerProviderTests
 
         factory.CreateLogger<DaqifiDevice>().LogError(exception, Message);
 
-        Assert.Equal(new Entry("Error", exception, $"[{CoreDeviceCategory}] {Message}"), Assert.Single(target.Entries));
+        Assert.Equal(new Entry(ErrorWithExceptionCall, exception, $"[{CoreDeviceCategory}] {Message}"), Assert.Single(target.Entries));
     }
 
     /// <summary>
@@ -468,7 +468,7 @@ public sealed class AppLoggerLoggerProviderTests
             logger.Log(LogLevel.Error, default, "state", null, (_, _) => throw new FormatException("formatter broke")));
 
         Assert.Null(thrown);
-        Assert.Equal("Warning", Assert.Single(target.Entries).Method);
+        Assert.Equal(WarningWithExceptionCall, Assert.Single(target.Entries).Call);
     }
 
     #endregion
@@ -506,13 +506,24 @@ public sealed class AppLoggerLoggerProviderTests
         }
     }
 
+    // The overload is part of the result, not only the method name. AppLogger.Error(string) sends
+    // Sentry a carrier exception made from the message, and Error(Exception, string) sends the real
+    // exception. So Error(null!, message) and Error(message) are different calls, even though
+    // both record a null exception.
+    private const string InformationCall = "Information(message)";
+    private const string WarningCall = "Warning(message)";
+    private const string WarningWithExceptionCall = "Warning(exception, message)";
+    private const string ErrorCall = "Error(message)";
+    private const string ErrorWithExceptionCall = "Error(exception, message)";
+
     /// <summary>One call the bridge made on its <see cref="IAppLogger"/>.</summary>
-    private sealed record Entry(string Method, Exception? Exception, string Message);
+    private sealed record Entry(string Call, Exception? Exception, string Message);
 
     /// <summary>
-    /// Records each <see cref="IAppLogger"/> call with its method, exception and message.
+    /// Records each <see cref="IAppLogger"/> call with its overload, exception and message.
     /// <see cref="RecordingAppLogger"/> is not used because it drops the exception of
-    /// <c>Warning(Exception, string)</c>, and the exception is part of what the bridge decides.
+    /// <c>Warning(Exception, string)</c> and does not record which overload was called, and both
+    /// are part of what the bridge decides.
     /// </summary>
     private sealed class BridgeTarget : IAppLogger
     {
@@ -530,15 +541,15 @@ public sealed class AppLoggerLoggerProviderTests
             }
         }
 
-        public void Information(string message) => Record("Information", null, message);
+        public void Information(string message) => Record(InformationCall, null, message);
 
-        public void Warning(string message) => Record("Warning", null, message);
+        public void Warning(string message) => Record(WarningCall, null, message);
 
-        public void Warning(Exception ex, string message) => Record("Warning", ex, message);
+        public void Warning(Exception ex, string message) => Record(WarningWithExceptionCall, ex, message);
 
-        public void Error(string message) => Record("Error", null, message);
+        public void Error(string message) => Record(ErrorCall, null, message);
 
-        public void Error(Exception ex, string message) => Record("Error", ex, message);
+        public void Error(Exception ex, string message) => Record(ErrorWithExceptionCall, ex, message);
 
         public void AddBreadcrumb(string category, string message, BreadcrumbLevel level = BreadcrumbLevel.Info) { }
 
@@ -548,9 +559,9 @@ public sealed class AppLoggerLoggerProviderTests
 
         public void Shutdown() { }
 
-        private void Record(string method, Exception? exception, string message)
+        private void Record(string call, Exception? exception, string message)
         {
-            lock (_gate) { _entries.Add(new Entry(method, exception, message)); }
+            lock (_gate) { _entries.Add(new Entry(call, exception, message)); }
 
             if (ThrowOnEveryCall)
             {
