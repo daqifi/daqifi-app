@@ -992,6 +992,39 @@ public sealed class PreviousSettingsImportTests : IDisposable
     }
 
     /// <summary>
+    /// Round 3, P2, one file at a time. Only the old settings file cannot be read; the profiles
+    /// come across. The delimiter part must not count as done: the import is not complete, and the
+    /// next launch still offers it. When the file can be read, the delimiter comes across.
+    /// </summary>
+    [EnforcedReadOnlyDirectoryFact(NeedsEnforcedPermissions)]
+    public async Task An_old_settings_file_that_cannot_be_read_is_not_taken_for_an_absent_one()
+    {
+        if (OperatingSystem.IsWindows()) { Assert.Fail(NeedsEnforcedPermissions); return; }
+        WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
+        WriteDelimiter(OldSettings, ";");
+        var manager = Manager();
+        var settings = Settings();
+
+        SettingsImportOutcome blocked;
+        bool offeredWhileBlocked;
+        File.SetUnixFileMode(OldSettings, UnixFileMode.None);
+        try
+        {
+            blocked = await Import().ImportAsync(manager, settings);
+            offeredWhileBlocked = OfferedAtNextLaunch();
+        }
+        finally
+        {
+            File.SetUnixFileMode(OldSettings, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+
+        Assert.Equal(1, blocked.ProfilesAdded);
+        Assert.False(blocked.Complete);
+        Assert.True(offeredWhileBlocked);
+        Assert.True((await Import().ImportAsync(manager, settings)).DelimiterCopied);
+    }
+
+    /// <summary>
     /// Review P2, the conservative rule. A settings file that an earlier build wrote does not say
     /// whether its comma was chosen, so the import keeps it rather than guess.
     /// </summary>
