@@ -642,6 +642,8 @@ public sealed class PreviousSettingsImportTests : IDisposable
     [InlineData("delimiter the user chose", false)]
     [InlineData("comma chosen in an earlier session", false)]
     [InlineData("comma in a file from an earlier build", false)]
+    [InlineData("comma rewritten without a flag after launch", false)]
+    [InlineData("settings file here busy", true)]
     [InlineData("locked profiles file", true)]
     [InlineData("damaged profiles file", false)]
     [InlineData("locked settings file", true)]
@@ -682,6 +684,16 @@ public sealed class PreviousSettingsImportTests : IDisposable
                 settings = Settings();
                 WriteDelimiter(OldSettings, ";");
                 break;
+            case "comma rewritten without a flag after launch":
+                // This copy loaded the first-launch default; an older copy then wrote the file
+                // without the flag. The file decides (#512 review round 4).
+                File.WriteAllText(CurrentSettings, "<DAQifiSettings><CsvDelimiter>,</CsvDelimiter></DAQifiSettings>");
+                WriteDelimiter(OldSettings, ";");
+                break;
+            case "settings file here busy":
+                // The file cannot be read now, so the check cannot settle it: the Import can try.
+                WriteDelimiter(OldSettings, ";");
+                break;
             case "locked profiles file":
             case "damaged profiles file":
                 File.WriteAllText(OldProfiles, "<Profiles><Profile><Name>Bench");
@@ -701,6 +713,7 @@ public sealed class PreviousSettingsImportTests : IDisposable
         {
             "locked profiles file" => new FileStream(OldProfiles, FileMode.Open, FileAccess.ReadWrite, FileShare.None),
             "locked settings file" => new FileStream(OldSettings, FileMode.Open, FileAccess.ReadWrite, FileShare.None),
+            "settings file here busy" => new FileStream(CurrentSettings, FileMode.Open, FileAccess.ReadWrite, FileShare.None),
             _ => null,
         };
 
@@ -1109,6 +1122,49 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.Equal(";", Settings().CsvDelimiter);
         Assert.Equal(profilesBefore, File.ReadAllBytes(CurrentProfiles));
         Assert.Equal(longAgo, File.GetLastWriteTimeUtc(CurrentProfiles));
+    }
+
+    /// <summary>
+    /// Round 4. A delimiter chosen in Settings whose save failed (another writer held the lock)
+    /// is still the user's choice in this copy, so the import keeps it although the file still
+    /// says "first-launch default".
+    /// </summary>
+    [Fact]
+    public async Task A_choice_whose_save_failed_is_still_kept_by_the_import()
+    {
+        WriteDelimiter(OldSettings, ",");
+        var settings = Settings();
+        using (new FileStream(CurrentSettings + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            settings.CsvDelimiter = ";";
+        }
+
+        var outcome = await Import().ImportAsync(Manager(), settings);
+
+        Assert.False(outcome.DelimiterCopied);
+        Assert.Equal(";", settings.CsvDelimiter);
+    }
+
+    /// <summary>
+    /// Round 4. The record check reads this user's profiles file. When that file is busy, the
+    /// check cannot say "finished", so the part is not taken as finished: the import is not
+    /// complete, and a retry brings the profile over.
+    /// </summary>
+    [Fact]
+    public async Task A_busy_profiles_file_here_does_not_pass_for_a_finished_part()
+    {
+        WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
+        var manager = Manager();
+        var settings = Settings();
+
+        SettingsImportOutcome busy;
+        using (new FileStream(CurrentProfiles, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            busy = await Import().ImportAsync(manager, settings);
+        }
+
+        Assert.False(busy.Complete);
+        Assert.Equal(1, (await Import().ImportAsync(manager, settings)).ProfilesAdded);
     }
 
     /// <summary>
