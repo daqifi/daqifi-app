@@ -409,11 +409,11 @@ public partial class ExportDialogViewModel : ObservableObject, IDisposable
             {
                 failed = true;
                 failureReason = DescribeFailures(exported, targets.Count, failures);
+                // Warning whatever the cause: each failure was already logged at its own level as it
+                // happened, so an Error among them has its own Sentry event.
                 AppLogger.Instance.AddBreadcrumb("export",
                     $"Data export could not write {failures.Count} of {targets.Count} file(s)",
-                    failures.TrueForAll(f => DestinationFailureClassifier.IsBlocked(f.Error))
-                        ? Common.Loggers.BreadcrumbLevel.Warning
-                        : Common.Loggers.BreadcrumbLevel.Error);
+                    Common.Loggers.BreadcrumbLevel.Warning);
             }
             else if (exported == 0 || exported < targets.Count)
             {
