@@ -100,10 +100,30 @@ public class DaqifiSettings
             // supports. The Settings UI only ever offers the two in CsvDelimiterOptions, so this
             // changes nothing about how the app behaves; it makes the guarantee a property of the
             // type rather than of who happens to be calling it.
+            var previous = _csvDelimiter;
             _csvDelimiter = SupportedDelimiterOrDefault(value, "A caller");
             SaveSettings();
+
+            if (_csvDelimiter != previous)
+            {
+                CsvDelimiterChanged?.Invoke(this, EventArgs.Empty);
+            }
         }
     }
+
+    /// <summary>
+    /// Raised after <see cref="CsvDelimiter"/> changes. The Settings pane is built once, so this is
+    /// how it shows a delimiter that something else set: the import from an earlier version (#512).
+    /// Downstream addition, so no <c>@port</c> marker.
+    /// </summary>
+    public event EventHandler? CsvDelimiterChanged;
+
+    /// <summary>
+    /// Whether the delimiter is still the one a fresh install gets. The app writes that default to
+    /// the file at the first launch, so the file alone cannot say whether the user chose it. The
+    /// import from an earlier version (#512) replaces only this value.
+    /// </summary>
+    internal bool HasDefaultCsvDelimiter => _csvDelimiter == DefaultCsvDelimiter;
     #endregion
 
     #region Singleton Constructor / Initalization
@@ -144,13 +164,11 @@ public class DaqifiSettings
                 return;
             }
 
-            var xml = XElement.Load(_settingsXmlPath);
-
             // A file with no <CsvDelimiter> at all — older, or hand-trimmed — is not damaged and
             // is not complained about; the default simply stands.
-            if (xml.Element("CsvDelimiter") is { } element)
+            if (ReadStoredDelimiter(_settingsXmlPath) is { } stored)
             {
-                _csvDelimiter = SupportedDelimiterOrDefault(element.Value, "The settings file");
+                _csvDelimiter = SupportedDelimiterOrDefault(stored, "The settings file");
             }
         }
         catch (Exception ex) when (IsUnreadableContent(ex))
@@ -258,6 +276,31 @@ public class DaqifiSettings
     /// </para>
     /// </remarks>
     internal static bool IsUnreadableContent(Exception exception) => exception is XmlException;
+
+    /// <summary>
+    /// The delimiter text in a settings file, not yet checked against
+    /// <see cref="CsvDelimiterOptions"/>. <c>null</c> when there is no file or the file has no
+    /// <c>&lt;CsvDelimiter&gt;</c>.
+    /// </summary>
+    /// <remarks>
+    /// Never moves, repairs or creates the file, so it also reads the file that an earlier DAQiFi
+    /// version left in <c>%ProgramData%\DAQiFi</c>, which is not this app's (#512). Opened for
+    /// reading only and shared for writing and deletion, so that the release WPF app can still save
+    /// it during the read. Downstream addition, so no <c>@port</c> marker.
+    /// </remarks>
+    /// <exception cref="XmlException">The file is damaged (<see cref="IsUnreadableContent"/>).</exception>
+    /// <exception cref="IOException">The file could not be reached.</exception>
+    /// <exception cref="UnauthorizedAccessException">The file could not be reached.</exception>
+    internal static string? ReadStoredDelimiter(string settingsXmlPath)
+    {
+        if (!File.Exists(settingsXmlPath))
+        {
+            return null;
+        }
+
+        using var stream = new FileStream(settingsXmlPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        return XElement.Load(stream).Element("CsvDelimiter")?.Value;
+    }
 
     /// <summary>
     /// The given delimiter if this app supports it, otherwise the default.

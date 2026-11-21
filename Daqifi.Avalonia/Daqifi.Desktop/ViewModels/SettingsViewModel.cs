@@ -11,7 +11,7 @@ namespace Daqifi.Desktop.ViewModels;
 // @port: Daqifi.Desktop.ViewModels.SettingsViewModel
 public partial class SettingsViewModel : ObservableObject
 {
-    private readonly DaqifiSettings _settings = DaqifiSettings.Instance;
+    private readonly DaqifiSettings _settings;
 
     /// <summary>
     /// Downstream addition. Both heads construct this view model once, the first time their
@@ -19,7 +19,28 @@ public partial class SettingsViewModel : ObservableObject
     /// to report.
     /// </summary>
     public SettingsViewModel()
+        : this(DaqifiSettings.Instance)
     {
+    }
+
+    /// <summary>
+    /// Takes the settings directly, so that a test can use a throwaway settings file instead of the
+    /// real one behind <see cref="DaqifiSettings.Instance"/>.
+    /// </summary>
+    internal SettingsViewModel(DaqifiSettings settings)
+    {
+        _settings = settings;
+
+        // Built once, so the pane must follow a delimiter that something else sets, such as the
+        // import from an earlier version (#512). The setter below relies on this too. Both live
+        // for the whole run, so the handler is never removed.
+        _settings.CsvDelimiterChanged += (_, _) =>
+        {
+            OnPropertyChanged(nameof(CsvDelimiter));
+            OnPropertyChanged(nameof(IsCommaDelimiter));
+            OnPropertyChanged(nameof(IsSemicolonDelimiter));
+        };
+
         // Taken here rather than read on each open: it is one-shot, and this is the first place
         // in either head that can show it. DaqifiViewModel deliberately does not touch
         // DaqifiSettings.Instance during startup (its constructor does filesystem IO), so the
@@ -45,10 +66,8 @@ public partial class SettingsViewModel : ObservableObject
         set
         {
             if (_settings.CsvDelimiter == value) return;
+            // Raises CsvDelimiterChanged, which notifies this property and the two below.
             _settings.CsvDelimiter = value;
-            OnPropertyChanged();
-            OnPropertyChanged(nameof(IsCommaDelimiter));
-            OnPropertyChanged(nameof(IsSemicolonDelimiter));
         }
     }
 

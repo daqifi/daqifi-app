@@ -121,6 +121,31 @@ internal sealed class ProfileXmlStore
     }
 
     /// <summary>
+    /// Reads the profiles in a file that this app does not own: the one an earlier DAQiFi version
+    /// left in <c>%ProgramData%\DAQiFi</c>, which the release WPF app still uses (#512).
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="TryLoad"/>, this never moves, repairs or creates the file. A damaged file
+    /// stays where it is, because it is not this app's to move. The file is opened for reading only
+    /// and shared for writing and deletion, so that the other app can still save it during the read.
+    /// </remarks>
+    /// <returns>The profiles in the file. An empty list when there is no file.</returns>
+    /// <exception cref="Exception">
+    /// The file could not be read. <see cref="IsUnreadableContent"/> tells whether its content is
+    /// the cause (a damaged file) or the file could not be reached (locked, no access).
+    /// </exception>
+    internal static List<Profile> ReadWithoutRepair(string filePath)
+    {
+        if (!File.Exists(filePath))
+        {
+            return [];
+        }
+
+        using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        return ReadProfiles(XDocument.Load(stream));
+    }
+
+    /// <summary>
     /// Opens the document for a write, creating an empty one when the file is absent and
     /// quarantining it when it is not well-formed XML.
     /// </summary>

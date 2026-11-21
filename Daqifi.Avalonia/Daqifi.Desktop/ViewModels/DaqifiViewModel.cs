@@ -2267,6 +2267,8 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         try
         {
             ShowProgress(0);
+            // Saved profiles and the CSV delimiter too (#512). Never throws.
+            await PreviousSettingsImport.ForThisPc().ImportAsync(LoggingManager.Instance, DaqifiSettings.Instance);
             // Created here, on the UI thread, so its callbacks come back to it.
             var progress = new Progress<double>(ShowProgress);
             try

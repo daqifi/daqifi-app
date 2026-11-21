@@ -547,6 +547,50 @@ public partial class LoggingManager : ObservableObject
         LoadProfilesFromXml();
     }
 
+    /// <summary>
+    /// Saves each of <paramref name="candidates"/> whose ID is not in the profiles file and not on
+    /// display, in one write, and then shows them. Used by the import from an earlier version
+    /// (#512). A profile that is already here is never replaced, even when the two differ.
+    /// </summary>
+    /// <remarks>
+    /// Both are checked. The file, because another copy of the app may have written to it since
+    /// this one read it. The display, because after a damaged file was moved aside the pane can
+    /// hold profiles that the new file does not have yet. Nothing is written when there is nothing
+    /// to add, so an import with nothing new leaves the user's file as it was.
+    /// </remarks>
+    /// <returns>The profiles added, in the order given.</returns>
+    /// <exception cref="IOException">The profiles file could not be read or written. Nothing was added.</exception>
+    /// <exception cref="UnauthorizedAccessException">As above.</exception>
+    internal List<Profile> AddProfilesNotYetSaved(IEnumerable<Profile> candidates)
+    {
+        var doc = _profileStore.Open();
+        var added = new List<Profile>();
+
+        foreach (var profile in candidates)
+        {
+            // The file check also catches the same ID twice in candidates: the first is in doc by now.
+            if (FindProfileElement(doc, profile.ProfileId) is not null
+                || SubscribedProfiles.Any(p => p.ProfileId == profile.ProfileId))
+            {
+                continue;
+            }
+
+            doc.Root?.Add(BuildProfileElement(profile));
+            added.Add(profile);
+        }
+
+        if (added.Count > 0)
+        {
+            _profileStore.Save(doc);
+            foreach (var profile in added)
+            {
+                SubscribedProfiles.Add(profile);
+            }
+        }
+
+        return added;
+    }
+
     // @port: Daqifi.Desktop.Logger.LoggingManager.UnsubscribeProfile
     /// <summary>
     /// Deletes a profile from the file and from <see cref="SubscribedProfiles"/>.
