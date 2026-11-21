@@ -37,8 +37,8 @@ public sealed record ReleaseNotesResult(IReadOnlyList<ReleaseNotesSection> Secti
 /// <para>
 /// The releases API takes no token here, so GitHub allows few requests from one address. The
 /// UPDATES section fetches only when an update is on offer, once for each version, and reads pages
-/// of <see cref="PAGE_SIZE"/> releases only until one lists the installed release
-/// (<see cref="LoadAsync"/>), at most <see cref="MaxPages"/>.
+/// of <see cref="PAGE_SIZE"/> releases to the end of the history, at most <see cref="MaxPages"/>
+/// (<see cref="LoadAsync"/>).
 /// </para>
 /// </remarks>
 public static class GitHubReleaseNotes
@@ -109,12 +109,11 @@ public static class GitHubReleaseNotes
     /// <summary>
     /// Reads the releases from <see cref="FirstPage"/> on, and gives the notes for <paramref name="pending"/>.
     /// The API lists releases by when each release was made, newest first, prereleases included, so
-    /// the range can go on past the first page: the next page is read until a page lists the
-    /// installed release itself (<see cref="ReachesInstalled"/>), the history ends, or
-    /// <see cref="MaxPages"/> pages are read. The releases read are then filtered and sorted by
-    /// version (<see cref="Between"/>). A user a few versions behind finds the installed release on
-    /// the first page, so one request is the usual case. When the cap stops the reading first, the
-    /// notes end with a section that says so (#695 review).
+    /// the range can go on past the first page: with a known installed version the next page is read
+    /// until the history ends or <see cref="MaxPages"/> pages are read (<see cref="StopsEarly"/> says
+    /// why no release marks the end of the range). The releases read are then filtered and sorted by
+    /// version (<see cref="Between"/>). While the history fits one page, one request is enough. When
+    /// the cap stops the reading first, the notes end with a section that says so (#695 review).
     /// </summary>
     /// <exception cref="Exception">Whatever <paramref name="fetchPage"/> throws, for example with no network.</exception>
     public static async Task<ReleaseNotesResult> LoadAsync(
@@ -128,7 +127,7 @@ public static class GitHubReleaseNotes
             if (Read(page.Json) is not { } onPage) { return new(Unavailable(pending), false); }
 
             releases.AddRange(onPage);
-            if (page.Next is null || ReachesInstalled(onPage, installed, pending))
+            if (page.Next is null || StopsEarly(onPage, installed, pending))
             {
                 return Notes(releases, installed, pending, truncated: false);
             }
@@ -139,24 +138,24 @@ public static class GitHubReleaseNotes
     }
 
     /// <summary>
-    /// True when <paramref name="page"/> lists the installed version's own release, so no later page
-    /// holds a release in the range. Without a version for this copy, only the pending release is in
-    /// the range, so the page that lists it is enough.
+    /// True when no later page can hold a release in the range. That is only so without a version
+    /// for this copy: the range is then the pending release alone, and <paramref name="page"/> lists
+    /// it. With a known installed version every page is read.
     /// </summary>
     /// <remarks>
-    /// Not "a version at or below the installed one" (#695 review, round 2). The API orders releases
-    /// by when each was made (its <c>created_at</c>: measured on this repository, the time the
-    /// release was created, minutes after its tag's commit), not by version. A backport such as
-    /// 3.2.9, made after 3.6.0, is listed before 3.5.0 and 3.4.0, so an older version number says
-    /// nothing about what is still to come. The installed release does: the release workflow makes
-    /// each release when its tag is built, so every release made after the installed one is listed
-    /// before it. When that release is not in the history (deleted, or never published), nothing
-    /// marks the end of the range, and the reading goes to the end of the history or the cap.
+    /// The API orders releases by when each was made (its <c>created_at</c>: measured on this
+    /// repository, the time the release was created, minutes after its tag's commit), not by
+    /// version, and the release workflow builds each tag on its own, so a maintenance release can be
+    /// made at any time. No release in the list therefore marks where the range ends (#695 review):
+    /// <list type="bullet">
+    /// <item>Not an older version number: a backport such as 3.2.9, made after 3.6.0, is listed before 3.5.0 and 3.4.0 (round 2).</item>
+    /// <item>Not the installed release: the installed version can itself be such a backport, made after 3.4.0 and 3.5.0, which are in its range and are listed after it (round 3).</item>
+    /// </list>
+    /// So the reading goes to the end of the history or <see cref="MaxPages"/>. While the history
+    /// fits one page, that is still one request.
     /// </remarks>
-    private static bool ReachesInstalled(IEnumerable<PublishedRelease> page, string? installed, string pending) =>
-        ReleaseVersion.TryParse(installed, out _)
-            ? page.Any(r => SameVersion(r.Version, installed!))
-            : page.Any(r => SameVersion(r.Version, pending));
+    private static bool StopsEarly(IEnumerable<PublishedRelease> page, string? installed, string pending) =>
+        !ReleaseVersion.TryParse(installed, out _) && page.Any(r => SameVersion(r.Version, pending));
 
     /// <summary>The page of the release of <paramref name="version"/>.</summary>
     public static string ReleasePage(string version) =>

@@ -229,16 +229,12 @@ public class GitHubReleaseNotesTests
         Assert.Equal([PageUri(1), PageUri(2)], pages.Requested);
     }
 
-    /// <summary>
-    /// A user a few versions behind finds the installed release on page one: one request, even with
-    /// more pages and a backport on that page.
-    /// </summary>
+    /// <summary>A normal user: the whole history fits one page, so the notes take one request.</summary>
     [Fact]
-    public async Task A_page_that_reaches_the_installed_version_is_the_last_one_read()
+    public async Task A_history_on_one_page_is_one_request()
     {
         var pages = new Pages(
-            Answer(("v3.5.0", false, "Five."), ("v3.2.9", false, "Backport."), ("v3.4.0", false, "Four."), ("v3.3.0", false, "Three.")),
-            Answer(("v3.2.0", false, "Two.")));
+            Answer(("v3.5.0", false, "Five."), ("v3.2.9", false, "Backport."), ("v3.4.0", false, "Four."), ("v3.3.0", false, "Three.")));
 
         var notes = await GitHubReleaseNotes.LoadAsync(pages.Fetch, "3.3.0", "3.5.0", CancellationToken.None);
 
@@ -247,10 +243,60 @@ public class GitHubReleaseNotesTests
     }
 
     /// <summary>
+    /// PR #695 review, round 3: the installed release on page one is no sign that the range ends
+    /// there either, so a known installed version reads every page (up to the cap).
+    /// </summary>
+    [Fact]
+    public async Task The_installed_release_on_page_one_does_not_stop_the_reading()
+    {
+        var pages = new Pages(
+            Answer(("v3.5.0", false, "Five."), ("v3.3.0", false, "Three.")),
+            Answer(("v3.2.0", false, "Two.")));
+
+        var notes = await GitHubReleaseNotes.LoadAsync(pages.Fetch, "3.3.0", "3.5.0", CancellationToken.None);
+
+        Assert.Equal(["3.5.0"], notes.Sections.Select(s => s.Version));
+        Assert.Equal([PageUri(1), PageUri(2)], pages.Requested);
+    }
+
+    /// <summary>
+    /// PR #695 review, round 3, the reviewer's case: the installed version is itself a backport
+    /// (3.2.9), made after 3.4.0 and 3.5.0. Page one lists 3.6.0 and 3.2.9; page two lists 3.5.0
+    /// and 3.4.0, which are in the range although they come after the installed release.
+    /// </summary>
+    [Fact]
+    public async Task An_installed_backport_does_not_stop_the_reading_before_older_releases_in_the_range()
+    {
+        var pages = new Pages(
+            Answer(("v3.6.0", false, "Six."), ("v3.2.9", false, "Backport.")),
+            Answer(("v3.5.0", false, "Five."), ("v3.4.0", false, "Four."), ("v3.2.0", false, "Two.")));
+
+        var notes = await GitHubReleaseNotes.LoadAsync(pages.Fetch, "3.2.9", "3.6.0", CancellationToken.None);
+
+        Assert.True(notes.HasPending);
+        Assert.Equal(["3.6.0", "3.5.0", "3.4.0"], notes.Sections.Select(s => s.Version));
+        Assert.Equal(2, pages.Requested.Count);
+    }
+
+    /// <summary>Without a version for this copy only the offered release is in the range: the page that lists it is the last one read.</summary>
+    [Fact]
+    public async Task An_unknown_installed_version_stops_at_the_page_with_the_offered_release()
+    {
+        var pages = new Pages(
+            Answer(("v3.6.0", false, "Six."), ("v3.5.0", false, "Five.")),
+            Answer(("v3.4.0", false, "Four.")));
+
+        var notes = await GitHubReleaseNotes.LoadAsync(pages.Fetch, null, "3.6.0", CancellationToken.None);
+
+        Assert.Equal(["3.6.0"], notes.Sections.Select(s => s.Version));
+        Assert.Equal([PageUri(1)], pages.Requested);
+    }
+
+    /// <summary>
     /// PR #695 review, round 2: the API lists releases by when they were made, not by version. A
     /// backport (3.2.9) made after 3.6.0 is on page one, before 3.5.0 and 3.4.0. An older version
-    /// number is no sign that the range is complete: the reading goes on until the page that lists
-    /// the installed release itself (page three), and stops there.
+    /// number is no sign that the range is complete, and (round 3) neither is the installed release:
+    /// every page is read.
     /// </summary>
     [Fact]
     public async Task A_backport_listed_before_newer_releases_does_not_stop_the_reading()
@@ -265,7 +311,7 @@ public class GitHubReleaseNotesTests
 
         Assert.True(notes.HasPending);
         Assert.Equal(["3.6.0", "3.5.0", "3.4.0"], notes.Sections.Select(s => s.Version));
-        Assert.Equal([PageUri(1), PageUri(2), PageUri(3)], pages.Requested);
+        Assert.Equal([PageUri(1), PageUri(2), PageUri(3), PageUri(4)], pages.Requested);
     }
 
     /// <summary>
