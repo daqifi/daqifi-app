@@ -90,6 +90,34 @@ public sealed class ExportFailureReportingTests : IDisposable
     }
 
     /// <summary>
+    /// The desktop half of the review case on PR #685: Export All of the same long-named sessions
+    /// into the same folder again. Unlike the mobile writer, the desktop dialog REPLACES a file
+    /// that is already there (once the new one is complete), so no " (n)" is added for a file on
+    /// disk; the only suffix is the namer's own, for two sessions in one export. Both runs succeed,
+    /// each session still has one file, and every name fits.
+    /// </summary>
+    [Fact]
+    public async Task Export_all_of_long_names_into_the_same_folder_again_replaces_the_files()
+    {
+        var sessions = new[]
+        {
+            _fixture.Seed(new string('x', 300), "AI0", 1.25),
+            _fixture.Seed(new string('x', 300), "AI1", 2.5),
+        };
+
+        for (var run = 0; run < 2; run++)
+        {
+            var viewModel = new ExportDialogViewModel(_fixture.Contexts, sessions);
+            await viewModel.ExportToDirectoryAsync(_fixture.Destination);
+            Assert.True(viewModel.ExportSucceeded, $"run {run + 1}: {viewModel.ExportResultMessage}");
+        }
+
+        Assert.Equal(
+            new[] { new string('x', 247) + " (2).csv", new string('x', 251) + ".csv" },
+            Directory.GetFiles(_fixture.Destination).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToArray());
+    }
+
+    /// <summary>
     /// One session that cannot be written no longer keeps the sessions after it out of the folder.
     /// The failure here is real and portable: a folder already sits at the second session's file
     /// name, so its finished CSV cannot be moved into place. The pre-flight does not see it, because

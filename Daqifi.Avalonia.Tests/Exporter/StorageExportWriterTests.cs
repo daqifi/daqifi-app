@@ -267,6 +267,102 @@ public sealed class StorageExportWriterTests : IDisposable
         Assert.Equal(0, new FileInfo(Path.Combine(directory, "Run (2).csv")).Length);
     }
 
+    /// <summary>
+    /// Review of PR #685: a session whose name fills the 255-byte limit, exported into the same
+    /// folder again. The first file takes the whole limit, so the " (2)" for the second one must
+    /// come out of the name, not be added after it — a 259-byte name made the real create throw
+    /// <see cref="PathTooLongException"/>, and Export All skipped a session that had exported fine
+    /// the first time. Through the production create (<see cref="StorageExportWriter.TryCreateNewLocalFile"/>)
+    /// on a real directory, so the file system itself is what accepts or refuses each name.
+    /// </summary>
+    [Fact]
+    public async Task Exporting_a_longest_name_again_into_one_folder_gives_a_new_file_that_fits()
+    {
+        var session = SeedSession(new string('x', 300), "AI0", 1.25);
+        var directory = Path.Combine(_root, "picked");
+        Directory.CreateDirectory(directory);
+        var folder = new LocalDirectoryFolder(directory);
+        var writer = Writer();
+
+        // A new namer each time, as each Export All tap makes one.
+        var first = await writer.WriteNewAsync(folder, new ExportFileNamer().NextCsvName(session.Name, session.ID), ExportTo(session));
+        var second = await writer.WriteNewAsync(folder, new ExportFileNamer().NextCsvName(session.Name, session.ID), ExportTo(session));
+        var third = await writer.WriteNewAsync(folder, new ExportFileNamer().NextCsvName(session.Name, session.ID), ExportTo(session));
+
+        Assert.Equal(new string('x', 251) + ".csv", first);
+        Assert.Equal(new string('x', 247) + " (2).csv", second);
+        Assert.Equal(new string('x', 247) + " (3).csv", third);
+        Assert.All(new[] { first!, second!, third! }, name =>
+            Assert.Equal(ExportByPath(session), File.ReadAllBytes(Path.Combine(directory, name))));
+        Assert.Empty(_logger.Errors);
+        AssertNoStagingLeft();
+    }
+
+    /// <summary>
+    /// As above, for a name the namer already suffixed because two sessions in one Export All shared
+    /// it: the count goes on from that suffix ("(3)"), and the name still fits.
+    /// </summary>
+    [Fact]
+    public async Task Exporting_a_suffixed_longest_name_again_continues_the_count_and_fits()
+    {
+        var first = SeedSession(new string('x', 300), "AI0", 1.25);
+        var second = SeedSession(new string('x', 300), "AI1", 2.5);
+        var directory = Path.Combine(_root, "picked");
+        Directory.CreateDirectory(directory);
+        var folder = new LocalDirectoryFolder(directory);
+        var writer = Writer();
+
+        for (var run = 0; run < 2; run++)
+        {
+            var namer = new ExportFileNamer();
+            Assert.NotNull(await writer.WriteNewAsync(folder, namer.NextCsvName(first.Name, first.ID), ExportTo(first)));
+            Assert.NotNull(await writer.WriteNewAsync(folder, namer.NextCsvName(second.Name, second.ID), ExportTo(second)));
+        }
+
+        var names = Directory.GetFiles(directory).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToArray();
+        Assert.Equal(
+            new[]
+            {
+                new string('x', 247) + " (2).csv",
+                new string('x', 247) + " (3).csv",
+                new string('x', 247) + " (4).csv",
+                new string('x', 251) + ".csv",
+            },
+            names);
+        Assert.All(names, name => Assert.True(Encoding.UTF8.GetByteCount(name!) <= 255, name));
+        Assert.Empty(_logger.Errors);
+    }
+
+    /// <summary>
+    /// The edge of the same case: a name that is one text element — 36 emoji joined by zero-width
+    /// joiners, 249 bytes — fits on its own but leaves no room for " (2)". The second file falls
+    /// back to a plain stem rather than to a bare " (2).csv", and still fits.
+    /// </summary>
+    /// <remarks>
+    /// Not a letter with a long run of combining accents, which is the shape the namer's own unit
+    /// tests use: APFS refuses such a name outright (<c>EILSEQ</c>, measured between 31 and 60 accents),
+    /// whatever its length, so it cannot reach the second export on macOS.
+    /// </remarks>
+    [Fact]
+    public async Task Exporting_a_name_of_one_huge_character_again_falls_back_to_a_plain_stem()
+    {
+        var oneElement = string.Concat(Enumerable.Repeat("\U0001F600‍", 35)) + "\U0001F600";
+        Assert.Equal(1, new System.Globalization.StringInfo(oneElement).LengthInTextElements);
+        Assert.Equal(249, Encoding.UTF8.GetByteCount(oneElement));
+        var session = SeedSession(oneElement, "AI0", 1.25);
+        var directory = Path.Combine(_root, "picked");
+        Directory.CreateDirectory(directory);
+        var folder = new LocalDirectoryFolder(directory);
+        var writer = Writer();
+
+        var first = await writer.WriteNewAsync(folder, new ExportFileNamer().NextCsvName(session.Name, session.ID), ExportTo(session));
+        var second = await writer.WriteNewAsync(folder, new ExportFileNamer().NextCsvName(session.Name, session.ID), ExportTo(session));
+
+        Assert.Equal(session.Name + ".csv", first);
+        Assert.Equal("Session (2).csv", second);
+        Assert.Empty(_logger.Errors);
+    }
+
     /// <summary>A folder (not a file) with the export's name is taken too.</summary>
     [Fact]
     public async Task Export_all_steps_around_a_subfolder_with_the_same_name()
@@ -732,6 +828,47 @@ public sealed class StorageExportWriterTests : IDisposable
                 () => throw new InvalidOperationException("the path is refused outside the scope, so the local create cannot succeed"),
                 () => Task.FromResult<IScopedFolder?>(scope),
                 () => Task.FromResult<ExclusiveFile?>(null));
+    }
+
+    /// <summary>
+    /// The writer's folder seam over a plain writable directory, as a desktop or in-sandbox iOS pick
+    /// is: it creates through the production routing, so the real create-if-absent
+    /// (<see cref="StorageExportWriter.TryCreateNewLocalFile"/>) meets the real file system.
+    /// </summary>
+    private sealed class LocalDirectoryFolder(string directory) : StorageExportWriter.IExportFolder
+    {
+        public string Name => Path.GetFileName(directory);
+
+        public Task<bool> ContainsAsync(string name)
+        {
+            var path = Path.Combine(directory, name);
+            return Task.FromResult(File.Exists(path) || Directory.Exists(path));
+        }
+
+        public Task<StorageExportWriter.IExportFile?> CreateNewFileAsync(string name) =>
+            StorageExportWriter.CreateNewFileRoutedAsync(
+                directory,
+                name,
+                () => Task.FromResult<StorageExportWriter.IExportFile?>(new LocalFile(Path.Combine(directory, name))),
+                () => Task.FromResult<IScopedFolder?>(null),
+                () => Task.FromResult<ExclusiveFile?>(null));
+
+        /// <summary>A file the local create made, opened by path.</summary>
+        private sealed class LocalFile(string path) : StorageExportWriter.IExportFile
+        {
+            public string Name => Path.GetFileName(path);
+
+            public Task<Stream> OpenWriteAsync() =>
+                Task.FromResult<Stream>(new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None));
+
+            public Task<ulong?> GetSizeAsync() => Task.FromResult<ulong?>((ulong)new FileInfo(path).Length);
+
+            public Task DeleteAsync()
+            {
+                File.Delete(path);
+                return Task.CompletedTask;
+            }
+        }
     }
 
     /// <summary>An in-memory file like an Android document: no local path, reachable only through

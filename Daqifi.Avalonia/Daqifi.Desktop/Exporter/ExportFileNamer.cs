@@ -93,14 +93,35 @@ internal sealed class ExportFileNamer
         // alongside two called "Run" still gets a file of its own.
         while (!_used.Add(CollisionKey(name)))
         {
-            // The suffix is inside the limit too, so a base name that already fills it gives up
-            // the bytes the suffix needs. The loop then checks the result like any other name.
-            var suffix = $" ({n++})";
-            var stem = FitFileName(baseName, MaxBaseNameBytes - FileNameBytes(suffix));
-            name = (stem.Length == 0 ? FallbackName(sessionId) : stem) + suffix;
+            // The loop checks the result like any other name.
+            name = WithSuffix(baseName, n++, "." + CsvExtension, FallbackName(sessionId));
         }
 
         return name;
+    }
+
+    /// <summary>
+    /// <paramref name="stem"/> followed by the uniqueness suffix <c>" (<paramref name="n"/>)"</c>,
+    /// with the stem cut so that the result plus <paramref name="extension"/> fits
+    /// <see cref="MaxFileNameBytes"/>. Returns the name without the extension.
+    /// </summary>
+    /// <remarks>
+    /// The one place a suffix is added to an export file name: this namer uses it for two sessions
+    /// in one export, and the mobile writer (<c>StorageExportWriter</c>) for a name already in the
+    /// picked folder. The mobile writer used to add the suffix to the full stem, so a second export
+    /// of a session whose name filled the limit made a 259-byte name, the create threw
+    /// <see cref="PathTooLongException"/>, and Export All skipped that session (review of PR #685).
+    /// </remarks>
+    /// <param name="stem">The name to make unique, without its extension.</param>
+    /// <param name="n">The number in the suffix.</param>
+    /// <param name="extension">The extension that will follow, with its dot.</param>
+    /// <param name="fallback">Used in place of the stem when not even its first text element fits
+    /// beside the suffix.</param>
+    internal static string WithSuffix(string stem, int n, string extension, string fallback)
+    {
+        var suffix = $" ({n})";
+        var fitted = FitFileName(stem, MaxFileNameBytes - FileNameBytes(suffix + extension));
+        return (fitted.Length == 0 ? fallback : fitted) + suffix;
     }
 
     /// <summary>
