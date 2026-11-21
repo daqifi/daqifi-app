@@ -424,10 +424,11 @@ public partial class ConnectionManager : ObservableObject
             // 550fd16e) so that the device's first status message could fill in the firmware
             // version and serial number before "ConnectedDevices" was raised. device.Connect() now
             // waits for that condition itself: Core's InitializeAsync waits for the first status
-            // message and reads the capability document, the serial wrapper's
-            // OnCoreDeviceInitialized waits for the initial status with a timeout, and Connect()
-            // hydrates the metadata again before it returns. So the version, serial number and
-            // channels are already known here, and a fixed wait only delayed the user.
+            // message that reports channels and identifies the device (or throws
+            // ChannelPopulationTimeoutException after its timeout) and reads the capability
+            // document, and Connect() hydrates the metadata again before it returns. So the
+            // version, serial number and channels are already known here, and a fixed wait only
+            // delayed the user.
             //
             // Core can still report Lost between the !IsConnected check above and here, once the
             // loss handler is attached. The handler only POSTS its teardown to the UI thread, and

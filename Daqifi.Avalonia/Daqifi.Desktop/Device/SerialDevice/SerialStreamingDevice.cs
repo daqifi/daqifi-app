@@ -16,14 +16,9 @@ namespace Daqifi.Desktop.Device.SerialDevice;
 // @port: Daqifi.Desktop.Device.SerialDevice.SerialStreamingDevice
 public class SerialStreamingDevice : AbstractStreamingDevice, ILanChipInfoProvider
 {
-    private static readonly TimeSpan InitialStatusTimeout = TimeSpan.FromSeconds(8);
-    private static readonly TimeSpan InitialStatusPollInterval = TimeSpan.FromMilliseconds(100);
-    private static readonly TimeSpan InitialStatusRequestInterval = TimeSpan.FromSeconds(1);
-
     #region Properties
     private SerialPort? _port;
     private SerialStreamTransport? _transport;
-    private TaskCompletionSource<bool>? _initialStatusReceivedSource;
 
     // @port: Daqifi.Desktop.Device.SerialDevice.SerialStreamingDevice.Port
     public SerialPort? Port
@@ -101,9 +96,6 @@ public class SerialStreamingDevice : AbstractStreamingDevice, ILanChipInfoProvid
     // @port: Daqifi.Desktop.Device.SerialDevice.SerialStreamingDevice.CreateCoreDevice
     protected override CoreStreamingDevice CreateCoreDevice()
     {
-        _initialStatusReceivedSource = new TaskCompletionSource<bool>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
         // Use Core's transport for unified message handling (both send and receive).
         // The transport manages the actual SerialPort connection internally; DTR must stay
         // enabled or the device will not stream over USB.
@@ -135,9 +127,11 @@ public class SerialStreamingDevice : AbstractStreamingDevice, ILanChipInfoProvid
                 AppLogger.Warning(ex, $"Cannot connect on {PortName}: port is in use by another process");
                 break;
             case TimeoutException:
-                // OnCoreDeviceInitialized polls for the device's initial status and throws this
-                // when the device never reports it within InitialStatusTimeout. A newly-enumerated
-                // COM port whose driver/firmware hasn't settled yet, or a device that's unplugged/
+                // Core's InitializeAsync throws ChannelPopulationTimeoutException (a
+                // TimeoutException) when the device does not report a usable channel configuration
+                // within Core's channel-population timeout (8 s by default). Core owns that wait and
+                // its re-requests; the app has no wait of its own (#669). A newly-enumerated COM
+                // port whose driver/firmware hasn't settled yet, or a device that's unplugged/
                 // powered off/stuck non-responsive, is a user/environmental condition, not an app
                 // bug — same classification as the WiFi connect-timeout case (issues #517, #632).
                 AppLogger.Warning(ex, $"Device on {PortName} did not respond within the connection timeout");
@@ -185,69 +179,9 @@ public class SerialStreamingDevice : AbstractStreamingDevice, ILanChipInfoProvid
         ex.Message.Contains("BaseStream is only available when the port is open", StringComparison.OrdinalIgnoreCase)
         || IsTransportDisconnectedError(ex);
 
-    /// <summary>
-    /// Signals the initial-status wait so <see cref="OnCoreDeviceInitialized"/> can return,
-    /// then runs the shared Core-to-desktop sync.
-    /// </summary>
-    // @port: Daqifi.Desktop.Device.SerialDevice.SerialStreamingDevice.OnCoreChannelsPopulated
-    protected override void OnCoreChannelsPopulated(object? sender, ChannelsPopulatedEventArgs e)
-    {
-        _initialStatusReceivedSource?.TrySetResult(true);
-        base.OnCoreChannelsPopulated(sender, e);
-    }
-
-    /// <summary>
-    /// Blocks until the device reports its initial status message, which gates
-    /// <see cref="AbstractStreamingDevice.Connect"/> returning for serial devices.
-    /// </summary>
-    // @port: Daqifi.Desktop.Device.SerialDevice.SerialStreamingDevice.OnCoreDeviceInitialized
-    protected override void OnCoreDeviceInitialized()
-    {
-        var coreDevice = CoreDevice;
-        if (coreDevice == null)
-        {
-            throw new InvalidOperationException("Core device was not initialized.");
-        }
-
-        var statusReceivedSource = _initialStatusReceivedSource
-            ?? throw new InvalidOperationException("Initial status wait source was not initialized.");
-
-        var deadline = DateTime.UtcNow + InitialStatusTimeout;
-        var nextDeviceInfoRequestAt = DateTime.UtcNow + InitialStatusRequestInterval;
-
-        while (DateTime.UtcNow < deadline)
-        {
-            if (statusReceivedSource.Task.Wait(InitialStatusPollInterval))
-            {
-                return;
-            }
-
-            if (DateTime.UtcNow < nextDeviceInfoRequestAt)
-            {
-                continue;
-            }
-
-            try
-            {
-                coreDevice.Send(ScpiMessageProducer.GetDeviceInfo);
-            }
-            catch (Exception ex)
-            {
-                AppLogger.Warning(ex, $"Failed to re-request device info on {PortName}");
-            }
-
-            nextDeviceInfoRequestAt = DateTime.UtcNow + InitialStatusRequestInterval;
-        }
-
-        throw new TimeoutException(
-            $"Device on {PortName} did not report status within {InitialStatusTimeout.TotalSeconds:F0} seconds of connect.");
-    }
-
     // @port: Daqifi.Desktop.Device.SerialDevice.SerialStreamingDevice.CleanupConnection
     protected override void CleanupConnection()
     {
-        _initialStatusReceivedSource = null;
-
         // Unsubscribe Core device events and dispose the Core device first
         base.CleanupConnection();
 
