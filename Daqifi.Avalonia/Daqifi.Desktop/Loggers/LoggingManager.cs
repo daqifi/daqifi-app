@@ -614,6 +614,25 @@ public partial class LoggingManager : ObservableObject
     internal string ProfilesFilePath => _profileStore.FilePath;
 
     /// <summary>
+    /// Whether this user's profiles file records that the import from an earlier version ran or
+    /// was dismissed. The import asks this first, so a finished part ends before the old file is
+    /// read (#512 review round 4). Read only; <c>false</c> when the file cannot be read, and the
+    /// import then finds out under the writers' lock.
+    /// </summary>
+    internal bool HasEarlierVersionImportRecord()
+    {
+        try
+        {
+            ProfileXmlStore.ReadWithoutRepair(_profileStore.FilePath, out var recorded);
+            return recorded;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Records in the profiles file that the import from an earlier version is finished with,
     /// without adding anything: what the user's Dismiss means. Best effort: logged, never thrown.
     /// </summary>

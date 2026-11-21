@@ -139,6 +139,31 @@ public class DaqifiSettings
     /// </summary>
     internal bool CsvDelimiterIsFirstLaunchDefault => _csvDelimiterIsFirstLaunchDefault;
 
+    /// <summary>
+    /// Whether the delimiter must not be replaced any more: it was set in this copy, or the file
+    /// says now that it was chosen (here, in another running copy, by an import, or by a Dismiss).
+    /// The import from an earlier version asks this first, so a finished part ends before any old
+    /// file is read, and a locked old file cannot bring the offer back (#512 review round 4).
+    /// Reads the file; never throws.
+    /// </summary>
+    internal bool CsvDelimiterIsSettled()
+    {
+        if (!_csvDelimiterIsFirstLaunchDefault)
+        {
+            return true;
+        }
+
+        try
+        {
+            return ReadStoredDelimiter(_settingsXmlPath) is { } stored && stored.ChosenByUser != false;
+        }
+        catch
+        {
+            // Cannot tell from the file: the import then decides under the writers' lock.
+            return false;
+        }
+    }
+
     /// <summary>What <see cref="ImportCsvDelimiter"/> did.</summary>
     internal enum DelimiterImportResult
     {

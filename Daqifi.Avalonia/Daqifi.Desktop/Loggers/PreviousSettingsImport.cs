@@ -32,7 +32,10 @@ namespace Daqifi.Desktop.Logger;
 /// write of the delimiter sets. A run cut off at any point therefore leaves each part either done
 /// and recorded, or not done and not recorded, and a later Import does exactly the parts that are
 /// not done (#512 review round 3). A part that is recorded does not run again, so a profile that
-/// the user deletes after the import stays deleted (#512 review). Two earlier designs used marker
+/// the user deletes after the import stays deleted (#512 review). The record is asked for before
+/// the old file is read, so a finished or dismissed part stays finished when the old file is
+/// locked later; and an old file that holds no profiles finishes the profiles part without
+/// writing this user's profiles file at all (#512 review round 4). Two earlier designs used marker
 /// files, and each left a window: written after the work, a lost marker let a later run undo the
 /// user's changes; written before it, a marker could stand without the work.
 /// </para>
@@ -198,11 +201,27 @@ public sealed class PreviousSettingsImport
     /// <returns>Whether the profiles part is finished.</returns>
     private async Task<bool> ImportProfilesAsync(LoggingManager profiles, SettingsImportOutcome outcome)
     {
+        // Imported or dismissed before: finished, whatever the old file is like now. Asked before
+        // the old file is read, so a locked old file cannot reopen a finished part (#512 review
+        // round 4).
+        if (profiles.HasEarlierVersionImportRecord())
+        {
+            return true;
+        }
+
         var (oldProfiles, read) = await Task.Run(() =>
             ReadOld(ProfilesFileName, ProfileXmlStore.ReadWithoutRepair, ProfileXmlStore.IsUnreadableContent, []));
         if (!read)
         {
             return false;
+        }
+
+        // Nothing to copy: finished, and this user's profiles file is not touched, not even its
+        // lock (#512 review round 4). With no imported profile there is nothing a record must
+        // protect from a later run.
+        if (oldProfiles.Count == 0)
+        {
+            return true;
         }
 
         AtStep?.Invoke(Step.ProfilesRead);
@@ -241,6 +260,13 @@ public sealed class PreviousSettingsImport
     /// <returns>Whether the delimiter part is finished.</returns>
     private async Task<bool> ImportDelimiterAsync(DaqifiSettings settings, SettingsImportOutcome outcome)
     {
+        // Chosen, imported or dismissed before: finished, whatever the old file is like now
+        // (#512 review round 4).
+        if (settings.CsvDelimiterIsSettled())
+        {
+            return true;
+        }
+
         var (oldDelimiter, read) = await Task.Run(() =>
             ReadOld(SettingsFileName, ReadOldDelimiter, DaqifiSettings.IsUnreadableContent, null));
         if (!read)
@@ -290,35 +316,19 @@ public sealed class PreviousSettingsImport
     }
 
     /// <summary>
-    /// Whether the old delimiter would replace this user's: there is one, it differs, and this
-    /// user's is still the first-launch default. The same test for the offer and the import.
+    /// Whether the old delimiter would replace this user's: there is one and it differs. Both
+    /// callers have already found this user's delimiter unsettled
+    /// (<see cref="DaqifiSettings.CsvDelimiterIsSettled"/>). The same test for the offer and the
+    /// import.
     /// </summary>
     private static bool WouldReplace(string? oldDelimiter, DaqifiSettings settings) =>
-        oldDelimiter is not null
-        && oldDelimiter != settings.CsvDelimiter
-        && settings.CsvDelimiterIsFirstLaunchDefault;
+        oldDelimiter is not null && oldDelimiter != settings.CsvDelimiter;
 
     private bool ProfilesArePending(string currentProfilesPath)
     {
-        List<Profile> oldProfiles;
-        try
-        {
-            oldProfiles = ProfileXmlStore.ReadWithoutRepair(Path.Combine(PreviousDirectory!, ProfilesFileName));
-        }
-        catch (Exception ex)
-        {
-            // Damaged: nothing will ever come of it. Locked or no access: the Import can try, and
-            // says if it failed.
-            return !ProfileXmlStore.IsUnreadableContent(ex);
-        }
-
-        // Nothing to compare, so this user's file is not read at all (#512 review round 2).
-        if (oldProfiles.Count == 0)
-        {
-            return false;
-        }
-
-        HashSet<Guid> here;
+        // This user's file first: a record ends the part, whatever the old file is like now, so
+        // a locked old file cannot bring a finished part back (#512 review round 4).
+        HashSet<Guid>? here;
         try
         {
             var current = ProfileXmlStore.ReadWithoutRepair(currentProfilesPath, out var recorded);
@@ -331,17 +341,39 @@ public sealed class PreviousSettingsImport
         }
         catch
         {
-            // This user's file is busy or unreadable, so this check cannot tell. Offer the Import:
-            // it can try, and it keeps a retry when it fails. A failure here must not hide the
-            // delimiter from the offer either (#512 review round 2).
-            return true;
+            // This user's file is busy or unreadable, so the check cannot compare. It must not hide
+            // the delimiter from the offer either (#512 review round 2).
+            here = null;
         }
 
-        return oldProfiles.Any(p => !here.Contains(p.ProfileId));
+        List<Profile> oldProfiles;
+        try
+        {
+            oldProfiles = ProfileXmlStore.ReadWithoutRepair(Path.Combine(PreviousDirectory!, ProfilesFileName));
+        }
+        catch (Exception ex)
+        {
+            // Damaged: nothing will ever come of it. Locked or no access: the Import can try, and
+            // says if it failed.
+            return !ProfileXmlStore.IsUnreadableContent(ex);
+        }
+
+        if (oldProfiles.Count == 0)
+        {
+            return false;
+        }
+
+        // Could not compare: offer the Import, which can try and keeps a retry when it fails.
+        return here is null || oldProfiles.Any(p => !here.Contains(p.ProfileId));
     }
 
     private bool DelimiterIsPending(DaqifiSettings settings)
     {
+        if (settings.CsvDelimiterIsSettled())
+        {
+            return false;
+        }
+
         string? oldDelimiter;
         try
         {
