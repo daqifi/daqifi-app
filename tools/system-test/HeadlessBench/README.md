@@ -124,7 +124,7 @@ dotnet run --project tools/system-test/HeadlessBench/HeadlessBench.csproj --no-r
   --scripted sessions-500 --out "/tmp/headlessbench-t1-$(date +%Y%m%d-%H%M%S)"
 ```
 
-Nine states, one matrix row each. `--port` is not used and no serial port is opened, so these
+Ten states, one matrix row each. `--port` is not used and no serial port is opened, so these
 are the only rows that can run on a machine with no hardware attached:
 
 | state | row | what it fabricates | what it checks |
@@ -133,13 +133,14 @@ are the only rows that can run on a machine with no hardware attached:
 | `session-10h` | `LOGGED-PLOT` | one session, 108 000 samples at 3 Hz across ten hours | the Logged Data pane plots it and the drawn range covers all ten hours. The plot view is hidden before the load (the empty state shows) and shown after it (#616) |
 | `export-readonly` | `EXPORT-FAIL` | one 600-sample session, plus a `chmod 555` destination | the export fails with the *classified* message and leaves the destination empty — measured against a control export to a writable folder in the same run |
 | `session-name-box` | `LOGGED-NAME` | three sessions named `Bench run 1`–`3`, 20 samples each | real key events in each session drawer's NAME box (`SessionNameBox.cs`, #681). `empty`: select all + Backspace, Backspace to the start, and select all + Delete each leave the box empty while the user is still in it — before #681 the box filled with `Session {ID}` at once, caret first. `works`: the name typed next is exactly what the box, the session, its list row and the database hold (not `Pump testSession 2`). `commit`: an empty box committed by Enter, by Tab, and by the drawer closing shows `Session {ID}` and stores an empty name (the #427 case); a name typed after Enter replaces the default; a fresh database read renders the defaults. `leave`: with the drawer closed, a visit to Live Graph (the pane really unloads) and back, then a drawer reopen, changes no stored name — in review of #684 that visit erased a saved `Kiln`. `pending`: a rename still inside the 250 ms debounce (typed with Enter, and typed with no Enter) is stored when the drawer closes and the tab changes at once — in review of #684 the unload cancelled that write. Captures `t1-namebox-emptied`, `t1-namebox-typed` and `t1-namebox-committed` |
+| `session-id-reuse` | `LOGGED-DEL` | three sessions `Old zero`, `Old one` and `Old two` (IDs 0, 1 and 2), 20 samples each | sessions that get the ID of a deleted session (`SessionIdReuse.cs`, #680). `reused`: the row DELETE of `Old two` deletes it, and a CSV log imported through the app's own `SdCardSessionImporter` gets ID 2 again; the third row then shows the new session, its DELETE asks about the new session, and that DELETE removes only the new session from the list and the database — before #680 the row kept `Old two`, its name and its DELETE parameter, and that DELETE deleted the new session. `after-all`: DELETE ALL, then three imports that get IDs 0, 1 and 2 again; each row shows its own session and has it as its DELETE parameter. `replaced` (#693 review): while row 3's DELETE confirmation is open, a second writer deletes that recording and imports a new one, which gets the same ID; accepting the confirmation deletes nothing, the dialog says so, the replacement keeps its 50 samples, and the row then shows it. Captures `t1-reuse-row`, `t1-reuse-after-all` and `t1-reuse-replaced` |
 | `sd-empty` | `SD-LIST` | a device whose SD card answers with nothing on it | an empty card reads `Ok` with zero files and the pane shows its NO FILES panel — not "no SD card installed" and not an error — then flips to the file grid when one file appears |
 | `name-refused` | `DEV-NAME` | a device named `Lab Nyquist`, whose `SetFriendlyName` refuses a name through Core's own `ScpiMessageProducer.SetDeviceName` | typing `Lab "A"` into the drawer's NAME box shows a message in the app's own words (no `(Parameter 'name')`, no "ASCII") and disables SAVE NAME; pressing it anyway shows the same kind of message and writes nothing to the device (#596). Captures `t1-devname-typed` and `t1-devname-refused` |
 | `drop-mid-stream` | `CONN-LOST` | a device that loses its transport while a logging session is streaming | the device leaves both lists, no channel is left subscribed to it, the session that drop ended is closed with it, and the app raises exactly one notification however many times the drop is reported. The Live Graph plot view follows its points, not the channel count (#616): hidden with no channel, still hidden (empty state shown) with the channel on and no sample, with its "waiting" sentence once logging is on, shown mid-stream (empty state hidden), and still shown after the drop, which keeps the recorded trace |
 | `disconnect-mid-stream` | `CONN-DISC` | a device the user removes with **DISCONNECT**, then (on a second connect) with **REBOOT**, while a logging session is streaming | for each command: the device leaves both lists, the session closes, and the toggle is not left reading ON while it is disabled (#537). The second half also shows that a new session can start after the first one closed. `ScriptedDevice.Reboot` does nothing, so no board is rebooted |
 | `mode-change-mid-session` | `LOG-MODE` | a device that streams into a session, then (after a stop) logs to its SD card in a session | with no session, a real headless click on LOG TO DEVICE changes the app's mode and the device's mode, and a click on STREAM TO APP changes them back (`click`, #578). With a WiFi device added, a click on LOG TO DEVICE is refused and the buttons show STREAM TO APP again (`refused`). The two LOGGING MODE buttons are enabled before each session, disabled during it with the mode in force still checked, a click on the disabled button changes nothing, and they are enabled again after the stop (#536). The setter's refusal is covered by `LoggingModeMidSessionTests`. The SD card is `ScriptedDevice`'s flag only; never run this half on a board |
 
-The first three, and `session-name-box`, seed `<out>/appdata/DAQiFiDatabase.db` **before** the app boots, because the one
+The first three, `session-name-box` and `session-id-reuse` seed `<out>/appdata/DAQiFiDatabase.db` **before** the app boots, because the one
 caller of `LoggingManager.ReloadPersistedLoggingSessions` is `DaqifiViewModel`'s one-time init:
 seeding afterwards would be the rig adding rows to a list the app had finished loading, which is
 the opposite of the state being scripted. The schema comes from the app's own
@@ -265,7 +266,7 @@ device-clock skew, the pin state a channel is left in after PWM is disabled, thr
 connect/disconnect, and UI pump latency).
 
 **With no board** (`--scripted`): `LOGGED-LIST`, `LOGGED-PLOT`, `EXPORT-FAIL`, `SD-LIST`,
-`CONN-LOST`, `CONN-DISC`, `LOG-MODE`, `DEV-NAME` and `LOGGED-NAME` — one per state, plus `EXPORT-FAIL`'s atomicity probe and
+`CONN-LOST`, `CONN-DISC`, `LOG-MODE`, `DEV-NAME`, `LOGGED-NAME` and `LOGGED-DEL` — one per state, plus `EXPORT-FAIL`'s atomicity probe and
 its `cleanup` check, `CONN-LOST`'s `limits` check that a repeated drop report raises no second
 notification, `CONN-DISC`'s `reboot` check that REBOOT closes a session the same way DISCONNECT
 does, `LOG-MODE`'s `click` check that a real click on each button changes the mode, its `refused` check
@@ -457,7 +458,7 @@ These are real limits of the current rig, not of the app.
 
 ## What CI does with it
 
-The `desktop` job in `.github/workflows/build.yml` builds it, and then **runs all nine
+The `desktop` job in `.github/workflows/build.yml` builds it, and then **runs all ten
 `--scripted` states** — one process and one `--out` per state under `RUNNER_TEMP`, because
 `results.jsonl` is truncated at startup and a shared `--out` would discard the previous state's
 verdicts. The hardware rows are not run and cannot be: they drive a real board over serial.

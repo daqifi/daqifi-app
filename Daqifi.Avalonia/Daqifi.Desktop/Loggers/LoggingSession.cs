@@ -85,6 +85,18 @@ public class LoggingSession : ObservableObject
     public long? PreviousLastSampleId { get; set; }
 
     /// <summary>
+    /// The identity of this recording: a GUID given once, when the session is created, and never
+    /// changed (#693 review). The ID is not an identity, because the app gives a deleted session's
+    /// ID to the next one, and neither is <see cref="SessionStart"/>: two boards can each log a file
+    /// with the same name, and the SD importer gives both the same start. A delete compares this in
+    /// its transaction (<see cref="SessionDataRepository.DeleteSession"/>), and refuses when either side
+    /// has none. The database gives a row inserted without it one of its own (the migration's trigger),
+    /// so a stored row always has one; a session built in memory without the creating constructor has
+    /// none until it is stored and loaded again. Downstream addition.
+    /// </summary>
+    public Guid? RecordingId { get; set; }
+
+    /// <summary>
     /// True when this row came from an import that did not finish, so what it holds is a prefix of
     /// the log rather than the whole of it. Downstream addition: the session-list rows on both
     /// heads show a chip on this, which is the difference between "your import failed" and "your
@@ -268,25 +280,28 @@ public class LoggingSession : ObservableObject
     #region Constructors
     public LoggingSession() { }
 
+    /// <summary>A new recording: the two places that create a session row (a logging run and an SD
+    /// card import) use this constructor, so this is where a recording gets its identity. EF loads a
+    /// stored row through the parameterless one and sets the stored identity.</summary>
     public LoggingSession(int id, string name)
     {
         ID = id;
         SessionStart = DateTime.Now;
         Name = name;
+        RecordingId = Guid.NewGuid();
     }
     #endregion
 
     #region Object Overrides
-    // @port: Daqifi.Desktop.Logger.LoggingSession.Equals
-    public override bool Equals(object? obj)
-    {
-        return obj is LoggingSession sessionObj && sessionObj.ID == ID;
-    }
-
-    // @port: Daqifi.Desktop.Logger.LoggingSession.GetHashCode
-    public override int GetHashCode()
-    {
-        return ID.GetHashCode();
-    }
+    // Upstream overrides Equals and GetHashCode to compare only the ID. This port does not (#680):
+    // a session is equal only to itself. The next session gets the ID of a deleted session (the
+    // highest ID plus 1, and 0 after DELETE ALL), so two different sessions can have the same ID.
+    // With an ID comparison, the session list's ListBox gave the new session the row of the
+    // deleted one and did not update the row's bindings, so the row showed the deleted session,
+    // and its DELETE asked about the deleted session and then deleted the new one. #519 was the
+    // same defect in LoggingManager.Session. Code that must match a session to a database row
+    // compares the IDs itself.
+    // @port: Daqifi.Desktop.Logger.LoggingSession.Equals (deliberately not ported, see above)
+    // @port: Daqifi.Desktop.Logger.LoggingSession.GetHashCode (deliberately not ported, see above)
     #endregion
 }

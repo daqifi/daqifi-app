@@ -83,6 +83,9 @@ partial class LoggingContextModelSnapshot : ModelSnapshot
                 b.Property<long?>("PreviousLastSampleId")
                     .HasColumnType("INTEGER");
 
+                b.Property<Guid?>("RecordingId")
+                    .HasColumnType("TEXT");
+
                 b.Property<long?>("SampleCount")
                     .HasColumnType("INTEGER");
 
@@ -94,7 +97,14 @@ partial class LoggingContextModelSnapshot : ModelSnapshot
 
                 b.HasKey("ID");
 
-                b.ToTable("Sessions");
+                b.HasIndex("RecordingId")
+                    .IsUnique()
+                    .HasDatabaseName("IX_Sessions_RecordingId");
+
+                b.ToTable("Sessions", t =>
+                    {
+                        t.HasTrigger("TR_Sessions_RecordingId");
+                    });
             });
 
         modelBuilder.Entity("Daqifi.Desktop.Logger.SessionDeviceMetadata", b =>

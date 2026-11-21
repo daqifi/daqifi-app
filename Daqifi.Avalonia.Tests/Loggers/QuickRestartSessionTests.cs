@@ -7,7 +7,7 @@ namespace Daqifi.Avalonia.Tests.Loggers;
 
 /// <summary>
 /// #519: start, then stop before any sample arrives. The stop deletes that session's rows, so the
-/// next start gets the same ID back. <see cref="LoggingSession.Equals"/> compares IDs, and the
+/// next start gets the same ID back. <c>LoggingSession.Equals</c> compared IDs (until #680), and the
 /// <c>Session</c> property skips a write of an equal value, so the next start kept the old object.
 /// Saving it re-attached the old run's device metadata. With a device connected, that collided
 /// with the new run's metadata, so every start failed until the app was restarted.

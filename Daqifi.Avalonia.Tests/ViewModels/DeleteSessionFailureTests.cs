@@ -149,15 +149,62 @@ public class DeleteSessionFailureTests
     }
 
     /// <summary>
+    /// #680 review (P2): the list can get a fresh object for the same recording while the
+    /// confirmation is open (the import of earlier sessions replaces the object of a copy it adds to,
+    /// through <c>ApplyPersistedSessionChanges</c>). A session is equal only to itself, so removing the
+    /// object the row gave missed the fresh one, and the deleted session stayed listed.
+    /// </summary>
+    [Fact]
+    public async Task DeleteSession_WhenTheListGetsAFreshObjectForTheRecording_RemovesItsRow()
+    {
+        var kept = new LoggingSession(6, "Session_6");
+        var confirmed = new LoggingSession(7, "Session_7");
+        var fresh = new LoggingSession(7, "Session_7") { SessionStart = confirmed.SessionStart, RecordingId = confirmed.RecordingId };
+        RecordingHost? host = null;
+        host = new RecordingHost(kept, confirmed) { WhileConfirming = () => host!.LoggingSessions[1] = fresh };
+        var listViewModel = NewListViewModel(host);
+
+        await listViewModel.DeleteSessionAsync(confirmed);
+
+        Assert.Equal(1, host.DeleteAttempts);
+        Assert.Same(kept, Assert.Single(host.LoggingSessions));
+        Assert.Empty(host.MessagesShown);
+    }
+
+    /// <summary>
+    /// #680 review (P1): another writer replaced the recording while the confirmation was open, so
+    /// the repository deleted nothing. The user is told so, in words that do not call it a failure,
+    /// and it is not reported as an error. The host shows what is stored now; the list view model
+    /// does not remove the row itself.
+    /// </summary>
+    [Fact]
+    public async Task DeleteSession_WhenAnotherWriterReplacedTheRecording_SaysNothingWasDeleted()
+    {
+        var session = new LoggingSession(7, "Session_7");
+        var logger = new RecordingAppLogger();
+        var host = new RecordingHost(session) { DeleteFailure = new SessionReplacedException(7) };
+        var listViewModel = NewListViewModel(host, logger);
+
+        await listViewModel.DeleteSessionAsync(session);
+
+        var shown = Assert.Single(host.MessagesShown);
+        Assert.Equal("Session Changed", shown.Title);
+        Assert.Contains("nothing was deleted", shown.Message, StringComparison.Ordinal);
+        Assert.False(shown.WasBusy);
+        Assert.Same(session, Assert.Single(host.LoggingSessions));
+        Assert.Empty(logger.Errors);
+    }
+
+    /// <summary>
     /// The single-session path never touches the logging context or the database path — only the
     /// delete-all purge does — so both are supplied as tripwires rather than as working values.
     /// </summary>
-    private static LoggingSessionListViewModel NewListViewModel(RecordingHost host) =>
+    private static LoggingSessionListViewModel NewListViewModel(RecordingHost host, RecordingAppLogger? logger = null) =>
         new(
             host,
             () => throw new InvalidOperationException("the single-session delete must not resolve the logging context factory"),
             Path.Combine(Path.GetTempPath(), "daqifi-avalonia-tests", "delete-session-434", "DAQiFiDatabase.db"),
-            new RecordingAppLogger());
+            logger ?? new RecordingAppLogger());
 
     /// <summary>What the view model showed the user, and what the pane looked like at that moment.</summary>
     private readonly record struct ShownMessage(string Title, string Message, bool WasBusy, string BusyReason);
@@ -186,6 +233,9 @@ public class DeleteSessionFailureTests
 
         /// <summary>What the confirmation answers when it does not throw.</summary>
         internal bool ConfirmAnswer { get; init; } = true;
+
+        /// <summary>Runs while the confirmation is open, before it answers: a list refresh, say.</summary>
+        internal Action? WhileConfirming { get; init; }
 
         internal List<ShownMessage> MessagesShown { get; } = [];
 
@@ -237,6 +287,7 @@ public class DeleteSessionFailureTests
                 throw failure;
             }
 
+            WhileConfirming?.Invoke();
             return Task.FromResult(ConfirmAnswer);
         }
 

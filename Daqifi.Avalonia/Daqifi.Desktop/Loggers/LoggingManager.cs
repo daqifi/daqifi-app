@@ -91,9 +91,10 @@ public partial class LoggingManager : ObservableObject
 
     /// <summary>The current run's session.</summary>
     /// <remarks>
-    /// Written by reference, not by <see cref="LoggingSession.Equals"/>, which compares IDs. A run
-    /// stopped before any sample arrives is deleted and its ID is reused, and an ID comparison
-    /// would keep the old object in place of the new one (#519).
+    /// Written by reference. A run stopped before any sample arrives is deleted and its ID is
+    /// reused, and an ID comparison would keep the old object in place of the new one (#519).
+    /// <see cref="LoggingSession"/> no longer compares IDs (#680); the explicit comparer keeps this
+    /// setter right if it ever does again.
     /// </remarks>
     public LoggingSession Session
     {

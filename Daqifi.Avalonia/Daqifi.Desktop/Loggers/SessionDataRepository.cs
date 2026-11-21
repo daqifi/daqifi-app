@@ -550,6 +550,10 @@ public sealed class SessionDataRepository
     /// row whose data still exists in the database (#592). The completion timing is always logged.
     /// </summary>
     /// <param name="session">The session to delete.</param>
+    /// <exception cref="SessionReplacedException">
+    /// The stored row with the session's ID is gone, holds another recording (another
+    /// <see cref="LoggingSession.RecordingId"/>), or either side has no identity. Nothing was deleted.
+    /// </exception>
     /// <exception cref="Exception">Rethrown when the delete transaction fails.</exception>
     // @port: Daqifi.Desktop.Logger.SessionDataRepository.DeleteSession
     public void DeleteSession(LoggingSession session)
@@ -562,6 +566,30 @@ public sealed class SessionDataRepository
             connection.Open();
 
             using var transaction = connection.BeginTransaction();
+
+            // The stored row with this ID must still be the recording the caller holds (#680 review).
+            // A deleted session's ID goes to the next session, and another writer (a second DAQiFi
+            // instance, say) can delete this recording and store a new one at its ID while the
+            // confirmation is open; a delete by ID alone would then remove the new recording.
+            // RecordingId tells the two apart: a GUID given once, when the row is created. The start
+            // does not (second review: two boards' files with the same name get the same start). The
+            // read is in the delete's transaction, which takes the write lock at BEGIN, so the row
+            // cannot change between this check and the deletes below. A missing identity on either
+            // side is never a match (third review): the database gives every inserted row one (the
+            // migration's trigger), so a missing one means something unexpected, and a destructive
+            // delete does not guess.
+            using (var cmd = connection.CreateCommand())
+            {
+                cmd.Transaction = transaction;
+                cmd.CommandText = "SELECT RecordingId FROM Sessions WHERE ID = @id";
+                AddParameter(cmd, "@id", session.ID);
+                using var reader = cmd.ExecuteReader();
+                var stored = reader.Read() && !reader.IsDBNull(0) ? reader.GetGuid(0) : (Guid?)null;
+                if (stored is null || session.RecordingId is null || stored != session.RecordingId)
+                {
+                    throw new SessionReplacedException(session.ID);
+                }
+            }
 
             using (var cmd = connection.CreateCommand())
             {
@@ -588,6 +616,12 @@ public sealed class SessionDataRepository
             }
 
             transaction.Commit();
+        }
+        catch (SessionReplacedException)
+        {
+            // Nothing was deleted (the transaction rolls back unused). Expected, not a fault: the
+            // caller tells the user and shows what is stored now.
+            throw;
         }
         catch (Exception ex)
         {

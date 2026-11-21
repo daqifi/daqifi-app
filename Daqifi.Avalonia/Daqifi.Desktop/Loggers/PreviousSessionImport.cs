@@ -360,10 +360,14 @@ public sealed class PreviousSessionImport
                         copy = Math.Max(idFloor, SessionIdAllocator.NextSessionId(connection, transaction)) + 1;
                         idFloor = copy + 1;
                         using var insert = Command(connection,
-                            "INSERT INTO main.Sessions (ID, SessionStart, Name, SampleCount, Status, PreviousFirstSampleId, PreviousLastSampleId) " +
-                            "VALUES ($id, $start, $name, 0, $status, $first, $next)",
+                            "INSERT INTO main.Sessions (ID, SessionStart, Name, SampleCount, Status, PreviousFirstSampleId, PreviousLastSampleId, RecordingId) " +
+                            "VALUES ($id, $start, $name, 0, $status, $first, $next, $recording)",
                             transaction);
                         insert.Parameters.AddWithValue("$id", copy);
+                        // Each copy is a new recording in this database, so it gets a new identity
+                        // (#693 review). The earlier version's schema has no such column to copy.
+                        // Upper case, the form EF writes a Guid in.
+                        insert.Parameters.AddWithValue("$recording", Guid.NewGuid().ToString().ToUpperInvariant());
                         insert.Parameters.AddWithValue("$start", newSession!.Value.Start);
                         insert.Parameters.AddWithValue("$name", newSession.Value.Name);
                         insert.Parameters.AddWithValue("$status", (int)SessionStatus.Importing);

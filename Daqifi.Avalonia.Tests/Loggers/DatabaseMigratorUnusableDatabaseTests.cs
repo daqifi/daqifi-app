@@ -175,6 +175,9 @@ public class DatabaseMigratorUnusableDatabaseTests : IDisposable
         using var context = factory.CreateDbContext();
         Assert.Empty(context.Database.GetPendingMigrations());
         Assert.Empty(context.Sessions.ToList());
+
+        // And with every part of the schema, the identity trigger included (#693 review).
+        Assert.True(DeleteReplacedSessionTests.HasIdentityTrigger(DatabasePath));
     }
 
     /// <summary>

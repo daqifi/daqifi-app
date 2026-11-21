@@ -6,8 +6,8 @@ using Xunit;
 namespace Daqifi.Avalonia.Tests.ViewModels;
 
 /// <summary>
-/// #519's sibling: a deleted session's ID is reused, and <see cref="LoggingSession.Equals"/>
-/// compares IDs. Selecting the new session must not keep the deleted one selected.
+/// #519's sibling: a deleted session's ID is reused, and <c>LoggingSession.Equals</c> compared IDs
+/// until #680. Selecting the new session must not keep the deleted one selected.
 /// </summary>
 [Collection(AppHostCollection.Name)]
 public class SelectedSessionReferenceTests

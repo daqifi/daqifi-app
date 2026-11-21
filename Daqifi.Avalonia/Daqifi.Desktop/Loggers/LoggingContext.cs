@@ -20,7 +20,9 @@ public class LoggingContext : DbContext
     {
         modelBuilder.Entity<LoggingSession>(entity =>
         {
-            entity.ToTable("Sessions");
+            // The migration's trigger gives a row inserted without RecordingId one of its own (#693
+            // review). Declared so EF does not read values back from an insert that a trigger changes.
+            entity.ToTable("Sessions", t => t.HasTrigger(Migrations.AddSessionRecordingId.IdentityTrigger));
             entity.HasMany(c => c.DataSamples).WithOne(p => p.LoggingSession).IsRequired().OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(c => c.DeviceMetadata)
                 .WithOne(m => m.LoggingSession)
@@ -28,6 +30,9 @@ public class LoggingContext : DbContext
                 .IsRequired()
                 .OnDelete(DeleteBehavior.Cascade);
             entity.Property(ls => ls.Name).IsRequired();
+            // Unique, so no two recordings share an identity. Null is allowed (and SQLite lets many
+            // rows hold it) for a row written without the column (#693 review).
+            entity.HasIndex(ls => ls.RecordingId).IsUnique().HasDatabaseName("IX_Sessions_RecordingId");
         });
 
         modelBuilder.Entity<SessionDeviceMetadata>(entity =>
