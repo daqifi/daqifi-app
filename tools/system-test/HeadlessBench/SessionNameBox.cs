@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Input;
@@ -292,6 +293,72 @@ internal static partial class HeadlessBench
              Capture(main, "t1-namebox-committed"));
 
         RunSessionNameLeaveCheck(main, shell, first, second, third);
+        RunSessionNamePendingCheck(main, shell, second, third);
+    }
+
+    /// <summary>
+    /// LOGGED-NAME/pending: a rename the 250 ms debounce is still holding back is stored when the
+    /// pane unloads. Found in review of #684: the user typed a new name, pushed Enter, closed the
+    /// drawer and went to Live Graph at once; unloading cancelled the pending write, so the model
+    /// showed the new name and SQLite (and so the next launch) kept the old one. Two cases, because
+    /// the loss does not need Enter: a name typed with no Enter and left at once was lost the same way.
+    /// </summary>
+    private static void RunSessionNamePendingCheck(
+        Window main, DaqifiViewModel shell, LoggingSession second, LoggingSession third)
+    {
+        var pendingOk = true;
+        var evidence = new List<string>();
+        foreach (var (session, typed, enter) in new[] { (second, "After Enter", true), (third, "No Enter", false) })
+        {
+            var box = OpenNameBox(main, shell, session);
+            if (box is null)
+            {
+                pendingOk = false;
+                evidence.Add($"session {session.ID}: no SessionNameTextBox");
+                continue;
+            }
+
+            var storedBefore = StoredSessionName(session.ID);
+            box.SelectAll();
+            Pump();
+
+            // From the keystroke to the unload with as little pumping as the UI needs, so the
+            // unload comes well inside the debounce. Both preconditions are asserted, not assumed:
+            // the name is not yet stored when the tab changes, and the pane unloaded in under 250 ms.
+            var clock = Stopwatch.StartNew();
+            main.KeyTextInput(typed);
+            if (enter)
+            {
+                main.KeyPress(Key.Enter, RawInputModifiers.None, PhysicalKey.Enter, null);
+                main.KeyRelease(Key.Enter, RawInputModifiers.None, PhysicalKey.Enter, null);
+            }
+            Pump();
+            var boxAfterKeys = box.Text;
+            shell.CloseLoggedSessionSettingsCommand.Execute(null);
+            var stillPending = StoredSessionName(session.ID) == storedBefore;
+            shell.SelectedIndex = LiveGraphTabIndex;
+            Pump();
+            var unloadedAfterMs = clock.Elapsed.TotalMilliseconds;
+            var unloaded = !LoggedDataPaneShown(main);
+
+            PumpFor(PastRenameDebounce);
+            PumpFor(PastRenameDebounce);
+            var stored = StoredSessionName(session.ID);
+            var fresh = ReloadedSessionNames()[session.ID];
+            var caseOk = boxAfterKeys == typed && stillPending && unloaded && unloadedAfterMs < 250
+                         && session.Name == typed && stored == typed && fresh == typed;
+            pendingOk &= caseOk;
+            evidence.Add($"session {session.ID}: typed '{typed}'{(enter ? " + Enter" : " (no Enter)")}, box '{boxAfterKeys}', " +
+                         $"drawer closed, still stored '{storedBefore}' when the tab changed={stillPending}, " +
+                         $"pane unloaded={unloaded} {unloadedAfterMs:F0} ms after the keystroke; " +
+                         $"after {2 * PastRenameDebounce.TotalMilliseconds:F0} ms on Live Graph: session '{session.Name}', " +
+                         $"database '{stored}', fresh read '{fresh}'");
+
+            shell.SelectedIndex = LoggedDataTabIndex;
+            PumpFor(PastRenameDebounce);
+        }
+
+        Step(1, "LOGGED-NAME", "pending", pendingOk, string.Join("; ", evidence), null);
     }
 
     /// <summary>
