@@ -196,6 +196,21 @@ jobs:
             --outputDir "${RUNNER_TEMP}/releases"
           ls -la "${RUNNER_TEMP}/releases"
 
+      # Only for the update test below, never shipped: the same app packed as a version older than
+      # any release, so the package above can be applied over it. 0.0.1-update-test sorts below
+      # every real version, prerelease or not.
+      - name: Pack an older version for the update test
+        run: |
+          set -euo pipefail
+          vpk pack \
+            --packId "${PACK_ID}" --packTitle "${PACK_TITLE}" --packAuthors DAQiFi \
+            --packVersion 0.0.1-update-test --runtime linux-x64 \
+            --packDir "${RUNNER_TEMP}/publish" --mainExe Daqifi.Avalonia.Desktop \
+            --icon "${RUNNER_TEMP}/DAQiFi.png" --categories 'Science;Engineering' \
+            --delta None \
+            --outputDir "${RUNNER_TEMP}/older"
+          test -x "${RUNNER_TEMP}/older/${PACK_ID}.AppImage"
+
       - name: Collect the release files
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -378,6 +393,115 @@ jobs:
           ls -la "${data}"
           [ "${failed}" -eq 0 ]
           echo "Started twice on $(. /etc/os-release && echo "${PRETTY_NAME}"); one data folder, ${data}." >> "$GITHUB_STEP_SUMMARY"
+
+      # An update from an older version to this one, the way an installed copy takes it. The
+      # older AppImage is installed in a folder the user owns and started once, so that it creates
+      # the data. Then its OWN UpdateNix applies this run's package with the command that
+      # VelopackAppUpdateService.ApplyAndRestart makes Velopack run: `UpdateNix apply --package
+      # <nupkg>`. In the app, only the Install button starts that, and nothing here can click it.
+      # The checks: the file at the installed path is now this version, UpdateNix restarted it,
+      # the restarted process is this version, and it opened the same database.
+      #
+      # Not covered here: the check and the download before the apply (Velopack's feed code, the
+      # same on every OS), and an install in a folder that only root can write, where UpdateNix
+      # asks pkexec for a password that nobody on a runner can give.
+      - name: Update the AppImage from an older version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          Xvfb :99 -screen 0 1280x800x24 > /dev/null 2>&1 &
+          xvfb=$!
+          trap 'kill "${xvfb}" 2> /dev/null || true' EXIT
+
+          work="${RUNNER_TEMP}/update"
+          home="${work}/home"
+          db="${home}/.local/share/DAQiFi/DAQiFiDatabase.db"
+          installed="${work}/Applications/DAQiFi.AppImage"
+          package="${RUNNER_TEMP}/upload/${PACK_ID}-${VERSION}-linux-full.nupkg"
+          mkdir -p "${home}" "${work}/Applications" "${work}/old" "${work}/new"
+          cp "${RUNNER_TEMP}/older/${PACK_ID}.AppImage" "${installed}"
+          chmod +x "${installed}"
+          run=(env -u XDG_DATA_HOME -u DAQIFI_DATA_DIR -u DAQIFI_UPDATE_FEED
+               HOME="${home}" DISPLAY=:99 DAQIFI_TEST_MODE=1 APPIMAGE_EXTRACT_AND_RUN=1)
+
+          # holder: prints a process of this user that has the database open.
+          holder() {
+            local p
+            for p in $(pgrep -u "$(id -u)"); do
+              if [ -n "$(find "/proc/${p}/fd" -lname "${db}" -print -quit 2> /dev/null)" ]; then
+                echo "${p}"
+                return 0
+              fi
+            done
+            return 1
+          }
+          # wait_for_holder: the same, waiting at most 120 s.
+          wait_for_holder() {
+            local waited=0 p
+            until p=$(holder); do
+              if [ "${waited}" -ge 120 ]; then return 1; fi
+              sleep 2
+              waited=$(( waited + 2 ))
+            done
+            echo "${p}"
+          }
+          # version_of <pid>: the version in the sq.version beside that process's executable.
+          version_of() {
+            sed -n 's:.*<version>\([^<]*\)</version>.*:\1:p' "$(dirname "$(readlink "/proc/$1/exe")")/sq.version"
+          }
+          stop() {
+            kill -TERM "$1" 2> /dev/null || true
+            for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$1" 2> /dev/null || return 0; sleep 1; done
+            kill -KILL "$1" 2> /dev/null || true
+          }
+          fail() {
+            echo "::error::$1"
+            for f in "${work}"/*.out; do echo "--- ${f}"; cat "${f}"; done
+            find /tmp /var/tmp "${home}" -maxdepth 3 -iname '*velopack*' 2> /dev/null || true
+            find /tmp /var/tmp -maxdepth 3 -iname '*velopack*.log' -exec tail -n 60 {} \; 2> /dev/null || true
+            exit 1
+          }
+
+          # 1. The older version runs once and creates the data.
+          setsid "${run[@]}" "${installed}" > "${work}/older.out" 2>&1 &
+          old=$(wait_for_holder) || fail "The older version did not open ${db} within 120 s."
+          old_version=$(version_of "${old}") || fail "No sq.version beside process ${old}."
+          inode=$(stat -c %i "${db}")
+          echo "older: process ${old} is ${old_version} and has the database open"
+          [ "${old_version}" = "0.0.1-update-test" ] || fail "The installed copy is ${old_version}, not 0.0.1-update-test."
+          stop "${old}"
+          for _ in $(seq 1 30); do holder > /dev/null || break; sleep 1; done
+
+          # 2. Its own UpdateNix applies this run's package. In the background, because it may
+          #    stay until the copy it restarts ends.
+          ( cd "${work}/old" && "${installed}" --appimage-extract > /dev/null )
+          timeout 300 "${run[@]}" APPIMAGE="${installed}" \
+            "${work}/old/squashfs-root/usr/bin/UpdateNix" apply --package "${package}" \
+            > "${work}/apply.out" 2>&1 &
+          apply=$!
+
+          # 3. UpdateNix restarted it: this version, with the same database.
+          new=$(wait_for_holder) || fail "No restarted process opened ${db} within 120 s."
+          new_version=$(version_of "${new}") || fail "No sq.version beside process ${new}."
+          echo "restarted: process ${new} is ${new_version} and has the database open"
+          [ "${new_version}" = "${VERSION}" ] || fail "The restarted process is ${new_version}, not ${VERSION}."
+          [ "$(stat -c %i "${db}")" = "${inode}" ] || fail "The update replaced the database."
+          mkdir -p "${RUNNER_TEMP}/screenshot"
+          import -display :99 -window root "${RUNNER_TEMP}/screenshot/after-update.png" \
+            || echo "::warning::No screenshot after the update."
+          stop "${new}"
+          status=0
+          wait "${apply}" || status=$?
+          cat "${work}/apply.out"
+          [ "${status}" -eq 0 ] || fail "UpdateNix apply exited with ${status}."
+
+          # 4. The file at the installed path, the one the user starts, is now this version.
+          ( cd "${work}/new" && "${installed}" --appimage-extract usr/bin/sq.version > /dev/null )
+          on_disk=$(sed -n 's:.*<version>\([^<]*\)</version>.*:\1:p' "${work}/new/squashfs-root/usr/bin/sq.version")
+          echo "installed file after the update: ${on_disk}"
+          [ "${on_disk}" = "${VERSION}" ] || fail "The installed file is ${on_disk}, not ${VERSION}."
+          echo "Updated 0.0.1-update-test to ${VERSION} in place at ${installed}; it restarted and kept its database." >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7
         with:
