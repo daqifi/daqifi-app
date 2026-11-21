@@ -1044,6 +1044,73 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.True(OfferedAtNextLaunch());
     }
 
+    // ---- Review round 4 (2026-11-21, 02:06Z). Each test follows the reviewer's reproduction. ----
+
+    /// <summary>
+    /// Round 4, P2. A part that is finished (imported, or dismissed) is finished for good, even
+    /// when its old file is locked later: the record in this user's file ends it before the old
+    /// file is read. The next launch offers nothing, and a retry is complete.
+    /// </summary>
+    [Theory]
+    [InlineData("imported", PreviousSettingsImport.ProfilesFileName)]
+    [InlineData("imported", PreviousSettingsImport.SettingsFileName)]
+    [InlineData("dismissed", PreviousSettingsImport.ProfilesFileName)]
+    [InlineData("dismissed", PreviousSettingsImport.SettingsFileName)]
+    public async Task A_finished_part_stays_finished_when_its_old_file_is_locked_later(string finishedBy, string lockedLater)
+    {
+        WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
+        WriteDelimiter(OldSettings, ";");
+        if (finishedBy == "imported")
+        {
+            Assert.True((await Import().ImportAsync(Manager(), Settings())).Complete);
+        }
+        else
+        {
+            Import().MarkDone(Manager(), Settings());
+        }
+
+        Assert.False(OfferedAtNextLaunch());
+
+        bool offered;
+        SettingsImportOutcome retry;
+        using (new FileStream(Path.Combine(Old, lockedLater), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            offered = OfferedAtNextLaunch();
+            retry = await Import().ImportAsync(Manager(), Settings());
+        }
+
+        Assert.False(offered);
+        Assert.True(retry.Complete);
+    }
+
+    /// <summary>
+    /// Round 4, P2. An old folder with no profiles file and an old semicolon. There is nothing to
+    /// copy into this user's profiles file, so the import does not touch it (not even its lock,
+    /// held here by another writer). The delimiter comes across and the import is complete.
+    /// </summary>
+    [Fact]
+    public async Task A_delimiter_only_import_does_not_touch_the_profiles_file()
+    {
+        WriteDelimiter(OldSettings, ";");
+        var manager = Manager();
+        var settings = Settings();
+        var longAgo = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(CurrentProfiles, longAgo);
+        var profilesBefore = File.ReadAllBytes(CurrentProfiles);
+
+        SettingsImportOutcome outcome;
+        using (new FileStream(CurrentProfiles + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            outcome = await Import().ImportAsync(manager, settings);
+        }
+
+        Assert.True(outcome.DelimiterCopied);
+        Assert.True(outcome.Complete);
+        Assert.Equal(";", Settings().CsvDelimiter);
+        Assert.Equal(profilesBefore, File.ReadAllBytes(CurrentProfiles));
+        Assert.Equal(longAgo, File.GetLastWriteTimeUtc(CurrentProfiles));
+    }
+
     /// <summary>
     /// Review P2, the conservative rule. A settings file that an earlier build wrote does not say
     /// whether its comma was chosen, so the import keeps it rather than guess.
