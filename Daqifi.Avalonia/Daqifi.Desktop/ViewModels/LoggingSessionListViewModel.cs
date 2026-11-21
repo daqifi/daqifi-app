@@ -292,9 +292,18 @@ public class LoggingSessionListViewModel
             // Again after the answer (#682). The confirmation covers only the Logged Data pane, so
             // logging (from Live Graph) or the import of earlier sessions (from the notifications)
             // can start while it is open.
-            if (WhyDeleteAllMustWait() is { } waitNow)
+            if (_host.IsLoggingActive)
             {
-                await _host.ShowMessageAsync("Cannot Delete", waitNow);
+                await _host.ShowMessageAsync("Cannot Delete", WaitForLogging);
+                return;
+            }
+
+            // A claim, not a check (#682 review): no import holds the store now, and none can claim
+            // it until the purge ends, so an import cannot start in the middle of the purge either.
+            using var purge = _host.SessionStore.TryBeginPurge();
+            if (purge is null)
+            {
+                await _host.ShowMessageAsync("Cannot Delete", WaitForImport);
                 return;
             }
 
@@ -368,16 +377,19 @@ public class LoggingSessionListViewModel
     {
         if (_host.IsLoggingActive)
         {
-            return "Please stop logging before deleting all sessions.";
+            return WaitForLogging;
         }
 
-        if (_host.IsImportActive)
+        if (_host.SessionStore.IsImportRunning)
         {
-            return "Wait for the import to finish before you delete all sessions.";
+            return WaitForImport;
         }
 
         return null;
     }
+
+    private const string WaitForLogging = "Please stop logging before deleting all sessions.";
+    private const string WaitForImport = "Wait for the import to finish before you delete all sessions.";
 
     /// <summary>
     /// Purges the database storage. Runs off the UI thread.

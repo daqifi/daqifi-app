@@ -54,13 +54,11 @@ public interface ILoggingSessionListHost
     bool IsLoggingActive { get; }
 
     /// <summary>
-    /// True while an import writes sessions into the database: an SD card import in DEVICE LOGS, or
-    /// the import of sessions from an earlier version. Gates the "delete all" path, as
-    /// <see cref="IsLoggingActive"/> does: the purge replaces the database file, so a writer that has
-    /// the file open fails with "disk I/O error" and then writes on into the new database (#682).
-    /// Downstream addition.
+    /// The app's one <see cref="SessionStoreGate"/>, which every import claims before it writes
+    /// sessions into the database (#682). The "delete all" purge claims it before it replaces the
+    /// database file, so the purge and an import never overlap, in either order. Downstream addition.
     /// </summary>
-    bool IsImportActive { get; }
+    SessionStoreGate SessionStore { get; }
     #endregion
 
     #region Notifications

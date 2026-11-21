@@ -466,7 +466,7 @@ public class DeleteAllSessionsRecoveryTests : IDisposable
 
         public bool IsLoggingActive => false;
 
-        public bool IsImportActive => false;
+        public SessionStoreGate SessionStore { get; } = new();
 
         public void NotifyLoggingSessionsChanged() { }
 

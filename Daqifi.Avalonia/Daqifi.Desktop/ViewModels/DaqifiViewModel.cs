@@ -1134,7 +1134,8 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     LoggingManager.Instance.AddLogger(DbLogger);
 
                     // Device Logs View Model
-                    DeviceLogsViewModel = new DeviceLogsViewModel();
+                    // Shares the shell's gate, so its imports and DELETE ALL never overlap (#682).
+                    DeviceLogsViewModel = new DeviceLogsViewModel(_sessionStore);
 
                     // The profiles file is read by LoggingManager.Instance as it is created, on
                     // every head (#544) — not here, which only the desktop ever reached.
@@ -1913,6 +1914,14 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             var selectedPath = files.Count > 0 ? files[0].TryGetLocalPath() : null;
             if (selectedPath == null) return;
 
+            // Claimed for the whole import, so it never overlaps DELETE ALL's purge (#682).
+            using var claim = _sessionStore.TryBeginImport();
+            if (claim is null)
+            {
+                await ShowMessage("Cannot Import", SessionStoreGate.WaitForDeleteAll, MessageBoxButton.OK);
+                return;
+            }
+
             IsLoggedDataBusy = true;
             LoggedDataBusyReason = $"Importing {System.IO.Path.GetFileName(selectedPath)}...";
 
@@ -2274,6 +2283,16 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     {
         if (_isImportingPreviousSessions)
         {
+            return;
+        }
+
+        // Claimed for the whole import, so it never overlaps DELETE ALL's purge (#682 review: an
+        // import started from the bell while the purge ran reported its session, and the purge then
+        // deleted it). Refused, the offer stays in the bell with the reason.
+        using var claim = _sessionStore.TryBeginImport();
+        if (claim is null)
+        {
+            ShowPreviousSessionNotice(OfferedImportNotice(import, SessionStoreGate.WaitForDeleteAll));
             return;
         }
 
@@ -3640,14 +3659,13 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     bool ILoggingSessionListHost.IsLoggingActive => LoggingManager.Instance.Active;
 
     /// <summary>
-    /// True while DEVICE LOGS lists or imports a card's files, or while sessions from an earlier
-    /// version are imported (#682). These are the two imports that can run while DELETE ALL can be
-    /// clicked: the APP LOGS tab is outside the DEVICE LOGS busy overlay, and the earlier-version
-    /// import runs from a notification. IMPORT SD LOG puts the Logged Data busy overlay over DELETE
-    /// ALL while it runs. The DEVICE LOGS flag also covers a file listing, which writes nothing; a
-    /// listing is short, and that flag is the one source for both.
+    /// The shell's one <see cref="SessionStoreGate"/> (#682). DEVICE LOGS (which gets it at
+    /// construction), IMPORT SD LOG and the import of earlier sessions claim an import from it, and
+    /// DELETE ALL claims the store from it.
     /// </summary>
-    bool ILoggingSessionListHost.IsImportActive => DeviceLogsViewModel?.IsBusy == true || IsImportingPreviousSessions;
+    SessionStoreGate ILoggingSessionListHost.SessionStore => _sessionStore;
+
+    private readonly SessionStoreGate _sessionStore = new();
 
     /// <summary>
     /// Re-raises the session-collection notifications on the UI thread. The list view model calls this
