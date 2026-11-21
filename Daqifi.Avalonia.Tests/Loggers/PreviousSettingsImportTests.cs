@@ -1279,6 +1279,40 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.Equal(1, (await Import().ImportAsync(manager, settings)).ProfilesAdded);
     }
 
+    // ---- Review round 5 (2026-11-21, 02:53Z). The test follows the reviewer's reproduction. ----
+
+    /// <summary>
+    /// Round 5, P2. The import has made its early check and is reading the old file (a comma).
+    /// Meanwhile the user selects a semicolon in THIS window while another writer holds the
+    /// settings lock, so the choice is only in memory and the file still says "first-launch
+    /// default". When the import goes on, the copy must still see this window's choice and keep
+    /// it, not put the comma back.
+    /// </summary>
+    [Fact]
+    public async Task A_choice_made_in_this_window_during_the_import_is_kept_although_its_save_failed()
+    {
+        WriteDelimiter(OldSettings, ",");
+        var settings = Settings();
+        var racing = new PreviousSettingsImport(Old, _log)
+        {
+            AtStep = reached =>
+            {
+                if (reached == PreviousSettingsImport.Step.DelimiterRead)
+                {
+                    using var otherWriter = new FileStream(CurrentSettings + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                    settings.CsvDelimiter = ";";
+                }
+            },
+        };
+
+        var outcome = await racing.ImportAsync(Manager(), settings);
+
+        Assert.False(outcome.DelimiterCopied);
+        Assert.True(outcome.Complete);
+        Assert.Equal(";", settings.CsvDelimiter);
+        Assert.Equal(false, DaqifiSettings.ReadStoredDelimiter(CurrentSettings)?.ChosenByUser);
+    }
+
     /// <summary>
     /// Review P2, the conservative rule. A settings file that an earlier build wrote does not say
     /// whether its comma was chosen, so the import keeps it rather than guess.
