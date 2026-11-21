@@ -58,16 +58,20 @@ public sealed record PendingUpdate(string? Version, string? Problem)
 /// <c>Update.exe</c> in the install folder, in that session, and the elevated copy can outlive the
 /// updater, which waits for it for 10 minutes only. When a process's path can be read, it must be
 /// that file. When it cannot be read (another user's process, or an elevated one), a process named
-/// <see cref="UPDATER_PROCESS_NAME"/> in that session counts. That errs on the safe side.
+/// <see cref="UPDATER_PROCESS_NAME"/> in that session counts. That errs on the safe side. The writer
+/// counts only in its own session, and only from this install when its path can be read, because
+/// Windows reuses process IDs.
 /// </para>
 /// <para>
-/// A note or a notes folder that cannot be read stops the start too, and is never deleted: only a
-/// note that was read and no longer counts is removed. A start looks again a few times first, in case
-/// the failure was brief.
+/// A published note or this install's notes folder that cannot be read stops the start too, and is
+/// never deleted: only a note that was read and no longer counts is removed. A start looks again a
+/// few times first, in case the failure was brief. A note is published only when complete, so a
+/// writer that stops part way leaves nothing that blocks.
 /// </para>
 /// <para>
-/// Each user has a file of their own for each session. On Windows, a user can read a file that
-/// another user made in <c>%ProgramData%</c>, but cannot replace or delete it.
+/// Each install has a folder of its own under the notes folder, and a start reads only its own. Each
+/// user has a file of their own for each session. On Windows, a user can read a file that another
+/// user made in <c>%ProgramData%</c>, but cannot replace or delete it.
 /// </para>
 /// </remarks>
 public sealed class PendingUpdateMarker
@@ -92,8 +96,11 @@ public sealed class PendingUpdateMarker
 
     private const string PREFIX = "pending-";
 
-    private readonly string _directory;
-    private readonly string _installKey;
+    // A note being written. Readers look only for PREFIX, so they never see one.
+    private const string WRITING_PREFIX = "writing-";
+
+    private readonly string _folder;
+    private readonly string _root;
     private readonly string _updaterPath;
     private readonly AppCopy _self;
 
@@ -102,12 +109,17 @@ public sealed class PendingUpdateMarker
     /// <param name="self">This copy of DAQiFi.</param>
     public PendingUpdateMarker(string directory, string installRoot, AppCopy self)
     {
-        _directory = directory;
-        var root = NormalizedPath(installRoot) ?? installRoot.ToUpperInvariant();
-        _installKey = Key(root);
-        _updaterPath = Path.Combine(root, $"{UPDATER_PROCESS_NAME}.exe".ToUpperInvariant());
+        _root = NormalizedPath(installRoot) ?? installRoot.ToUpperInvariant();
+
+        // Each install has a folder of its own, and a start reads only that one. So another
+        // install's notes, or a shared folder that cannot be listed, never stop this install.
+        _folder = Path.Combine(directory, Key(_root));
+        _updaterPath = Path.Combine(_root, $"{UPDATER_PROCESS_NAME}.exe".ToUpperInvariant());
         _self = self;
     }
+
+    /// <summary>For tests: runs when a note's content is complete on disk, before the note is published.</summary>
+    internal Action<string>? BeforePublish { get; init; }
 
     /// <summary>
     /// Hands over to the updater with <paramref name="apply"/>, which exits the app. On an install for
@@ -211,15 +223,15 @@ public sealed class PendingUpdateMarker
         string[] files;
         try
         {
-            files = Directory.GetFiles(_directory, $"{PREFIX}{_installKey}-*");
+            files = Directory.GetFiles(_folder, $"{PREFIX}*");
         }
         catch (DirectoryNotFoundException)
         {
-            return null; // no folder yet: no update was ever handed over on this PC
+            return null; // no folder: no update of this install was ever handed over on this PC
         }
         catch (Exception ex)
         {
-            return new PendingUpdate(null, $"The folder {_directory} could not be read ({ex.Message}).");
+            return new PendingUpdate(null, $"The folder {_folder} could not be read ({ex.Message}).");
         }
 
         var readable = new List<(string File, Note Note)>();
@@ -263,16 +275,22 @@ public sealed class PendingUpdateMarker
         return problem is null ? null : new PendingUpdate(null, problem);
     }
 
-    // The copy that wrote the note still runs, or this install's updater runs in its session. This
-    // copy is never the one: after a restart it can have the writer's old process ID.
+    // The copy that wrote the note still runs, or this install's updater runs in its session. Both
+    // must be in the writer's session, and from this install when their path can be read: Windows
+    // reuses process IDs. This copy is never the one: after a restart it can have the writer's old ID.
     private bool UpdateRuns(Note note, List<SessionProcess> running) =>
         running.Any(p => p.Id != _self.ProcessId
-                         && ((p.SessionId == note.SessionId && SameName(p.Name, UPDATER_PROCESS_NAME) && IsThisInstallsUpdater(p.ImagePath))
-                             || (p.Id == note.ProcessId && SameName(p.Name, note.ProcessName))));
+                         && p.SessionId == note.SessionId
+                         && ((SameName(p.Name, UPDATER_PROCESS_NAME) && IsThisInstallsUpdater(p.ImagePath))
+                             || (p.Id == note.ProcessId && SameName(p.Name, note.ProcessName) && IsInThisInstall(p.ImagePath))));
 
     // A path that cannot be read (null), or not understood, could be this install's updater.
     private bool IsThisInstallsUpdater(string? imagePath) =>
         NormalizedPath(imagePath) is not { } path || path == _updaterPath;
+
+    // The same rule for the writer, whose executable is somewhere under the install folder.
+    private bool IsInThisInstall(string? imagePath) =>
+        NormalizedPath(imagePath) is not { } path || path.StartsWith(_root + Path.DirectorySeparatorChar, StringComparison.Ordinal);
 
     private static bool SameName(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
@@ -280,25 +298,45 @@ public sealed class PendingUpdateMarker
         arg.StartsWith("--veloapp-", StringComparison.OrdinalIgnoreCase)
         || arg.StartsWith("--squirrel-", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Records that this copy hands <paramref name="version"/> over to the updater now.</summary>
+    /// <summary>
+    /// Records that this copy hands <paramref name="version"/> over to the updater now. The note is
+    /// written in full under a name that readers do not look for, flushed to disk, and only then
+    /// renamed to its published name. So a writer that stops part way never leaves a published note
+    /// that is empty or incomplete, which a start would have to treat as unknown.
+    /// </summary>
     private void Write(string version)
     {
-        Directory.CreateDirectory(_directory);
-        File.WriteAllLines(OwnPath(),
-        [
-            version,
-            _self.SessionId.ToString(CultureInfo.InvariantCulture),
-            _self.ProcessId.ToString(CultureInfo.InvariantCulture),
-            _self.ProcessName,
-        ]);
+        Directory.CreateDirectory(_folder);
+        var writing = Path.Combine(_folder, $"{WRITING_PREFIX}{Guid.NewGuid():N}");
+        try
+        {
+            using (var stream = new FileStream(writing, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var writer = new StreamWriter(stream))
+            {
+                writer.WriteLine(version);
+                writer.WriteLine(_self.SessionId.ToString(CultureInfo.InvariantCulture));
+                writer.WriteLine(_self.ProcessId.ToString(CultureInfo.InvariantCulture));
+                writer.WriteLine(_self.ProcessName);
+                writer.Flush();
+                stream.Flush(flushToDisk: true);
+            }
+
+            BeforePublish?.Invoke(writing);
+            File.Move(writing, OwnPath(), overwrite: true);
+        }
+        catch
+        {
+            TryDelete(writing);
+            throw;
+        }
     }
 
     private void Clear() => TryDelete(OwnPath());
 
     // One note per user and session: on Windows, a user cannot replace another user's file.
     private string OwnPath() => Path.Combine(
-        _directory,
-        $"{PREFIX}{_installKey}-{Key(_self.User.ToUpperInvariant())}-{_self.SessionId.ToString(CultureInfo.InvariantCulture)}");
+        _folder,
+        $"{PREFIX}{Key(_self.User.ToUpperInvariant())}-{_self.SessionId.ToString(CultureInfo.InvariantCulture)}");
 
     private sealed record Note(string Version, int SessionId, int ProcessId, string ProcessName);
 

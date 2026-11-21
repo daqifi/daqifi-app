@@ -38,6 +38,12 @@ public sealed class PendingUpdateMarkerTests : IDisposable
 
     private PendingUpdateMarker For(AppCopy copy, string? installRoot = null) => new(_notes, installRoot ?? _install, copy);
 
+    /// <summary>Every file under the notes folder, in every install's folder: published notes and any left part written.</summary>
+    private string[] AllFiles() => Directory.Exists(_notes) ? Directory.GetFiles(_notes, "*", SearchOption.AllDirectories) : [];
+
+    /// <summary>The published notes, in every install's folder.</summary>
+    private string[] Notes() => AllFiles().Where(f => Path.GetFileName(f).StartsWith("pending-", StringComparison.Ordinal)).ToArray();
+
     private static SessionProcess Process(AppCopy copy) => new(copy.ProcessId, copy.ProcessName, copy.SessionId);
 
     /// <summary>An updater whose path this copy cannot read, as for another user's or an elevated process.</summary>
@@ -163,7 +169,7 @@ public sealed class PendingUpdateMarkerTests : IDisposable
 
         Assert.Contains("Another copy of DAQiFi", ex.Message);
         Assert.Equal(0, applied);
-        Assert.Empty(Directory.GetFiles(_notes));
+        Assert.Empty(AllFiles());
     }
 
     [Fact]
@@ -175,7 +181,7 @@ public sealed class PendingUpdateMarkerTests : IDisposable
             PendingUpdateMarker.HandOver(For(Alice), NEW, needsElevation: true, () => false, () => throw failure));
 
         Assert.Same(failure, thrown);
-        Assert.Empty(Directory.GetFiles(_notes));
+        Assert.Empty(AllFiles());
     }
 
     /// <summary>A failed look for other copies counts as one: closing someone's work is worse than not installing.</summary>
@@ -188,7 +194,7 @@ public sealed class PendingUpdateMarkerTests : IDisposable
             PendingUpdateMarker.HandOver(For(Alice), NEW, needsElevation: true, () => throw new UnauthorizedAccessException(), () => applied++));
 
         Assert.Equal(0, applied);
-        Assert.Empty(Directory.GetFiles(_notes));
+        Assert.Empty(AllFiles());
     }
 
     // ---- How long the note counts (review thread 2) -------------------------------------------
@@ -282,7 +288,7 @@ public sealed class PendingUpdateMarkerTests : IDisposable
 
         Assert.Null(seen);
         Assert.Equal(2, waits);
-        Assert.Empty(Directory.GetFiles(_notes));
+        Assert.Empty(AllFiles());
     }
 
     /// <summary>Only a copy the updater restarted waits; any other copy is told at once.</summary>
@@ -376,11 +382,11 @@ public sealed class PendingUpdateMarkerTests : IDisposable
     {
         AliceHandsOver();
         PendingUpdateMarker.HandOver(For(Alice with { User = @"pc\ALICE" }), NEW, true, () => false, () => { });
-        Assert.Single(Directory.GetFiles(_notes));
+        Assert.Single(Notes());
 
         PendingUpdateMarker.HandOver(For(Alice with { SessionId = BOB_SESSION }), NEW, true, () => false, () => { });
         PendingUpdateMarker.HandOver(For(Bob), NEW, true, () => false, () => { });
-        Assert.Equal(3, Directory.GetFiles(_notes).Length);
+        Assert.Equal(3, Notes().Length);
     }
 
     [Fact]
@@ -422,7 +428,7 @@ public sealed class PendingUpdateMarkerTests : IDisposable
     public void NoteThatCannotBeOpened_StopsTheStart_AndIsKept()
     {
         AliceHandsOver();
-        var note = Assert.Single(Directory.GetFiles(_notes));
+        var note = Assert.Single(Notes());
 
         string? seen;
         using (new FileStream(note, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
@@ -441,7 +447,7 @@ public sealed class PendingUpdateMarkerTests : IDisposable
     public void NoteThatCannotBeOpenedForAMoment_IsReadOnTheNextLook()
     {
         AliceHandsOver();
-        var note = Assert.Single(Directory.GetFiles(_notes));
+        var note = Assert.Single(Notes());
         var holder = new FileStream(note, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
 
         try
@@ -458,28 +464,66 @@ public sealed class PendingUpdateMarkerTests : IDisposable
     private const string FOLDER_NEEDS_ENFORCED_PERMISSIONS =
         "Needs a folder that this user cannot list: Windows has no UnixFileMode, and a run as root ignores it.";
 
+    private const UnixFileMode OWNER_ALL = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
     /// <summary>
-    /// Round 2, thread 1: a notes folder that is there but cannot be listed stops the start too.
-    /// Only a folder that is not there means that no update was ever handed over.
+    /// Round 2, thread 1: this install's notes folder is there but cannot be listed, so the start
+    /// stops too. Only a folder that is not there means that no update was ever handed over.
     /// </summary>
     [EnforcedReadOnlyDirectoryFact(FOLDER_NEEDS_ENFORCED_PERMISSIONS)]
     public void NotesFolderThatCannotBeListed_StopsTheStart()
     {
         if (OperatingSystem.IsWindows()) { Assert.Fail(FOLDER_NEEDS_ENFORCED_PERMISSIONS); return; }
         AliceHandsOver();
-        File.SetUnixFileMode(_notes, UnixFileMode.None);
+        var folder = Path.GetDirectoryName(Assert.Single(Notes()))!;
+        File.SetUnixFileMode(folder, UnixFileMode.None);
         try
         {
             var seen = Describe(For(Bob).CheckAtStart(NoArgs, false, () => _running.ToList(), CountWaits()));
 
             Assert.StartsWith(PROBLEM, seen);
-            Assert.Contains(_notes, seen);
+            Assert.Contains(folder, seen);
             Assert.Equal(PendingUpdateMarker.READ_RETRIES, _waits);
         }
         finally
         {
-            File.SetUnixFileMode(_notes, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            File.SetUnixFileMode(folder, OWNER_ALL);
         }
+    }
+
+    /// <summary>
+    /// Round 3, thread 2: install A has a note, and the shared notes folder cannot be listed (it can
+    /// still be passed through, as Windows lets every user do by default). A separate install B, for
+    /// example a private one, starts: its updater and A's cannot close each other's processes.
+    /// </summary>
+    [EnforcedReadOnlyDirectoryFact(FOLDER_NEEDS_ENFORCED_PERMISSIONS)]
+    public void AnotherInstallsNote_AndASharedFolderThatCannotBeListed_DoNotStopThisInstall()
+    {
+        if (OperatingSystem.IsWindows()) { Assert.Fail(FOLDER_NEEDS_ENFORCED_PERMISSIONS); return; }
+        AliceHandsOver();
+        var privateInstall = Path.Combine(Path.GetTempPath(), "daqifi-install-509", "bob-local", "DAQiFi");
+        File.SetUnixFileMode(_notes, UnixFileMode.UserExecute);
+        try
+        {
+            Assert.Null(Describe(For(Bob, privateInstall).CheckAtStart(NoArgs, false, () => _running.ToList(), CountWaits())));
+            Assert.Equal(0, _waits);
+        }
+        finally
+        {
+            File.SetUnixFileMode(_notes, OWNER_ALL);
+        }
+    }
+
+    /// <summary>Round 3, thread 2: a note that cannot be read stops only the install it belongs to.</summary>
+    [Fact]
+    public void AnotherInstallsNoteThatCannotBeRead_DoesNotStopThisInstall()
+    {
+        AliceHandsOver();
+        File.WriteAllText(Assert.Single(Notes()), "garbage");
+        var privateInstall = Path.Combine(Path.GetTempPath(), "daqifi-install-509", "bob-local", "DAQiFi");
+
+        Assert.Null(Describe(For(Bob, privateInstall).CheckAtStart(NoArgs, false, () => _running.ToList(), CountWaits())));
+        Assert.StartsWith(PROBLEM, Start(Bob, wait: CountWaits()));
     }
 
     /// <summary>
@@ -495,7 +539,7 @@ public sealed class PendingUpdateMarkerTests : IDisposable
     public void NoteWithContentThatCannotBeRead_StopsTheStart_AndIsKept(string content)
     {
         AliceHandsOver();
-        var note = Assert.Single(Directory.GetFiles(_notes));
+        var note = Assert.Single(Notes());
         File.WriteAllText(note, content);
 
         // Any note that could be read would count here: session 0, process 0, and Alice's session all run something.
@@ -512,7 +556,7 @@ public sealed class PendingUpdateMarkerTests : IDisposable
     public void NoteThatCounts_IsReported_BeforeANoteThatCannotBeRead()
     {
         AliceHandsOver();
-        File.WriteAllText(Path.Combine(_notes, Path.GetFileName(Assert.Single(Directory.GetFiles(_notes))) + "-other"), "garbage");
+        File.WriteAllText(Assert.Single(Notes()) + "-other", "garbage");
 
         Assert.Equal(NEW, Start(Bob, wait: CountWaits()));
     }
@@ -522,7 +566,7 @@ public sealed class PendingUpdateMarkerTests : IDisposable
     public void FinishedNote_IsRemoved_WhileANoteThatCannotBeReadStays()
     {
         AliceHandsOver();
-        var finished = Assert.Single(Directory.GetFiles(_notes));
+        var finished = Assert.Single(Notes());
         var unreadable = finished + "-other";
         File.WriteAllText(unreadable, "garbage");
         _running = [];
@@ -536,7 +580,7 @@ public sealed class PendingUpdateMarkerTests : IDisposable
     public void ProcessListThatFails_WithOnlyUnreadableNotes_StopsTheStart()
     {
         AliceHandsOver();
-        File.WriteAllText(Assert.Single(Directory.GetFiles(_notes)), "garbage");
+        File.WriteAllText(Assert.Single(Notes()), "garbage");
 
         var seen = Describe(For(Bob).CheckAtStart(NoArgs, false, () => throw new InvalidOperationException(), CountWaits()));
 
@@ -590,7 +634,7 @@ public sealed class PendingUpdateMarkerTests : IDisposable
 
         Assert.Null(Start(Alice, restartedByUpdater: true, wait: CountWaits()));
         Assert.Equal(0, _waits);
-        Assert.Empty(Directory.GetFiles(_notes));
+        Assert.Empty(AllFiles());
     }
 
     /// <summary>A path that is there but cannot be understood could still be this install's updater.</summary>
@@ -599,6 +643,99 @@ public sealed class PendingUpdateMarkerTests : IDisposable
     {
         AliceHandsOver();
         _running = [UpdaterAt(UPDATER_PID, ALICE_SESSION, "\0")];
+
+        Assert.Equal(NEW, Start(Bob));
+    }
+
+    // ---- Publishing a note (review round 3, thread 1) ------------------------------------------
+
+    /// <summary>
+    /// Round 3, thread 1: the note is complete on disk before it is published. If the writer stopped
+    /// at that moment, nothing would be published, so a start sees no note and nothing blocks it.
+    /// </summary>
+    [Fact]
+    public void Note_IsCompleteOnDisk_BeforeItIsPublished()
+    {
+        string[]? written = null;
+        string[]? publishedThen = null;
+        string? seenByBobThen = "not looked";
+        _running = [Process(Alice)];
+        var marker = new PendingUpdateMarker(_notes, _install, Alice)
+        {
+            BeforePublish = writing =>
+            {
+                written = File.ReadAllLines(writing);
+                publishedThen = Notes();
+                seenByBobThen = Start(Bob);
+            },
+        };
+
+        PendingUpdateMarker.HandOver(marker, NEW, needsElevation: true, () => false, () => { });
+
+        Assert.NotNull(written);
+        Assert.Equal([NEW, $"{ALICE_SESSION}", $"{ALICE_PID}", "DAQiFi"], written);
+        Assert.Empty(publishedThen!);
+        Assert.Null(seenByBobThen);
+        Assert.Equal(written, File.ReadAllLines(Assert.Single(Notes())));
+        Assert.Equal(Notes(), AllFiles());
+    }
+
+    /// <summary>A write that fails before the note is published leaves nothing: no note, and nothing part written.</summary>
+    [Fact]
+    public void WriteThatFailsBeforePublishing_LeavesNothing()
+    {
+        var applied = 0;
+        var marker = new PendingUpdateMarker(_notes, _install, Alice) { BeforePublish = _ => throw new IOException("disk full") };
+
+        Assert.Throws<InvalidOperationException>(() =>
+            PendingUpdateMarker.HandOver(marker, NEW, needsElevation: true, () => false, () => applied++));
+
+        Assert.Equal(0, applied);
+        Assert.Empty(AllFiles());
+    }
+
+    // ---- The writer's process (review round 3, thread 3) ---------------------------------------
+
+    private string ThisInstallsApp => Path.Combine(_install, "current", "DAQiFi.exe");
+
+    // A neighbour whose folder name starts with this install's: it is not under this install.
+    private string NeighbourInstallsApp => Path.Combine(_install + "-beta", "current", "DAQiFi.exe");
+
+    /// <summary>Round 3, thread 3: Windows reuses process IDs. The writer's ID, now a DAQiFi process in another session, does not keep the note.</summary>
+    [Fact]
+    public void WritersProcessId_ReusedInAnotherSession_DoesNotKeepTheNote()
+    {
+        AliceHandsOver();
+        _running = [new SessionProcess(ALICE_PID, "DAQiFi", BOB_SESSION)];
+
+        Assert.Null(Start(Bob));
+    }
+
+    /// <summary>Round 3, thread 3: the same in the writer's session, when the process's path shows it is from another install.</summary>
+    [Fact]
+    public void WritersProcessId_ReusedByAnotherInstall_InTheWritersSession_DoesNotKeepTheNote()
+    {
+        AliceHandsOver();
+        _running = [new SessionProcess(ALICE_PID, "DAQiFi", ALICE_SESSION, NeighbourInstallsApp)];
+
+        Assert.Null(Start(Bob));
+    }
+
+    [Fact]
+    public void Writer_FromThisInstall_WithAPathThatCanBeRead_KeepsTheNote()
+    {
+        AliceHandsOver();
+        _running = [new SessionProcess(ALICE_PID, "DAQiFi", ALICE_SESSION, ThisInstallsApp.ToLowerInvariant())];
+
+        Assert.Equal(NEW, Start(Bob));
+    }
+
+    /// <summary>A path that is there but cannot be understood could still be the writer.</summary>
+    [Fact]
+    public void Writer_WithAPathThatCannotBeUnderstood_KeepsTheNote()
+    {
+        AliceHandsOver();
+        _running = [new SessionProcess(ALICE_PID, "DAQiFi", ALICE_SESSION, "\0")];
 
         Assert.Equal(NEW, Start(Bob));
     }
