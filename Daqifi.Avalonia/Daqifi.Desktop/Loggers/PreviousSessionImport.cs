@@ -163,7 +163,7 @@ public sealed class PreviousSessionImport
 
             return !OfferRetired && Scalar<long>(connection,
                 $"SELECT COUNT(*) FROM old.Sessions o WHERE {PreviousIsComplete(connection)} AND {HasSamples} " +
-                $"AND NOT EXISTS (SELECT 1 FROM main.Sessions m WHERE m.Status = 0 AND {ProvedCopy(connection)})") > 0;
+                $"AND {NeedsNewCopy(ProvedCopy(connection))}") > 0;
         }
         catch
         {
@@ -218,9 +218,8 @@ public sealed class PreviousSessionImport
         }
 
         // The sessions to bring over and the sample ID range each spans in the old database. None
-        // once the offer is retired: then only the copies made earlier are continued. A session that
-        // has a copy is skipped, unless that copy failed and does not continue from it (see
-        // CopiesToContinue). Such a copy is left as it is, and the session is copied again beside it.
+        // once the offer is retired: then only the copies made earlier are continued. The offer asks
+        // the same question (see NeedsNewCopy).
         var pending = new List<(long Id, string Start, string Name, long First, long Last)>();
         if (!OfferRetired)
         {
@@ -232,8 +231,7 @@ public sealed class PreviousSessionImport
                        "(SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID), " +
                        "(SELECT MAX(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) " +
                        $"FROM old.Sessions o WHERE {complete} AND {HasSamples} " +
-                       $"AND NOT EXISTS (SELECT 1 FROM main.Sessions m WHERE {copyOf} AND (m.Status <> {(int)SessionStatus.ImportFailed} " +
-                       $"OR {Continues("m.ID", "o.ID", "m.PreviousLastSampleId")})) ORDER BY o.ID"))
+                       $"AND {NeedsNewCopy(copyOf)} ORDER BY o.ID"))
             using (var reader = read.ExecuteReader())
             {
                 while (reader.Read())
@@ -560,8 +558,8 @@ public sealed class PreviousSessionImport
     internal int LockTimeoutSeconds { get; init; } = 30;
 
     /// <summary>
-    /// The copies to continue: copies that continue from their old session (see
-    /// <see cref="Continues"/>) and are behind it (it has a sample with a higher ID than the last one
+    /// The copies to continue: copies of their old session (see <see cref="SameRecording"/>) that
+    /// have a last sample ID and are behind it (it has a sample with a higher ID than the last one
     /// the copy holds) or stopped part-way (<see cref="SessionStatus.ImportFailed"/>). A <c>FROM</c>
     /// clause with the copy as <c>m</c>, and its old session as <c>x</c> with <c>x.Id</c> and
     /// <c>x.LastId</c>. A copy another import may still be writing (<see cref="SessionStatus.Importing"/>)
@@ -571,16 +569,15 @@ public sealed class PreviousSessionImport
     /// (none made by a release) is never continued.
     /// </summary>
     /// <remarks>
-    /// The first and last sample of each old session are two index lookups, and a copy is matched to
-    /// its old session as <c>IsCopy</c> does: the first sample ID, the start, and the first sample.
+    /// The first and last sample of each old session are two index lookups, computed once for each
+    /// old session; the copy is then matched with the same <see cref="SameRecording"/> as everywhere.
     /// </remarks>
     private static string CopiesToContinue(string complete) =>
         "FROM (SELECT o.ID AS Id, o.SessionStart AS Start, (SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) AS FirstId, " +
         $"(SELECT MAX(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) AS LastId FROM old.Sessions o WHERE {complete}) x " +
-        "JOIN main.Sessions m ON m.PreviousFirstSampleId = x.FirstId AND m.SessionStart = x.Start " +
-        $"WHERE m.Status <> {(int)SessionStatus.Importing} " +
-        $"AND (m.PreviousLastSampleId < x.LastId OR m.Status = {(int)SessionStatus.ImportFailed}) " +
-        $"AND {SameSample("x.FirstId", "x.Id", "m.ID", "MIN")} AND {Continues("m.ID", "x.Id", "m.PreviousLastSampleId")}";
+        $"JOIN main.Sessions m ON {SameRecording("x.Id", "x.FirstId", "x.Start")} " +
+        $"WHERE m.PreviousLastSampleId IS NOT NULL AND m.Status <> {(int)SessionStatus.Importing} " +
+        $"AND (m.PreviousLastSampleId < x.LastId OR m.Status = {(int)SessionStatus.ImportFailed})";
 
     /// <summary>
     /// The condition that copy <paramref name="copy"/> continues from old session
@@ -615,7 +612,16 @@ public sealed class PreviousSessionImport
 
     /// <summary>
     /// The condition that session <c>m</c> of this user's database is this import's copy of old
-    /// session <c>o</c>.
+    /// session <c>o</c>. See <see cref="SameRecording"/>.
+    /// </summary>
+    private static readonly string IsCopy =
+        SameRecording("o.ID", "(SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID)", "o.SessionStart");
+
+    /// <summary>
+    /// The one decision whether session <c>m</c> of this user's database is a copy of an old session,
+    /// that is, of the same recording. The offer, the list of new sessions and the copies to continue
+    /// all use it, so they cannot disagree. The old session is given by its ID, its first sample ID
+    /// and its start.
     /// </summary>
     /// <remarks>
     /// Each copy records the ID of its old session's first sample (<c>PreviousFirstSampleId</c>),
@@ -625,13 +631,27 @@ public sealed class PreviousSessionImport
     /// them again at 1. The start is not enough either: an SD card session starts on a whole second
     /// (the time in the log's file name), so card logs of two boards can share it (#511). So the
     /// copy's first sample must also be the old first sample: the same time, value, channel and board
-    /// serial number. A copy always keeps its first sample: the import never deletes, and the first
-    /// batch writes the copy's row together with its first samples. The import writes the old start
-    /// unchanged, and nothing rewrites it. Each part is an index lookup.
+    /// serial number. And a copy that records its last sample ID must continue from the old session
+    /// there (see <see cref="Continues"/>): a recording that only starts like the copy is a different
+    /// one, and is copied as a session of its own. A copy always keeps its first sample: the import
+    /// never deletes, and the first batch writes the copy's row together with its first samples. The
+    /// import writes the old start unchanged, and nothing rewrites it. Each part is an index lookup.
     /// </remarks>
-    private static readonly string IsCopy =
-        "m.PreviousFirstSampleId = (SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) AND m.SessionStart = o.SessionStart " +
-        $"AND {SameSample("m.PreviousFirstSampleId", "o.ID", "m.ID", "MIN")}";
+    private static string SameRecording(string old, string oldFirstId, string oldStart) =>
+        $"(m.PreviousFirstSampleId = {oldFirstId} AND m.SessionStart = {oldStart} " +
+        $"AND {SameSample("m.PreviousFirstSampleId", old, "m.ID", "MIN")} " +
+        $"AND (m.PreviousLastSampleId IS NULL OR {Continues("m.ID", old, "m.PreviousLastSampleId")}))";
+
+    /// <summary>
+    /// The condition that old session <c>o</c> needs a new copy: no copy of it (see
+    /// <paramref name="copyOf"/>, the <see cref="ProvedCopy"/> condition) is complete, being written,
+    /// or can be continued. A failed copy that records no last sample ID cannot be continued: it is
+    /// left as it is, and the session is copied again beside it. The offer and the import both use
+    /// this, so they cannot disagree.
+    /// </summary>
+    private static string NeedsNewCopy(string copyOf) =>
+        $"NOT EXISTS (SELECT 1 FROM main.Sessions m WHERE {copyOf} " +
+        $"AND (m.Status <> {(int)SessionStatus.ImportFailed} OR m.PreviousLastSampleId IS NOT NULL))";
 
     /// <summary>
     /// The one rule that decides if session <c>m</c> is proved to be this import's copy of old

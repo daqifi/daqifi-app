@@ -1103,6 +1103,32 @@ public sealed class PreviousSessionImportTests : IDisposable
     }
 
     [Fact]
+    public async Task A_different_recording_with_only_the_first_reading_of_a_copy_is_offered_and_imported_beside_it()
+    {
+        // The offer is not retired yet. A new database at the same path holds a recording with the
+        // same start and first reading as a complete copy, but another second reading and a third
+        // sample: a different recording. Both must be kept, each as a session of its own.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41", "Card log", 1, 2);
+        var copy = Assert.Single((await RunImport()).Imported);
+
+        ReplacePreviousDatabase();
+        Execute(_previous, "INSERT INTO Sessions (ID, SessionStart, Name, SampleCount) VALUES (1, '2026-03-29 18:51:41', 'Restored log', 3);");
+        AddPreviousSample(1, 1);
+        Execute(_previous,
+            "INSERT INTO Samples (ID, LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            "VALUES (2, 1, 2.5, 25, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);");
+        AddPreviousSample(1, 3);
+
+        Assert.True(Import().HasSessionsToImport(), "The other recording must be offered.");
+        await RunImport();
+
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+        Assert.Equal(3L, CopiedSamples("Restored log"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
     public async Task A_copy_is_not_continued_when_the_old_sample_at_its_last_sample_ID_belongs_to_another_session()
     {
         // In the new database the sample at the copy's last ID has the same values (test samples are
@@ -1254,17 +1280,18 @@ public sealed class PreviousSessionImportTests : IDisposable
     }
 
     [Fact]
-    public async Task A_copy_with_no_last_sample_ID_is_not_compared()
+    public async Task A_complete_copy_with_no_last_sample_ID_is_a_copy_and_is_not_compared()
     {
         // Copies made before copies recorded their last sample (no release made any) cannot be
-        // compared with their old session.
+        // compared with their old session. Such a complete copy still counts as the copy: its
+        // session is not copied again, and the samples after its first one are not added.
         CreatePreviousDatabase();
-        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Imported before", 1, 2, 3);
+        AddPreviousSession(1, SameSecond, "Imported before", 1, 2, 3);
         AddCurrentSession(5, SessionStatus.Complete, previousFirstSampleId: 1);
-        Import().MarkDone();
 
         Assert.False(Import().HasSessionsToImport());
         Assert.Empty((await RunImport()).Imported);
+        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
     }
 
     [Fact]
