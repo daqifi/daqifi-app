@@ -16,10 +16,11 @@ namespace Daqifi.Desktop.ViewModels;
 /// </summary>
 /// <remarks>
 /// The state of an update has one source: the notification that <see cref="AppUpdateNotifier"/>
-/// shows (#503). This view model keeps that notification as <see cref="Notice"/> and gives the same
-/// object to the bell, so the drawer and the bell always show the same text and the same button.
-/// The view model adds only what the notifier does not keep: whether a check runs now, when the last
-/// check ended, and whether it failed.
+/// shows (#503). This view model keeps that notification as <see cref="Notice"/>, and the drawer
+/// shows its text and its button. The bell shows the same text, and its button opens this section
+/// (#346 review), so a download or a restart is always started from here. The view model adds only
+/// what the notifier does not keep: whether a check runs now, when the last check ended, and
+/// whether it failed.
 /// </remarks>
 public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
 {
@@ -29,12 +30,16 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
     /// </summary>
     public static readonly TimeSpan StartupDelay = TimeSpan.FromSeconds(30);
 
-    /// <summary>How often the app checks again while it stays open and no update is offered.</summary>
+    /// <summary>How often the app checks again while it stays open, including while an update is offered.</summary>
     public static readonly TimeSpan CheckInterval = TimeSpan.FromHours(6);
+
+    /// <summary>The label of the bell entry's button, which opens this section.</summary>
+    public const string OpenSectionText = "Open in Settings";
 
     private readonly IAppUpdateService _service;
     private readonly AppUpdateNotifier _notifier;
     private readonly Action<Notifications?> _showInBell;
+    private readonly Action _openSection;
     private readonly Action<Action> _post;
     private readonly Func<DateTime> _now;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
@@ -44,7 +49,8 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
     /// <param name="service">The update service for this head.</param>
     /// <param name="blocker">What, if anything, installing would interrupt now.</param>
     /// <param name="confirm">Asks a yes/no question (message, title); true means go ahead.</param>
-    /// <param name="showInBell">Puts the update's notification in the bell in place of the previous one; <c>null</c> removes it. Called on the UI thread.</param>
+    /// <param name="showInBell">Puts the update's entry in the bell in place of the previous one; <c>null</c> removes it. Called on the UI thread.</param>
+    /// <param name="openSection">Opens the settings drawer, where this section is. The bell entry's button calls it.</param>
     /// <param name="logger">Where failures are recorded.</param>
     /// <param name="attempts">Where the version being installed is remembered across the restart.</param>
     /// <param name="post">Runs an action on the UI thread. The notifier reports download progress from another thread. Runs the action at once when not given.</param>
@@ -55,6 +61,7 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
         Func<UpdateBlocker> blocker,
         Func<string, string, Task<bool>> confirm,
         Action<Notifications?> showInBell,
+        Action openSection,
         IAppLogger logger,
         UpdateAttemptMarker? attempts = null,
         Action<Action>? post = null,
@@ -63,6 +70,7 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
     {
         _service = service;
         _showInBell = showInBell;
+        _openSection = openSection;
         _post = post ?? (action => action());
         _now = now ?? (() => DateTime.Now);
         _delay = delay ?? Task.Delay;
@@ -70,15 +78,12 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// The version of this copy, for example <c>3.3.0</c>. A Debug build adds the short commit,
-    /// as the mobile shell does. A Release build does not: the commit is in <see cref="BuildVersion"/>,
-    /// and the captured screens of the settings drawer stay the same from one commit to the next.
+    /// The version of this copy with the short commit it was built from, for example
+    /// <c>3.3.0 (9f1c2ab)</c>, in every build (#346 review): a screenshot of the drawer then tells
+    /// two builds of one version apart. The capture harness builds with a fixed commit
+    /// (<c>tools/parity-audit/run.sh</c>), so its screens do not change from one commit to the next.
     /// </summary>
-#if DEBUG
     public string Version { get; } = FormatVersion(AppVersion.Semantic, AppVersion.ShortBuildMetadata);
-#else
-    public string Version { get; } = FormatVersion(AppVersion.Semantic, null);
-#endif
 
     /// <summary>The full version with the commit it was built from, shown as the tooltip of <see cref="Version"/>.</summary>
     public string BuildVersion { get; } = AppVersion.Informational ?? "dev";
@@ -89,7 +94,7 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
     /// </summary>
     public bool HasStatus => _service.Support != AppUpdateSupport.PlatformUnsupported;
 
-    /// <summary>The update's notification, the same object the bell shows, or <c>null</c> when there is none.</summary>
+    /// <summary>The update's notification as the notifier shows it, or <c>null</c> when there is none.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(Status), nameof(ActionText), nameof(ActionCommand), nameof(HasAction), nameof(CanCheckNow))]
     private Notifications? _notice;
@@ -124,7 +129,7 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
         _ => string.Empty,
     };
 
-    /// <summary>The label of the notification's button: install, try again or cancel. <c>null</c> when it has none.</summary>
+    /// <summary>The label of the notification's button: download, restart, try again or cancel. <c>null</c> when it has none.</summary>
     public string? ActionText => Notice?.ActionText;
 
     /// <summary>What the notification's button runs.</summary>
@@ -134,14 +139,16 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
     public bool HasAction => ActionText is not null;
 
     /// <summary>
-    /// True when "Check now" is shown: this copy can update and no update is offered yet. Once an
-    /// update is offered, its own button takes this place, and a new check would only replace it.
+    /// True when "Check now" is shown: this copy can update, and nothing or an offer waiting for the
+    /// user is shown (#346 review). A check then replaces an offer with a newer version, or takes it
+    /// down when the feed no longer has it. False while a download runs, which a check would replace.
     /// </summary>
-    public bool CanCheckNow => _service.Support == AppUpdateSupport.Supported && Notice is null;
+    public bool CanCheckNow => _service.Support == AppUpdateSupport.Supported && (Notice is null || _notifier.HasOffer);
 
     /// <summary>
     /// Checks shortly after start-up (<see cref="StartupDelay"/>), then each <see cref="CheckInterval"/>
-    /// until an update is offered. Returns at once when this copy cannot update. Never throws.
+    /// for as long as the app runs, so that an app left open across a release hears of it. A timed
+    /// check is skipped while a download runs. Returns at once when this copy cannot update. Never throws.
     /// </summary>
     public async Task RunAsync()
     {
@@ -151,7 +158,7 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
         try
         {
             await _delay(StartupDelay, token);
-            while (Notice is null)
+            while (true)
             {
                 await CheckAsync();
                 await _delay(CheckInterval, token);
@@ -168,9 +175,10 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
     private bool CanRunCheck() => !IsChecking;
 
     /// <summary>
-    /// Runs one check. When it finds an update, the notifier shows it, and its watch starts, so that
-    /// the button follows what installing would cut off (#348). A failed check is only a line in this
-    /// section and in the log: no network is normal for a bench PC.
+    /// Runs one check, unless one runs already or a download is under way. When it finds an update,
+    /// the notifier shows it, and its watch starts, so that "Restart to update" follows what
+    /// installing would cut off (#348). A failed check is only a line in this section and in the
+    /// log: no network is normal for a bench PC.
     /// </summary>
     private async Task CheckAsync()
     {
@@ -213,8 +221,19 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
     private void ShowNotice(Notifications? notice) => _post(() =>
     {
         Notice = notice;
-        _showInBell(notice);
+        _showInBell(notice is null ? null : BellEntry(notice));
     });
+
+    /// <summary>
+    /// The bell's copy of <paramref name="notice"/>: the same text, with a button that opens this
+    /// section instead of the notice's own button (#346 review). It starts no download or restart.
+    /// </summary>
+    private Notifications BellEntry(Notifications notice) => new()
+    {
+        Message = notice.Message,
+        ActionText = OpenSectionText,
+        Action = new RelayCommand(_openSection),
+    };
 
     /// <summary>The version as this section shows it: <c>3.3.0</c>, or <c>3.3.0 (abc1234)</c> with a commit.</summary>
     internal static string FormatVersion(string? semantic, string? shortCommit)

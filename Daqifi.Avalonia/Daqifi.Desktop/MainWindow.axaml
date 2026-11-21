@@ -398,13 +398,14 @@
                                 </Border>
 
                                 <!-- UPDATES section (#346), below EXPORT so that nothing above it
-                                     moves. The version is shown on no other desktop surface. The
-                                     state line and its button are the update notification itself
-                                     (AppUpdate.Notice), the same object the bell shows, so the two
-                                     never disagree. "Check now" is there until an update is
-                                     offered; then the offer's own button takes its place. On a
-                                     platform that does not update itself, HasStatus is false and
-                                     only the version shows. -->
+                                     moves. The version, with the commit it was built from, is shown
+                                     on no other desktop surface. The state line and its button are
+                                     the update notification itself (AppUpdate.Notice): "Download
+                                     update", then "Restart to update", or Cancel and Try again.
+                                     The bell shows the same text, and its button opens this
+                                     drawer. "Check now" sits beside the offer's button, and goes
+                                     while a download runs. On a platform that does not update
+                                     itself, HasStatus is false and only the version shows. -->
                                 <Border Classes="drawerSection">
                                 <StackPanel>
                                 <TextBlock Text="UPDATES" Classes="drawerSectionLabel"/>
@@ -418,20 +419,22 @@
                                 <StackPanel IsVisible="{Binding AppUpdate.HasStatus}">
                                     <TextBlock Text="{Binding AppUpdate.Status}"
                                                Classes="appSettingsHelpText"/>
-                                    <Button Content="Check now"
-                                            Command="{Binding AppUpdate.CheckNowCommand}"
-                                            IsVisible="{Binding AppUpdate.CanCheckNow}"
-                                            Theme="{StaticResource PillButton}"
-                                            HorizontalAlignment="Left"
-                                            Margin="0,10,0,0"
-                                            Cursor="Hand"/>
-                                    <Button Content="{Binding AppUpdate.ActionText}"
-                                            Command="{Binding AppUpdate.ActionCommand}"
-                                            IsVisible="{Binding AppUpdate.HasAction}"
-                                            Theme="{StaticResource AccentPillButton}"
-                                            HorizontalAlignment="Left"
-                                            Margin="0,10,0,0"
-                                            Cursor="Hand"/>
+                                    <!-- An invisible button takes no space, its margin included,
+                                         so a state with no button adds no gap below the line. -->
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button Content="{Binding AppUpdate.ActionText}"
+                                                Command="{Binding AppUpdate.ActionCommand}"
+                                                IsVisible="{Binding AppUpdate.HasAction}"
+                                                Theme="{StaticResource AccentPillButton}"
+                                                Margin="0,10,0,0"
+                                                Cursor="Hand"/>
+                                        <Button Content="Check now"
+                                                Command="{Binding AppUpdate.CheckNowCommand}"
+                                                IsVisible="{Binding AppUpdate.CanCheckNow}"
+                                                Theme="{StaticResource PillButton}"
+                                                Margin="0,10,0,0"
+                                                Cursor="Hand"/>
+                                    </StackPanel>
                                 </StackPanel>
                                 </StackPanel>
                                 </Border>

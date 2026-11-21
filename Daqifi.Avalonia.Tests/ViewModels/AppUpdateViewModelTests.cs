@@ -51,7 +51,10 @@ public class AppUpdateViewModelTests
 
         public void ApplyAndRestart(AppUpdateOffer offer) => Applies++;
 
-        public bool IsInstallInUseElsewhere() => false;
+        /// <summary>True while another copy runs from this installation.</summary>
+        public bool InUseElsewhere { get; set; }
+
+        public bool IsInstallInUseElsewhere() => InUseElsewhere;
     }
 
     /// <summary>
@@ -119,14 +122,17 @@ public class AppUpdateViewModelTests
         public UpdateBlocker Blocker { get; set; }
         public List<Notifications?> Bell { get; } = [];
         public RecordingAppLogger Logger { get; } = new();
+        public List<string> Confirms { get; } = [];
+        public int SectionOpened { get; private set; }
 
         private AppUpdateViewModel? _viewModel;
 
         public AppUpdateViewModel ViewModel => _viewModel ??= new(
             Service,
             () => Blocker,
-            (_, _) => Task.FromResult(true),
+            (message, _) => { Confirms.Add(message); return Task.FromResult(true); },
             notice => Bell.Add(notice),
+            () => SectionOpened++,
             Logger,
             now: () => CheckTime,
             delay: Waits.Delay);
@@ -266,27 +272,24 @@ public class AppUpdateViewModelTests
     }
 
     /// <summary>
-    /// One source of truth: the drawer shows the very notification the bell shows. Nothing is
-    /// downloaded until the button is clicked (#341), and "Check now" gives its place to that button.
+    /// One source of truth: the drawer shows the notifier's notification, and the bell shows its
+    /// text. Nothing is downloaded until the button is clicked (#341). "Check now" stays beside the
+    /// offer, so a newer version can still be found (#346 review).
     /// </summary>
     [Fact]
-    public async Task FoundUpdate_DrawerAndBellShowTheSameNotification()
+    public async Task FoundUpdate_DrawerShowsTheOffer_AndTheBellItsText()
     {
         using var h = new Harness();
         h.Service.Offer = new("3.4.0", null);
 
         await h.CheckNowAsync();
 
-        Assert.Same(Assert.Single(h.Bell), h.ViewModel.Notice);
         Assert.Equal("DAQiFi 3.4.0 is available.", h.ViewModel.Status);
-        Assert.Equal("Install and restart", h.ViewModel.ActionText);
+        Assert.Equal(h.ViewModel.Notice!.Message, Assert.Single(h.Bell)!.Message);
+        Assert.Equal("Download update", h.ViewModel.ActionText);
         Assert.True(h.ViewModel.HasAction);
-        Assert.False(h.ViewModel.CanCheckNow);
+        Assert.True(h.ViewModel.CanCheckNow);
         Assert.Equal(0, h.Service.Downloads);
-
-        // A new check would replace the offer, or a download's progress, with a fresh offer.
-        await h.CheckNowAsync();
-        Assert.Equal(1, h.Service.Checks);
     }
 
     /// <summary>The timer's check and a "Check now" click can come together; only one check runs.</summary>
@@ -308,7 +311,7 @@ public class AppUpdateViewModelTests
     }
 
     [Fact]
-    public async Task InstallFromTheDrawer_ShowsTheDownload_ThenRestarts()
+    public async Task DownloadFromTheDrawer_ShowsItsProgress_ThenReady()
     {
         using var h = new Harness();
         h.Service.Offer = new("3.4.0", null);
@@ -320,17 +323,17 @@ public class AppUpdateViewModelTests
         };
         await h.CheckNowAsync();
 
-        var install = h.ClickAction();
+        var download = h.ClickAction();
 
         Assert.Equal("Downloading DAQiFi 3.4.0... 42%", h.ViewModel.Status);
         Assert.Equal("Cancel", h.ViewModel.ActionText);
-        Assert.Same(h.Bell.Last(), h.ViewModel.Notice);
-        Assert.Equal(0, h.Service.Applies);
+        Assert.Equal(h.ViewModel.Status, h.Bell.Last()!.Message);
 
         downloading.SetResult();
-        await install;
+        await download;
 
-        Assert.Equal(1, h.Service.Applies);
+        Assert.Equal("DAQiFi 3.4.0 is ready.", h.ViewModel.Status);
+        Assert.Equal(0, h.Service.Applies);
     }
 
     [Fact]
@@ -346,13 +349,13 @@ public class AppUpdateViewModelTests
         await install;
 
         Assert.Equal("DAQiFi 3.4.0 is available.", h.ViewModel.Status);
-        Assert.Equal("Install and restart", h.ViewModel.ActionText);
+        Assert.Equal("Download update", h.ViewModel.ActionText);
         Assert.Equal(0, h.Service.Applies);
     }
 
-    /// <summary>The section follows #348 as the bell does: no install button while a restart would stop work.</summary>
+    /// <summary>Downloading stops nothing, so the offer keeps its button while logging runs. Only the restart waits.</summary>
     [Fact]
-    public async Task WhileLogging_TheOfferSaysWhatItWaitsFor_AndHasNoButton()
+    public async Task WhileLogging_TheOfferStillDownloads()
     {
         using var h = new Harness();
         h.Service.Offer = new("3.4.0", null);
@@ -360,63 +363,26 @@ public class AppUpdateViewModelTests
 
         await h.CheckNowAsync();
 
-        Assert.Equal("DAQiFi 3.4.0 is available. Install it when logging stops.", h.ViewModel.Status);
-        Assert.False(h.ViewModel.HasAction);
-        Assert.False(h.ViewModel.CanCheckNow);
+        Assert.Equal("DAQiFi 3.4.0 is available.", h.ViewModel.Status);
+        Assert.Equal("Download update", h.ViewModel.ActionText);
+        Assert.True(h.ViewModel.CanCheckNow);
     }
 
-    /// <summary>
-    /// The issue's "ready to restart" state. On an install for all users, a downloaded update that
-    /// had to wait does not restart by itself; it shows "Update ready." and a button (#503).
-    /// </summary>
+    /// <summary>This app stays open for hours: it checks again on a timer.</summary>
     [Fact]
-    public async Task AllUsersInstall_AfterAWait_ShowsUpdateReady_WithAButton()
+    public async Task NoUpdate_ChecksAgainAfterTheInterval()
     {
         using var h = new Harness();
-        h.Service.Offer = new("3.4.0", null);
-        h.Service.ApplyNeedsElevation = true;
-        h.Service.DownloadBody = (_, _) =>
-        {
-            h.Blocker = UpdateBlocker.Logging;
-            return Task.CompletedTask;
-        };
-        await h.CheckNowAsync();
-
-        var install = h.ClickAction();
-        await h.Waits.Pending(AppUpdateNotifier.RecheckInterval);
-
-        Assert.Equal("Update ready. Asks to install when logging stops.", h.ViewModel.Status);
-
-        h.Blocker = UpdateBlocker.None;
-        h.Waits.Release(AppUpdateNotifier.RecheckInterval);
-        await install;
-
-        Assert.Equal("Update ready.", h.ViewModel.Status);
-        Assert.Equal("Install and restart", h.ViewModel.ActionText);
-        Assert.Equal(0, h.Service.Applies);
-    }
-
-    /// <summary>This app stays open for hours: it checks again on a timer, and stops once an update is offered.</summary>
-    [Fact]
-    public async Task NoUpdate_ChecksAgainAfterTheInterval_AndStopsOnceOneIsOffered()
-    {
-        using var h = new Harness();
-        var run = h.ViewModel.RunAsync();
+        _ = h.ViewModel.RunAsync();
         h.Waits.Release(AppUpdateViewModel.StartupDelay);
         await h.Waits.Pending(AppUpdateViewModel.CheckInterval);
         Assert.Equal(1, h.Service.Checks);
 
-        h.Service.Offer = new("3.4.0", null);
         h.Waits.Release(AppUpdateViewModel.CheckInterval);
         await h.Waits.Pending(AppUpdateViewModel.CheckInterval);
 
         Assert.Equal(2, h.Service.Checks);
-        Assert.Equal("DAQiFi 3.4.0 is available.", h.ViewModel.Status);
-
-        h.Waits.Release(AppUpdateViewModel.CheckInterval);
-        await run.WaitAsync(TimeSpan.FromSeconds(30));
-
-        Assert.Equal(2, h.Service.Checks);
+        Assert.Equal($"Up to date. Checked at {CheckTime:t}.", h.ViewModel.Status);
     }
 
     [Fact]
@@ -429,5 +395,212 @@ public class AppUpdateViewModelTests
         await run.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Equal(0, h.Service.Checks);
+    }
+
+    // ---- PR #661 review, thread 1: an offer is refreshed while the app stays open ----
+
+    /// <summary>A bench PC stays open across releases: a newer version replaces the one on offer, in the drawer and in the bell.</summary>
+    [Fact]
+    public async Task NewerVersion_ReplacesTheOffer_OnCheckNow()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        await h.CheckNowAsync();
+
+        h.Service.Offer = new("3.4.1", null);
+        await h.CheckNowAsync();
+
+        Assert.Equal(2, h.Service.Checks);
+        Assert.Equal("DAQiFi 3.4.1 is available.", h.ViewModel.Status);
+        Assert.Equal("DAQiFi 3.4.1 is available.", h.Bell.Last()!.Message);
+    }
+
+    /// <summary>A version taken off the feed is no longer offered: both surfaces clear.</summary>
+    [Fact]
+    public async Task WithdrawnVersion_ClearsTheDrawerAndTheBell()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        await h.CheckNowAsync();
+
+        h.Service.Offer = null;
+        await h.CheckNowAsync();
+
+        Assert.Null(h.ViewModel.Notice);
+        Assert.Null(h.Bell.Last());
+        Assert.Equal($"Up to date. Checked at {CheckTime:t}.", h.ViewModel.Status);
+    }
+
+    /// <summary>The timer goes on after an offer, so a newer release reaches an app that stays open.</summary>
+    [Fact]
+    public async Task TimedChecks_GoOnAfterAnOffer()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        _ = h.ViewModel.RunAsync();
+        h.Waits.Release(AppUpdateViewModel.StartupDelay);
+        await h.Waits.Pending(AppUpdateViewModel.CheckInterval);
+
+        h.Service.Offer = new("3.4.1", null);
+        h.Waits.Release(AppUpdateViewModel.CheckInterval);
+        await h.Waits.Pending(AppUpdateViewModel.CheckInterval);
+
+        Assert.Equal(2, h.Service.Checks);
+        Assert.Equal("DAQiFi 3.4.1 is available.", h.ViewModel.Status);
+    }
+
+    /// <summary>No check runs while a download is under way: a new offer would replace its progress.</summary>
+    [Fact]
+    public async Task DuringADownload_NoCheckRuns()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        h.Service.DownloadBody = (_, token) => Task.Delay(Timeout.Infinite, token);
+        await h.CheckNowAsync();
+        _ = h.ClickAction();
+
+        await h.CheckNowAsync();
+
+        Assert.Equal(1, h.Service.Checks);
+        Assert.False(h.ViewModel.CanCheckNow);
+        Assert.StartsWith("Downloading DAQiFi 3.4.0", h.ViewModel.Status);
+    }
+
+    // ---- PR #661 review, thread 3: download first, then a separate restart ----
+
+    /// <summary>A finished download does not restart the app. "Restart to update" does, when the user chooses.</summary>
+    [Fact]
+    public async Task FinishedDownload_WaitsForRestartToUpdate()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        await h.CheckNowAsync();
+
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1, h.Service.Downloads);
+        Assert.Equal(0, h.Service.Applies);
+        Assert.Equal("DAQiFi 3.4.0 is ready.", h.ViewModel.Status);
+        Assert.Equal("Restart to update", h.ViewModel.ActionText);
+
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1, h.Service.Applies);
+    }
+
+    /// <summary>
+    /// Downloading stops nothing, so it starts while logging runs. The restart would stop the
+    /// session (#348, #653), so "Restart to update" has no button until logging stops.
+    /// </summary>
+    [Fact]
+    public async Task RestartToUpdate_WhileLogging_HasNoButton_UntilLoggingStops()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        await h.CheckNowAsync();
+        h.Blocker = UpdateBlocker.Logging;
+
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1, h.Service.Downloads);
+        Assert.Equal("DAQiFi 3.4.0 is ready. Restart when logging stops.", h.ViewModel.Status);
+        Assert.False(h.ViewModel.HasAction);
+
+        h.Blocker = UpdateBlocker.None;
+        h.Waits.Release(AppUpdateNotifier.OfferRecheckInterval);
+        await h.Waits.Pending(AppUpdateNotifier.OfferRecheckInterval);
+
+        Assert.Equal("DAQiFi 3.4.0 is ready.", h.ViewModel.Status);
+        Assert.Equal("Restart to update", h.ViewModel.ActionText);
+        Assert.Equal(0, h.Service.Applies);
+    }
+
+    /// <summary>Installing closes every copy of DAQiFi on the PC, so a click while another runs restarts nothing and says why.</summary>
+    [Fact]
+    public async Task RestartToUpdate_WhileAnotherCopyRuns_RestartsNothing_AndSaysWhy()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        await h.CheckNowAsync();
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+        h.Service.InUseElsewhere = true;
+
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(0, h.Service.Applies);
+        Assert.Equal("DAQiFi 3.4.0 is ready. Restart when other copies of DAQiFi on this PC are closed.", h.ViewModel.Status);
+        Assert.Equal("Restart to update", h.ViewModel.ActionText);
+    }
+
+    /// <summary>On an install for all users, the administrator question comes with the restart, not with the download.</summary>
+    [Fact]
+    public async Task AllUsersInstall_AsksAtTheRestart_NotAtTheDownload()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        h.Service.ApplyNeedsElevation = true;
+        await h.CheckNowAsync();
+
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Empty(h.Confirms);
+
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Contains("administrator", Assert.Single(h.Confirms));
+        Assert.Equal(1, h.Service.Applies);
+    }
+
+    // ---- PR #661 review, thread 2: the bell entry opens the UPDATES section ----
+
+    /// <summary>The bell says what the drawer says, and its button opens the drawer. It starts no download.</summary>
+    [Fact]
+    public async Task BellEntry_OpensTheSettings_AndStartsNoDownload()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        await h.CheckNowAsync();
+
+        var entry = h.Bell.Last()!;
+        Assert.Equal(h.ViewModel.Status, entry.Message);
+        Assert.Equal("Open in Settings", entry.ActionText);
+
+        entry.Action!.Execute(null);
+
+        Assert.Equal(1, h.SectionOpened);
+        Assert.Equal(0, h.Service.Downloads);
+        Assert.Equal("Download update", h.ViewModel.ActionText);   // the drawer keeps its own button
+    }
+
+    /// <summary>Every state the bell shows opens the section, the download's progress included.</summary>
+    [Fact]
+    public async Task BellEntry_DuringADownload_StillOpensTheSettings()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        h.Service.DownloadBody = (_, token) => Task.Delay(Timeout.Infinite, token);
+        await h.CheckNowAsync();
+        _ = h.ClickAction();
+
+        var entry = h.Bell.Last()!;
+        Assert.StartsWith("Downloading DAQiFi 3.4.0", entry.Message);
+        entry.Action!.Execute(null);
+
+        Assert.Equal(1, h.SectionOpened);
+        Assert.Equal("Cancel", h.ViewModel.ActionText);              // the bell did not cancel it
+    }
+
+    // ---- PR #661 review, thread 4: the short build ID in every build ----
+
+    /// <summary>
+    /// The row shows the short commit in every configuration. A Debug test run cannot see a Release
+    /// difference, so this pins the formula; the Release capture (desktop-6) shows the result.
+    /// </summary>
+    [Fact]
+    public void Version_HasTheShortBuildId_WhenTheBuildHasOne()
+    {
+        using var h = new Harness();
+
+        Assert.Equal(
+            AppUpdateViewModel.FormatVersion(Daqifi.Desktop.Common.AppVersion.Semantic, Daqifi.Desktop.Common.AppVersion.ShortBuildMetadata),
+            h.ViewModel.Version);
     }
 }

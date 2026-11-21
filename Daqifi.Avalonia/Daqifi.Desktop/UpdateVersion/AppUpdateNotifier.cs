@@ -30,37 +30,36 @@ public enum UpdateBlocker
 }
 
 /// <summary>
-/// Turns an available update into a notification, and installs it when the user asks. Replaces the
-/// startup check that asked the WPF app's repository for a version it could never parse (#345).
+/// Turns an available update into a notification, downloads it when the user asks, and installs it
+/// when the user asks again. Replaces the startup check that asked the WPF app's repository for a
+/// version it could never parse (#345).
 /// </summary>
 /// <remarks>
-/// Nothing is downloaded until the user clicks Install (#341: notify only, download on click). The
-/// update's state then lives in that one notification, replaced at each step: the download's
-/// percentage, what a waiting update waits for, or what went wrong. Each step has a button, and
-/// Cancel stops the download or the wait. Installing restarts the app, so when something is running
-/// that the restart would cut off, the update waits for it and then installs on its own. On an
-/// install for all users it does not: the wait ends with "Update ready." and a button, because the
-/// administrator prompt must come only when a person is there to answer it.
+/// Nothing is downloaded until the user clicks "Download update" (#341: notify only, download on
+/// click). The update's state then lives in that one notification, replaced at each step: the
+/// download's percentage, "ready", or what went wrong. Each step has a button, and Cancel stops the
+/// download. A finished download does not restart the app: the notification says the update is
+/// ready, and "Restart to update" installs it when the user chooses (#346 review). A later check
+/// replaces an offer with a newer version, or takes it down when the feed no longer has it.
 /// <para>
-/// A button that would install is never offered while the restart would cut something off (#348):
-/// a logging session, a firmware write, an SD card transfer, or any other <see cref="UpdateBlocker"/>.
-/// The notification says what the install waits for and has no button, and <see cref="WatchAsync"/>
-/// puts the button back when that work ends. A click that comes after the work starts but before
-/// the watch looks again is refused in the same way.
+/// Installing restarts the app, so "Restart to update" is never offered while the restart would cut
+/// something off (#348): a logging session, a firmware write, an SD card transfer, or any other
+/// <see cref="UpdateBlocker"/>. The notification says what the restart waits for and has no button,
+/// and <see cref="WatchAsync"/> puts the button back when that work ends. A click that comes after
+/// the work starts but before the watch looks again is refused in the same way. Downloading stops
+/// nothing, so "Download update" is offered at any time.
 /// </para>
 /// </remarks>
 public sealed class AppUpdateNotifier
 {
-    /// <summary>How often a waiting update looks again at what it is waiting for.</summary>
-    public static readonly TimeSpan RecheckInterval = TimeSpan.FromSeconds(10);
-
     /// <summary>
-    /// How often <see cref="WatchAsync"/> looks again. Shorter than <see cref="RecheckInterval"/>,
-    /// because here the user waits for the button to come back, and each look only reads a few flags.
+    /// How often <see cref="WatchAsync"/> looks again. Short, because here the user waits for the
+    /// button to come back, and each look only reads a few flags.
     /// </summary>
     public static readonly TimeSpan OfferRecheckInterval = TimeSpan.FromSeconds(2);
 
-    private const string INSTALL = "Install and restart";
+    private const string DOWNLOAD = "Download update";
+    private const string RESTART = "Restart to update";
     private const string TRY_AGAIN = "Try again";
 
     private readonly IAppUpdateService _service;
@@ -73,16 +72,22 @@ public sealed class AppUpdateNotifier
     private CancellationTokenSource? _installing;
     private bool _checkFailureLogged;
 
-    // The notification whose button would install, while one is shown. Null while an install step
-    // shows its own: its progress, or what it waits for.
+    // The notification with a button for the user, while one is shown. Null while an install step
+    // shows its own (the download's progress), and while nothing is shown.
     private Offered? _offered;
+
+    // The version downloaded and ready to install, or null.
+    private string? _readyVersion;
+
+    // What was shown last, or null when nothing is.
+    private Notifications? _shown;
 
     /// <param name="service">The update service for this head.</param>
     /// <param name="blocker">What, if anything, installing would interrupt right now.</param>
     /// <param name="confirm">Asks a yes/no question (message, title); true means go ahead.</param>
     /// <param name="show">Shows the update's notification in place of the previous one; <c>null</c> removes it. May be called from any thread.</param>
     /// <param name="logger">Where failures are recorded.</param>
-    /// <param name="delay">Waits between checks while the update waits; <see cref="Task.Delay(TimeSpan, CancellationToken)"/> unless a test supplies one.</param>
+    /// <param name="delay">Waits between the looks of <see cref="WatchAsync"/>; <see cref="Task.Delay(TimeSpan, CancellationToken)"/> unless a test supplies one.</param>
     /// <param name="attempts">Where the version being installed is remembered across the restart, so a copy that comes back without it can say so.</param>
     public AppUpdateNotifier(
         IAppUpdateService service,
@@ -106,10 +111,19 @@ public sealed class AppUpdateNotifier
     public bool LastCheckFailed { get; private set; }
 
     /// <summary>
-    /// Checks for a newer version and, when there is one, shows its notification. Returns the
-    /// notification shown, or <c>null</c> when updates are unsupported, this copy is current, or the
-    /// check failed. Never throws. Call <see cref="WatchAsync"/> after an offer, so that its button
-    /// follows what installing would cut off.
+    /// True while the notification shown waits for the user: an offer, a ready update, or a failure
+    /// to try again. False while a download runs, and while nothing is shown. A new check is safe
+    /// only when this is true or nothing is shown, because it replaces the notification.
+    /// </summary>
+    public bool HasOffer => _offered is not null;
+
+    /// <summary>
+    /// Checks for a newer version and shows what it found. A version on offer is replaced by a newer
+    /// one, and taken down when the feed no longer offers any (#346 review). A version already
+    /// downloaded stays ready. Returns the notification shown, or <c>null</c> when updates are
+    /// unsupported, this copy is current, or the check failed; a failed check changes nothing shown.
+    /// Never throws. Call <see cref="WatchAsync"/> after an offer, so that "Restart to update"
+    /// follows what installing would cut off. Do not call while a download runs (<see cref="HasOffer"/>).
     /// </summary>
     public async Task<Notifications?> CheckAsync(CancellationToken cancellationToken = default)
     {
@@ -132,7 +146,24 @@ public sealed class AppUpdateNotifier
 
         // Taken only after a check that worked: offline, the next check can still tell.
         var attempted = _attempts?.Take();
-        if (offer is null) { return null; }
+        if (offer is null)
+        {
+            // The feed no longer has what is offered, for example a release taken back.
+            if (_offered is not null)
+            {
+                _offered = null;
+                _readyVersion = null;
+                _shown = null;
+                _show(null);
+            }
+
+            return null;
+        }
+
+        // Already downloaded: it stays ready to install, and is not offered for download again.
+        if (offer.Version == _readyVersion) { return _shown; }
+
+        _readyVersion = null;
 
         // The same version still on offer means the last install did not happen. On an install for
         // all users that is nearly always the administrator prompt: cancelled, or no one there who
@@ -143,16 +174,16 @@ public sealed class AppUpdateNotifier
                 Offer(offer, _service.ApplyNeedsElevation
                     ? $"DAQiFi {offer.Version} wasn't installed. An administrator must approve the update."
                     : $"DAQiFi {offer.Version} wasn't installed.", TRY_AGAIN),
-                $"DAQiFi {offer.Version} wasn't installed. Try again");
+                whileBusy: null);
     }
 
     /// <summary>
-    /// Keeps an offered update in step with what installing would cut off (#348). While the app logs,
-    /// writes firmware, moves files from an SD card, or does other work that <see cref="UpdateBlocker"/>
-    /// names, the notification says what the install waits for and has no button. When the work ends,
-    /// the offer and its button come back by themselves, with no new check. Looks again every
-    /// <see cref="OfferRecheckInterval"/> until <paramref name="cancellationToken"/> is cancelled.
-    /// It changes only the notification: it never downloads or installs.
+    /// Keeps "Restart to update" in step with what installing would cut off (#348). While the app
+    /// logs, writes firmware, moves files from an SD card, or does other work that
+    /// <see cref="UpdateBlocker"/> names, the notification says what the restart waits for and has no
+    /// button. When the work ends, the button comes back by itself, with no new check. Looks again
+    /// every <see cref="OfferRecheckInterval"/> until <paramref name="cancellationToken"/> is
+    /// cancelled. It changes only the notification: it never downloads or installs.
     /// </summary>
     public async Task WatchAsync(CancellationToken cancellationToken = default)
     {
@@ -162,8 +193,9 @@ public sealed class AppUpdateNotifier
             {
                 await _delay(OfferRecheckInterval, cancellationToken);
 
-                // Nothing to keep in step while an install step shows its own notification.
-                if (_offered is not { } offered) { continue; }
+                // Nothing to keep in step while a download shows its own notification, or for an
+                // offer whose button only downloads.
+                if (_offered is not { WhileBusy: not null } offered) { continue; }
 
                 var waitingFor = OwnWaitingFor();
                 if (waitingFor != offered.ShownWaitingFor) { Show(offered, waitingFor); }
@@ -175,12 +207,10 @@ public sealed class AppUpdateNotifier
     }
 
     /// <summary>
-    /// Downloads <paramref name="offer"/>, waits until nothing would be cut off, then installs it and
-    /// restarts; on an install for all users, a wait ends with "Update ready." for the user to click.
-    /// Cancel on the notification stops it at any point before the restart. A second call while one
-    /// is under way does nothing.
+    /// Downloads <paramref name="offer"/>, then shows it ready with "Restart to update". Cancel on the
+    /// notification stops the download. A second call while one is under way does nothing.
     /// </summary>
-    public Task InstallAsync(AppUpdateOffer offer) => RunAsync(offer, DownloadAndInstallAsync);
+    public Task InstallAsync(AppUpdateOffer offer) => RunAsync(offer, DownloadAsync);
 
     /// <summary>Runs one install step that Cancel can stop. A second step while one is under way does nothing.</summary>
     private async Task RunAsync(AppUpdateOffer offer, Func<AppUpdateOffer, CancellationToken, Task> step)
@@ -202,14 +232,8 @@ public sealed class AppUpdateNotifier
         }
     }
 
-    private async Task DownloadAndInstallAsync(AppUpdateOffer offer, CancellationToken cancellationToken)
+    private async Task DownloadAsync(AppUpdateOffer offer, CancellationToken cancellationToken)
     {
-        if (_service.ApplyNeedsElevation && !await _confirm(
-                "Installing needs administrator permission. Windows will ask when DAQiFi restarts.", "Update"))
-        {
-            return;
-        }
-
         // Downloading interrupts nothing, so it starts at once even while something is running.
         // Progress arrives on the download's thread; ShowBusy below has already taken the offer down.
         var progress = new PercentProgress(percent => _show(Busy($"Downloading DAQiFi {offer.Version}... {percent}%")));
@@ -221,40 +245,41 @@ public sealed class AppUpdateNotifier
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             _logger.Warning(ex, $"Downloading app update {offer.Version} failed");
-            ShowOffer(Offer(offer, "Couldn't download the update.", TRY_AGAIN), "Couldn't download the update. Try again");
+            ShowOffer(Offer(offer, "Couldn't download the update.", TRY_AGAIN), whileBusy: null);
             return;
         }
 
-        await WaitThenApplyAsync(offer, cancellationToken);
+        _readyVersion = offer.Version;
+        ShowReady(offer, $"DAQiFi {offer.Version} is ready.");
     }
 
     /// <summary>
-    /// Waits until nothing would be cut off, then applies. On an install for all users, a wait ends
-    /// with "Update ready." instead, and the user's click on it applies.
+    /// Installs the downloaded <paramref name="offer"/> and restarts, on the user's click. Asked again
+    /// here, right before applying: work may have started since the button was shown, and other
+    /// copies of DAQiFi are looked for only now.
     /// </summary>
-    private async Task WaitThenApplyAsync(AppUpdateOffer offer, CancellationToken cancellationToken)
+    private async Task ApplyAsync(AppUpdateOffer offer, CancellationToken cancellationToken)
     {
-        var asksFirst = _service.ApplyNeedsElevation;
-        var waited = false;
-
-        // Asked again right before applying: anything may have started while waiting.
-        var waitingFor = WaitingFor();
-        while (waitingFor is not null)
+        // The updater closes DAQiFi before Windows shows the administrator prompt, so the user hears
+        // about the prompt first, and can decide to restart later.
+        if (_service.ApplyNeedsElevation && !await _confirm(
+                "Installing needs administrator permission. Windows will ask when DAQiFi restarts.", "Update"))
         {
-            waited = true;
-            ShowBusy(asksFirst ? $"Update ready. Asks to install {waitingFor}." : $"Update ready. Installs {waitingFor}.");
-            await _delay(RecheckInterval, cancellationToken);
-            waitingFor = WaitingFor();
+            return;
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
-
-        // The updater closes DAQiFi before Windows shows the administrator prompt. After a wait, which
-        // can end hours later, no one may be at the PC, or only a standard user who cannot approve it;
-        // DAQiFi would then stay closed while the prompt waits (#503 review). So the user decides.
-        if (waited && asksFirst)
+        // This process's own work: the button goes until the work ends (#348), as the watch does.
+        if (OwnWaitingFor() is not null)
         {
-            ShowOffer(Ready(offer), "Update ready. Install it");
+            ShowReady(offer, $"DAQiFi {offer.Version} is ready.");
+            return;
+        }
+
+        // Other copies, which the updater closes in every user's session. The button stays, so the
+        // user can try again once they are closed.
+        if (Checked(() => _service.IsInstallInUseElsewhere() ? OTHER_COPIES : null) is { } others)
+        {
+            ShowReady(offer, $"DAQiFi {offer.Version} is ready. Restart {others}.");
             return;
         }
 
@@ -269,26 +294,29 @@ public sealed class AppUpdateNotifier
         catch (Exception ex)
         {
             _logger.Error(ex, $"Applying app update {offer.Version} failed");
-            ShowOffer(Offer(offer, "Couldn't install the update.", TRY_AGAIN), "Couldn't install the update. Try again");
+            ShowOffer(Ready(offer, "Couldn't install the update.", TRY_AGAIN), "Couldn't install the update. Try again");
         }
     }
 
-    private Notifications ShowAvailable(AppUpdateOffer offer) => ShowOffer(
-        Offer(offer, $"DAQiFi {offer.Version} is available.", INSTALL),
-        $"DAQiFi {offer.Version} is available. Install it");
+    private Notifications ShowAvailable(AppUpdateOffer offer) =>
+        ShowOffer(Offer(offer, $"DAQiFi {offer.Version} is available.", DOWNLOAD), whileBusy: null);
+
+    private Notifications ShowReady(AppUpdateOffer offer, string message) =>
+        ShowOffer(Ready(offer, message, RESTART), $"DAQiFi {offer.Version} is ready. Restart");
 
     /// <summary>
-    /// Shows a notification whose button would install. While installing would cut something off,
-    /// what is shown in its place says what the install waits for and has no button (#348).
-    /// <see cref="WatchAsync"/> then swaps the two as that work starts and ends. Returns what is shown.
+    /// Shows a notification with a button for the user. When the button would restart, it is never
+    /// shown while the restart would cut something off (#348): what is shown in its place says what
+    /// the restart waits for and has no button, and <see cref="WatchAsync"/> swaps the two as that
+    /// work starts and ends. Returns what is shown.
     /// </summary>
     /// <param name="available">The notification with the button.</param>
-    /// <param name="whileBusy">The start of the text shown in its place; the reason follows, as in "when logging stops.".</param>
-    private Notifications ShowOffer(Notifications available, string whileBusy)
+    /// <param name="whileBusy">The start of the text shown in its place, as in "... Restart"; the reason follows, as in "when logging stops.". <c>null</c> for a button that does not restart, which is always shown.</param>
+    private Notifications ShowOffer(Notifications available, string? whileBusy)
     {
         var offered = new Offered(available, whileBusy);
         _offered = offered;
-        return Show(offered, OwnWaitingFor());
+        return Show(offered, whileBusy is null ? null : OwnWaitingFor());
     }
 
     private Notifications Show(Offered offered, string? waitingFor)
@@ -297,6 +325,7 @@ public sealed class AppUpdateNotifier
         var shown = waitingFor is null
             ? offered.Available
             : new Notifications { Message = $"{offered.WhileBusy} {waitingFor}." };
+        _shown = shown;
         _show(shown);
         return shown;
     }
@@ -305,29 +334,32 @@ public sealed class AppUpdateNotifier
     private void ShowBusy(string message)
     {
         _offered = null;
-        _show(Busy(message));
+        var busy = Busy(message);
+        _shown = busy;
+        _show(busy);
     }
 
+    // An offer whose button downloads: nothing is interrupted, so it is never refused.
     private Notifications Offer(AppUpdateOffer offer, string message, string actionText) => new()
     {
         Message = message,
         ActionText = actionText,
-        Action = Click(() => InstallAsync(offer)),
+        Action = new AsyncRelayCommand(() => InstallAsync(offer)),
     };
 
-    // A downloaded update for all users that waited: the click applies it, unless something started again.
-    private Notifications Ready(AppUpdateOffer offer) => new()
+    // A downloaded update: the click installs it and restarts, unless something started again.
+    private Notifications Ready(AppUpdateOffer offer, string message, string actionText) => new()
     {
-        Message = "Update ready.",
-        ActionText = INSTALL,
-        Action = Click(() => RunAsync(offer, WaitThenApplyAsync)),
+        Message = message,
+        ActionText = actionText,
+        Action = Click(() => RunAsync(offer, ApplyAsync)),
     };
 
     /// <summary>
-    /// The command of a button that would install. The watch takes the button away at its next look
+    /// The command of a button that would restart. The watch takes the button away at its next look
     /// after work starts, so a click can come before that look. Such a click is refused (#348
-    /// review): the offer shows what the install waits for, with no button, and nothing is asked,
-    /// downloaded or installed.
+    /// review): the notification shows what the restart waits for, with no button, and nothing is
+    /// asked or installed.
     /// </summary>
     private AsyncRelayCommand Click(Func<Task> install) => new(() =>
     {
@@ -346,18 +378,11 @@ public sealed class AppUpdateNotifier
     };
 
     /// <summary>
-    /// What the restart would cut off, as the end of "Installs ...", or <c>null</c> when nothing.
-    /// This process's own work comes first, then other copies, which the updater also closes, in
-    /// every user's session. If either check fails the update keeps waiting, since closing someone's
-    /// recording is worse than installing later; the failure is logged once.
-    /// </summary>
-    private string? WaitingFor() =>
-        OwnWaitingFor() ?? Checked(() => _service.IsInstallInUseElsewhere() ? OTHER_COPIES : null);
-
-    /// <summary>
-    /// What the restart would cut off in this process, or <c>null</c> when nothing. An offer follows
-    /// only this: other copies are looked for when installing, because listing every process on the
-    /// PC every few seconds, for as long as an update is offered, costs more than it tells.
+    /// What the restart would cut off in this process, as the end of "Restart ...", or <c>null</c>
+    /// when nothing. A ready update follows only this: other copies are looked for when the user
+    /// clicks, because listing every process on the PC every few seconds, for as long as an update
+    /// is ready, costs more than it tells. If the check fails the restart waits, since closing
+    /// someone's recording is worse than installing later; the failure is logged once.
     /// </summary>
     private string? OwnWaitingFor() => Checked(() => _blocker() switch
     {
@@ -392,15 +417,16 @@ public sealed class AppUpdateNotifier
     private const string OTHER_COPIES = "when other copies of DAQiFi on this PC are closed";
 
     /// <summary>
-    /// A notification whose button would install, and what is shown in its place while installing
-    /// would cut something off. <see cref="ShownWaitingFor"/> is what the notification on show waits
-    /// for, or <c>null</c> when it is <see cref="Available"/>.
+    /// A notification with a button for the user, and what is shown in its place while the button
+    /// would cut something off. <see cref="WhileBusy"/> is <c>null</c> for a button that is always
+    /// shown. <see cref="ShownWaitingFor"/> is what the notification on show waits for, or
+    /// <c>null</c> when it is <see cref="Available"/>.
     /// </summary>
-    private sealed class Offered(Notifications available, string whileBusy)
+    private sealed class Offered(Notifications available, string? whileBusy)
     {
         public Notifications Available { get; } = available;
 
-        public string WhileBusy { get; } = whileBusy;
+        public string? WhileBusy { get; } = whileBusy;
 
         public string? ShownWaitingFor { get; set; }
     }

@@ -2911,15 +2911,16 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     private AppUpdateViewModel? _appUpdate;
 
     /// <summary>
-    /// The UPDATES section of the settings drawer, and the checks for a newer version (#346). An
-    /// update it finds goes to the bell as a notification whose button installs it (#343); the
-    /// drawer shows that same notification. Replaces the old check against the WPF app's releases (#345).
+    /// The UPDATES section of the settings drawer, and the checks for a newer version (#346). The
+    /// section downloads an update and then restarts to install it (#343). An update it finds also
+    /// goes to the bell, whose button opens this section. Replaces the old check against the WPF
+    /// app's releases (#345).
     /// </summary>
     public AppUpdateViewModel AppUpdate => _appUpdate ??= new AppUpdateViewModel(
         AppUpdates.Current,
         CurrentUpdateBlocker,
         // A modal box, not ConfirmOverlay: that overlay is only drawn inside the Profiles pane, so
-        // from the notifications flyout it would wait on a question nobody can see.
+        // from the settings drawer it would wait on a question nobody can see.
         async (message, title) =>
         {
             IsNotificationsOpen = false;
@@ -2927,6 +2928,8 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                    == MessageBoxResult.OK;
         },
         ShowUpdateNotice,
+        // The bell entry's button. Opening the drawer closes the bell (one panel at a time, #615).
+        () => IsAppSettingsOpen = true,
         _appLogger,
         attempts: new UpdateAttemptMarker(Path.Combine(Daqifi.Desktop.Common.AppDataPaths.DataDirectory, "update-attempt")),
         // Download progress arrives on a background thread.

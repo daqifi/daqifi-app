@@ -134,11 +134,18 @@ AVALONIA_CSPROJ="$HERE/AvaloniaCapture/AvaloniaCapture.csproj"
 # No -r here, ever. An explicit-RID restore rewrites AvaloniaCapture's
 # packages.lock.json to that single RID and the next CI restore fails NU1004
 # (Directory.Build.props documents this at length).
+#
+# SourceRevisionId is fixed so that the captures do not change from one commit to
+# the next. The settings drawer shows the version with the short commit that
+# SourceLink appends to InformationalVersion (#346), so without this every commit
+# would move desktop-6 and desktop-min-6. A global property also reaches the
+# referenced Daqifi.Avalonia project, which is where AppVersion reads it, and
+# SourceLink cannot overwrite a global property.
 run_capture() {
   local label="$1" csproj="$2" dir="$3" log="$OUT/.capture-$1.log"
   mkdir -p "$dir"
   echo "== $label =="
-  if ! "$DOTNET" run --project "$(to_native "$csproj")" -c Release \
+  if ! "$DOTNET" run --project "$(to_native "$csproj")" -c Release -p:SourceRevisionId=capture \
         -- "$(to_native "$dir")" >"$log" 2>&1; then
     grep -E '\[OK\]|\[FAIL\]|\[SKIP\]|\[INFO\]|\[WARN\]|done' "$log" || true
     echo "!! $label failed (see $log)" >&2
