@@ -1967,6 +1967,20 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         OnPropertyChanged(nameof(SdCardFiles));
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// Core's <see cref="SdCardDeviceConfiguration.FromDevice"/> builds it from the Core device. It
+    /// reads the channels from one snapshot, so a status message that arrives during the read
+    /// cannot change the list under it, and it reads the identity from Core's metadata, which
+    /// <see cref="Metadata"/> copies. The importer used to keep its own copy of that method, and
+    /// the copy drifted from Core two times (#464, #671).
+    /// </remarks>
+    // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.GetSdCardParseConfiguration
+    // @port-divergence: upstream returns null when the device is not on USB. SD works over WiFi
+    // here too (#1), so only a missing Core device returns null.
+    public SdCardDeviceConfiguration? GetSdCardParseConfiguration() =>
+        CoreDeviceForSd is { } coreDevice ? SdCardDeviceConfiguration.FromDevice(coreDevice) : null;
+
     /// <summary>
     /// The core device for an operation that requires a live connection, or
     /// <see cref="DeviceNotConnectedException"/> if there is none.

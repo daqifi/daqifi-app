@@ -306,4 +306,8 @@ internal sealed class ScriptedDevice : IStreamingDevice
 
     public Task DeleteSdCardFileAsync(string fileName, CancellationToken ct = default)
         => throw new NotSupportedException();
+
+    /// <summary>No scripted state imports an SD log (<see cref="DownloadSdCardFileAsync"/> is not
+    /// supported), and there is no Core device to build a configuration from.</summary>
+    public SdCardDeviceConfiguration? GetSdCardParseConfiguration() => null;
 }

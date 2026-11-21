@@ -278,4 +278,13 @@ public interface IStreamingDevice : IDevice
     /// </summary>
     // @port: Daqifi.Desktop.Device.IStreamingDevice.DeleteSdCardFileAsync
     Task DeleteSdCardFileAsync(string fileName, CancellationToken ct = default);
+
+    /// <summary>
+    /// Gets the device configuration that the SD card parser needs to read a log from this device:
+    /// the channel counts, the timestamp clock, the identity, and the calibration, resolution, port
+    /// range and internal scale of each analog channel. Returns <c>null</c> when no Core device is
+    /// connected, or when the device reports no analog channels.
+    /// </summary>
+    // @port: Daqifi.Desktop.Device.IStreamingDevice.GetSdCardParseConfiguration
+    SdCardDeviceConfiguration? GetSdCardParseConfiguration();
 }
