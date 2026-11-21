@@ -112,10 +112,12 @@ public sealed class AppUpdateNotifier
 
     /// <summary>
     /// True while the notification shown waits for the user: an offer, a ready update, or a failure
-    /// to try again. False while a download runs, and while nothing is shown. A new check is safe
-    /// only when this is true or nothing is shown, because it replaces the notification.
+    /// to try again. False while nothing is shown, and for the whole of an install step: a download,
+    /// or a restart from its click to the end, the administrator question included (#346 review,
+    /// round 3). A new check is safe only when this is true or nothing is shown: it replaces the
+    /// notification, and the service installs only the version its last check found.
     /// </summary>
-    public bool HasOffer => _offered is not null;
+    public bool HasOffer => _offered is not null && _installing is null;
 
     /// <summary>
     /// Checks for a newer version and shows what it found. A version on offer is replaced by a newer

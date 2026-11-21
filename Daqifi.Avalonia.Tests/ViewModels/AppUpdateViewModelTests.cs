@@ -40,7 +40,9 @@ public class AppUpdateViewModelTests
         {
             Checks++;
             if (CheckGate is { } gate) { await gate.Task; }
-            return CheckFailure is null ? Offer : throw CheckFailure;
+            if (CheckFailure is not null) { throw CheckFailure; }
+            PendingVersion = Offer?.Version;
+            return Offer;
         }
 
         public async Task DownloadAsync(AppUpdateOffer offer, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
@@ -49,7 +51,26 @@ public class AppUpdateViewModelTests
             if (DownloadBody is not null) { await DownloadBody(progress, cancellationToken); }
         }
 
-        public void ApplyAndRestart(AppUpdateOffer offer) => Applies++;
+        /// <summary>The version the last check that worked found, as the Velopack service keeps it.</summary>
+        public string? PendingVersion { get; private set; }
+
+        /// <summary>The version the last restart installed, or <c>null</c>.</summary>
+        public string? AppliedVersion { get; private set; }
+
+        /// <summary>
+        /// Like the Velopack service, installs only the version the last check found: a newer check
+        /// in between makes the restart throw.
+        /// </summary>
+        public void ApplyAndRestart(AppUpdateOffer offer)
+        {
+            Applies++;
+            if (offer.Version != PendingVersion)
+            {
+                throw new InvalidOperationException($"No checked update matches version {offer.Version}.");
+            }
+
+            AppliedVersion = offer.Version;
+        }
 
         /// <summary>True while another copy runs from this installation.</summary>
         public bool InUseElsewhere { get; set; }
@@ -125,12 +146,15 @@ public class AppUpdateViewModelTests
         public List<string> Confirms { get; } = [];
         public int SectionOpened { get; private set; }
 
+        /// <summary>When set, the administrator question stays open until the test answers it.</summary>
+        public TaskCompletionSource<bool>? ConfirmGate { get; set; }
+
         private AppUpdateViewModel? _viewModel;
 
         public AppUpdateViewModel ViewModel => _viewModel ??= new(
             Service,
             () => Blocker,
-            (message, _) => { Confirms.Add(message); return Task.FromResult(true); },
+            (message, _) => { Confirms.Add(message); return ConfirmGate?.Task ?? Task.FromResult(true); },
             notice => Bell.Add(notice),
             () => SectionOpened++,
             Logger,
@@ -717,6 +741,68 @@ public class AppUpdateViewModelTests
         await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Equal("DAQiFi 3.4.0 is ready.", h.ViewModel.Status);
+    }
+
+    // ---- PR #661 review, round 3 ----
+
+    /// <summary>
+    /// The timer fires while the administrator question for "Restart to update" is open, and the
+    /// feed now has 3.4.1. The check is held until the question is answered, so the confirmed
+    /// restart installs 3.4.0, the version the user confirmed. Before, the check made 3.4.1 the
+    /// service's pending version and the restart failed with "Couldn't install the update."
+    /// </summary>
+    [Fact]
+    public async Task TimedCheck_WhileTheRestartQuestionIsOpen_IsHeld_AndTheConfirmedVersionInstalls()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        h.Service.ApplyNeedsElevation = true;
+        _ = h.ViewModel.RunAsync();
+        h.Waits.Release(AppUpdateViewModel.StartupDelay);
+        await h.Waits.Pending(AppUpdateViewModel.CheckInterval);
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));   // download: 3.4.0 is ready
+        h.ConfirmGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var restart = h.ClickAction();                                 // the question is open
+        Assert.Single(h.Confirms);
+
+        h.Service.Offer = new("3.4.1", null);
+        h.Waits.Release(AppUpdateViewModel.CheckInterval);
+        await h.Waits.Pending(AppUpdateViewModel.CheckInterval);
+
+        Assert.Equal(1, h.Service.Checks);
+        Assert.False(h.ViewModel.CanCheckNow);
+
+        h.ConfirmGate.SetResult(true);
+        await restart.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal("3.4.0", h.Service.AppliedVersion);
+        Assert.DoesNotContain("Couldn't install", h.ViewModel.Status);
+    }
+
+    /// <summary>The hold ends with the question: after "Cancel", the next timed check runs and finds 3.4.1.</summary>
+    [Fact]
+    public async Task TimedCheck_AfterTheRestartQuestionIsDeclined_RunsAgain()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        h.Service.ApplyNeedsElevation = true;
+        _ = h.ViewModel.RunAsync();
+        h.Waits.Release(AppUpdateViewModel.StartupDelay);
+        await h.Waits.Pending(AppUpdateViewModel.CheckInterval);
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+        h.ConfirmGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var restart = h.ClickAction();
+        h.ConfirmGate.SetResult(false);
+        await restart.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.True(h.ViewModel.CanCheckNow);
+
+        h.Service.Offer = new("3.4.1", null);
+        h.Waits.Release(AppUpdateViewModel.CheckInterval);
+        await h.Waits.Pending(AppUpdateViewModel.CheckInterval);
+
+        Assert.Equal(2, h.Service.Checks);
+        Assert.Equal("DAQiFi 3.4.1 is available.", h.ViewModel.Status);
+        Assert.Equal(0, h.Service.Applies);
     }
 
     // ---- PR #661 review, thread 4: the short build ID in every build ----
