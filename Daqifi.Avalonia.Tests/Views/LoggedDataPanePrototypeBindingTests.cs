@@ -59,4 +59,38 @@ public class LoggedDataPanePrototypeBindingTests
 
     [Fact]
     public void The_view_opens_no_escape_hatch() => BindingFacts.AssertNoEscapeHatch(View);
+
+    /// <summary>
+    /// The session drawer's NAME box must not bind its text to <c>LoggingSession.Name</c> (#681).
+    /// That getter returns "Session {ID}" for an empty name, so a binding filled the box again the
+    /// moment the user emptied it, with the caret at the start, and the next name typed was saved as
+    /// "Pump testSession 2". The code-behind shows the name instead, and only when an edit ends: on
+    /// LostFocus, on Enter, or when the drawer closes.
+    ///
+    /// <para>
+    /// Markup only. What the box does under real key events is HeadlessBench's
+    /// <c>--scripted session-name-box</c> (row LOGGED-NAME), which CI runs; this row is the quick
+    /// signal that the binding came back, or that one of the two handlers that end an edit fell off.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void The_session_name_box_is_not_bound_to_the_name_getter_and_ends_an_edit_on_leave_and_enter()
+    {
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var box = XDocument.Parse(BindingFacts.Source(View)).Root!
+            .Descendants()
+            .Single(element => element.Attribute(x + "Name")?.Value == "SessionNameTextBox");
+
+        Assert.Equal("TextBox", box.Name.LocalName);
+        Assert.Null(box.Attribute("Text"));
+        Assert.DoesNotContain(box.Elements(), element => element.Name.LocalName == "TextBox.Text");
+        // TextChanging, not TextChanged: TextChanged arrives later, through the dispatcher, after the
+        // pane's own write has ended, so the handler cannot tell that write from typing. Two such
+        // deferred events saved names the user never typed (#681, and in review of #684 an empty
+        // name over a saved one on a tab switch).
+        Assert.Equal("OnSessionNameChanged", box.Attribute("TextChanging")?.Value);
+        Assert.Null(box.Attribute("TextChanged"));
+        Assert.Equal("OnSessionNameLostFocus", box.Attribute("LostFocus")?.Value);
+        Assert.Equal("OnSessionNameKeyDown", box.Attribute("KeyDown")?.Value);
+    }
 }

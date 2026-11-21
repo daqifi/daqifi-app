@@ -975,15 +975,23 @@
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="22,0,22,22">
                         <StackPanel>
 
-                            <!-- NAME -->
+                            <!-- NAME. No Text binding on purpose (#681): LoggingSession.Name returns
+                                 "Session {ID}" for an empty name, so a binding filled the box again the
+                                 moment the user emptied it, caret first, and the next name typed was
+                                 saved as "Pump testSession 2". The code-behind shows the name when
+                                 another session is selected and when an edit ends (LostFocus, which
+                                 the drawer closing also raises, or Enter), and never while the user
+                                 types. The rename handler is on TextChanging, which is raised inside
+                                 that write, so the pane's own write is never saved as a rename. -->
                             <TextBlock Text="NAME"
                                        Classes="sectionLabel"
                                        Margin="0,8,0,8"/>
                             <Border Classes="drawerTextField">
                                 <TextBox x:Name="SessionNameTextBox"
                                          Theme="{StaticResource DrawerTextBox}"
-                                         Text="{Binding SelectedLoggingSession.Name, Mode=OneWay}"
-                                         TextChanged="OnSessionNameChanged"/>
+                                         TextChanging="OnSessionNameChanged"
+                                         LostFocus="OnSessionNameLostFocus"
+                                         KeyDown="OnSessionNameKeyDown"/>
                             </Border>
 
                             <!-- INFORMATION -->

@@ -1195,7 +1195,8 @@ internal static partial class HeadlessBench
     private const string StateNameRefused = "name-refused";
     private static readonly string[] ScriptedStates =
         [StateSessions500, StateSession10H, StateExportReadonly, StateSdEmpty, StateDropMidStream,
-         StateDisconnectMidStream, StateModeChangeMidSession, StateNameRefused, StatePlotIngest];
+         StateDisconnectMidStream, StateModeChangeMidSession, StateNameRefused, StatePlotIngest,
+         StateSessionNameBox];
 
     /// <summary>Serial number the two device states give their <see cref="ScriptedDevice"/>. It
     /// reaches the UI — the drop notification names the device by it — so the rows assert against
@@ -1307,6 +1308,10 @@ internal static partial class HeadlessBench
                 samples = ExportSampleCount;
                 break;
 
+            case StateSessionNameBox:
+                (sessions, samples) = SeedSessionNameBox(db, start);
+                break;
+
             default:
                 throw new ArgumentException($"unknown --scripted state '{_scripted}'");
         }
@@ -1370,6 +1375,7 @@ internal static partial class HeadlessBench
             case StateDisconnectMidStream: UiProbe = (1, "CONN-DISC"); RunDisconnectMidStreamRow(main, shell); break;
             case StateModeChangeMidSession: UiProbe = (1, "LOG-MODE"); RunModeChangeMidSessionRow(main, shell); break;
             case StatePlotIngest: UiProbe = (1, "GRAPH-INGEST"); RunPlotIngestRow(main, shell); break;
+            case StateSessionNameBox: UiProbe = (1, "LOGGED-NAME"); RunSessionNameBoxRow(main, shell); break;
             default: throw new ArgumentException($"unknown --scripted state '{_scripted}'");
         }
     }
