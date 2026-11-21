@@ -86,7 +86,6 @@ public partial class PlotLogger : ObservableObject, ILogger
     /// <c>PlotModel.SyncRoot</c>. Not exposed: this is bookkeeping, not plot state.
     /// </summary>
     private readonly Dictionary<(string deviceSerial, string channelName), string?> _rawSeriesColors = [];
-    private readonly TimestampGapDetector _gapDetector = new();
     private string _plotStatsSummary = EMPTY_PLOT_STATS_SUMMARY;
     #endregion
 
@@ -480,14 +479,11 @@ public partial class PlotLogger : ObservableObject, ILogger
 
         if (Interlocked.Exchange(ref _pendingOverflowed, 0) == 1)
         {
-            // Points were dropped between the last drain and this one: break every line once, and
-            // let the gap detector start again, since the deltas across the hole mean nothing.
+            // Points were dropped between the last drain and this one: break every line once.
             foreach (var points in LoggedPoints.Values)
             {
                 points.Add(DataPoint.Undefined);
             }
-
-            _gapDetector.Clear();
         }
 
         var budget = Volatile.Read(ref _pendingCount);
@@ -555,7 +551,9 @@ public partial class PlotLogger : ObservableObject, ILogger
         var scaledSampleValue = dataSample.Value;
         var points = LoggedPoints[key];
 
-        if (_gapDetector.IsGap(key, dataSample.FirmwareDeltaMs))
+        // Frames were lost in front of this sample (Core found the gap, issue #629): break the line
+        // rather than draw it straight across the missing time.
+        if (dataSample.FollowsGap)
         {
             points.Add(DataPoint.Undefined);
         }
@@ -838,7 +836,6 @@ public partial class PlotLogger : ObservableObject, ILogger
             LoggedChannels.Clear();
             LoggedPoints.Clear();
             _rawSeriesColors.Clear();
-            _gapDetector.Clear();
             PlotModel.Series.Clear();
             PlotModel.InvalidatePlot(true);
             FirstTime = null;

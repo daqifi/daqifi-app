@@ -243,6 +243,27 @@ harness cannot know what the tree is supposed to settle *to*. The generalisation
 `EndState`: where a capture depends on a transition reaching a state the app names, read the
 number back and wait for it, rather than waiting for the pixels to go quiet.
 
+**The sixth is the fifth again, and it is why the harness now removes the pane's transition**
+(#657). The guard above did its job: a stalled pane failed the run by name, and nothing was
+saved. But the stall stayed, and a cheaper scene behind the drawer made it much more frequent
+on a loaded host. #616 hid the empty Live Graph plot, and on one host at load 5 to 9 the
+minimum-size drawers were refused in 4 of 8 runs, against 0 of 10 for `main` at load 5 to 7.
+The transition is not the app's. Fluent's `SplitView` theme puts a `DoubleTransition` on
+`PART_PaneRoot.Width` (200 ms to open, 100 ms to close). Its progress comes from the animation
+clock, which `MediaContext` pulses only on a render pass that is not waiting for a composition
+batch, so it depends on wall time and on host load.
+
+`RemovePaneTransitions` sets an empty `Transitions` collection on `PART_PaneRoot` as a local
+value, which outranks the theme's style setters. The pane then gets its width from one layout
+pass, which is a plain dispatcher operation that `Pump` runs, with no clock or timer in the
+path. Measured at idle on the baseline Mac, with a temporary probe on the first sample of each
+capture: the pane is 380 wide on the first sample in 40 of 40 drawer captures (8 drawers, 5
+`--determinism` runs), and every drawer settles in 2 rounds, the minimum. With the call
+removed, the same probe finds the pane part of the way open in 40 of 40 (33 to 253 px, a
+different width each run), and the drawers need 4 to 5 rounds. All 40 screens stay
+byte-identical to the committed baseline, so the end state did not move. The end-state guard
+stays as a backstop. A user still sees the slide: only the capture process changes.
+
 **Why five runs and not two.** Both defects above were roughly coin-flips per run, and
 two runs miss a 50/50 flip half the time; five gets that to ~6%, ten to ~0.2%, at about
 15 s a run. portomatic's own `--determinism` captures twice — this is the same check at
@@ -562,7 +583,8 @@ are unchanged. The pre-change capture at `origin/main` (`93e721a`) reproduced th
 forty, the post-change capture differed on exactly these twelve, five `--determinism` runs agreed on
 all forty after the change, and the hashes come from determinism run 1. On a loaded host (load 5 to
 9) this tree refused a `desktop-min-6`/`-7` frame with the pane 2 px short of open far more often
-than `main` did; see #657 before reading such a failure as a visual change.
+than `main` did. #657 removed the pane's transition from the capture, so the slide can no longer
+cause that refusal; see the sixth settle problem above.
 
 Three dialog screens were re-recorded 2026-11-14 (macOS 26.5, Apple silicon, .NET SDK 10.0.302)
 for #631: `DarkSecondaryButton` and `DarkPrimaryButton` now apply the `Padding="16,6"` they

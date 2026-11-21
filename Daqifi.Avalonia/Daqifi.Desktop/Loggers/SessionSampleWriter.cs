@@ -197,7 +197,7 @@ public sealed class SessionSampleWriter : IDisposable
     /// kept rather than discarded over a label the producer failed to supply. A copy rather than a
     /// mutation because the properties are <c>init</c>-only, and because the caller's instance is
     /// also the one the plot and the summary hold. The unmapped members
-    /// (<see cref="DataSample.FirmwareDeltaMs"/>, <see cref="DataSample.CoreChannel"/>) are not
+    /// (<see cref="DataSample.FollowsGap"/>, <see cref="DataSample.CoreChannel"/>) are not
     /// carried over: this copy exists only to be persisted, and the original is what every other
     /// consumer received.
     /// </summary>

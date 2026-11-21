@@ -44,16 +44,6 @@ public class DataSample : Daqifi.Core.Channel.IDataSample
     // @port: Daqifi.Desktop.Channel.DataSample.Type
     public ChannelType Type { get; init; }
 
-    /// <summary>
-    /// Firmware-derived time since the previous message, in milliseconds.
-    /// Computed from the hardware timer (<c>msg_time_stamp</c>) via <c>TimestampProcessor</c>,
-    /// so it is immune to TCP jitter and reflects actual sample timing.
-    /// Null when firmware delta is not available (e.g. SD card imports).
-    /// </summary>
-    [NotMapped]
-    // @port: Daqifi.Desktop.Channel.DataSample.FirmwareDeltaMs
-    public double? FirmwareDeltaMs { get; init; }
-
     [Required]
     // @port: Daqifi.Desktop.Channel.DataSample.LoggingSession
     public LoggingSession LoggingSession { get; set; }
@@ -73,6 +63,20 @@ public class DataSample : Daqifi.Core.Channel.IDataSample
     /// </remarks>
     [NotMapped]
     internal Daqifi.Core.Channel.IChannel? CoreChannel { get; init; }
+
+    /// <summary>
+    /// <see langword="true"/> when this sample comes from the first stream frame after a gap that
+    /// Core found in the device's stream: frames were lost before this one. The live plot breaks the
+    /// line in front of such a sample instead of drawing it straight across the missing time.
+    /// </summary>
+    /// <remarks>
+    /// Set by <c>AbstractStreamingDevice</c> from Core's <c>DaqifiStreamingDevice.GapDetected</c>
+    /// (issue #629). Core measures the gap with the device clock, so transport jitter does not set
+    /// it. Always <see langword="false"/> on a sample that did not come from a live stream.
+    /// <c>internal</c> and <c>[NotMapped]</c> for the same reason as <see cref="CoreChannel"/>.
+    /// </remarks>
+    [NotMapped]
+    internal bool FollowsGap { get; init; }
     #endregion
 
     #region Daqifi.Core.Channel.IDataSample
@@ -111,12 +115,7 @@ public class DataSample : Daqifi.Core.Channel.IDataSample
     /// <param name="channel">The channel the sample belongs to.</param>
     /// <param name="timestamp">The calculated system timestamp for the sample.</param>
     /// <param name="value">The scaled sample value (volts for analog, 0/1 for digital).</param>
-    /// <param name="firmwareDeltaMs">
-    /// Firmware-measured time since the previous message, in milliseconds.
-    /// Null for the first message in a session or when firmware timing is unavailable.
-    /// </param>
-    public DataSample(
-        IDevice streamingDevice, IChannel channel, DateTime timestamp, double value, double? firmwareDeltaMs = null)
+    public DataSample(IDevice streamingDevice, IChannel channel, DateTime timestamp, double value)
     {
         DeviceName = streamingDevice.Name;
         DeviceSerialNo=channel.DeviceSerialNo;
@@ -129,7 +128,6 @@ public class DataSample : Daqifi.Core.Channel.IDataSample
             : channel.ChannelColorBrush.ToString();
         Value = value;
         TimestampTicks = timestamp.Ticks;
-        FirmwareDeltaMs = firmwareDeltaMs;
         CoreChannel = channel switch
         {
             AnalogChannel analog => analog.CoreChannel,

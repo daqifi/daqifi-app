@@ -103,11 +103,22 @@ public class WindowsFirewallWrapper
     private static readonly IAppLogger Logger = AppLogger.Instance;
 
     // @port: Daqifi.Desktop.Configuration.WindowsFirewallWrapper.GetPolicy
-    private static object GetPolicy()
+    private static object GetPolicy() =>
+        CreateComObject("HNetCfg.FwPolicy2", "Windows Firewall COM interface not available on this system");
+
+    // COM is Windows-only (CA1416). Off Windows, Type.GetTypeFromProgID answers null and nothing is
+    // a COM object, so the OperatingSystem.IsWindows() checks in these two helpers change no outcome.
+    private static object CreateComObject(string progId, string unavailableMessage)
     {
-        var type = Type.GetTypeFromProgID("HNetCfg.FwPolicy2")
-                   ?? throw new InvalidOperationException("Windows Firewall COM interface not available on this system");
+        var type = (OperatingSystem.IsWindows() ? Type.GetTypeFromProgID(progId) : null)
+                   ?? throw new InvalidOperationException(unavailableMessage);
         return Activator.CreateInstance(type)!;
+    }
+
+    private static void Release(object? comObject)
+    {
+        if (comObject is not null && OperatingSystem.IsWindows() && Marshal.IsComObject(comObject))
+            Marshal.ReleaseComObject(comObject);
     }
 
     /// <summary>
@@ -152,8 +163,7 @@ public class WindowsFirewallWrapper
                 }
                 finally
                 {
-                    if (Marshal.IsComObject(rule))
-                        Marshal.ReleaseComObject(rule);
+                    Release(rule);
                 }
             }
 
@@ -166,10 +176,7 @@ public class WindowsFirewallWrapper
         }
         finally
         {
-            if (policy != null && Marshal.IsComObject(policy))
-            {
-                Marshal.ReleaseComObject(policy);
-            }
+            Release(policy);
         }
     }
 
@@ -192,9 +199,7 @@ public class WindowsFirewallWrapper
         try
         {
             policy = GetPolicy();
-            var ruleType = Type.GetTypeFromProgID("HNetCfg.FWRule")
-                        ?? throw new InvalidOperationException("Windows Firewall Rule COM interface not available");
-            rule = Activator.CreateInstance(ruleType)!;
+            rule = CreateComObject("HNetCfg.FWRule", "Windows Firewall Rule COM interface not available");
 
             // Set rule properties using reflection for better error handling
             SetRuleProperty(rule, "Name", ruleName);
@@ -224,14 +229,8 @@ public class WindowsFirewallWrapper
         }
         finally
         {
-            if (rule != null && Marshal.IsComObject(rule))
-            {
-                Marshal.ReleaseComObject(rule);
-            }
-            if (policy != null && Marshal.IsComObject(policy))
-            {
-                Marshal.ReleaseComObject(policy);
-            }
+            Release(rule);
+            Release(policy);
         }
     }
 

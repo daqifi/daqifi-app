@@ -189,8 +189,9 @@ public class FirewallConfigurationTests
             return;
         }
 
-        Assert.Throws<InvalidOperationException>(
+        var ex = Assert.Throws<InvalidOperationException>(
             () => new WindowsFirewallWrapper().RuleExists("DAQiFi", WriteTempFile(".exe")));
+        AssertFailedAtTheMissingFirewallPolicy(ex);
     }
 
     #endregion
@@ -272,11 +273,26 @@ public class FirewallConfigurationTests
 
         var exe = WriteTempFile(".exe");
 
-        Assert.Throws<InvalidOperationException>(
+        var ex = Assert.Throws<InvalidOperationException>(
             () => new WindowsFirewallWrapper().CreateUdpRule("DAQiFi Desktop", exe, 30303));
+        AssertFailedAtTheMissingFirewallPolicy(ex);
     }
 
     #endregion
+
+    /// <summary>
+    /// Off Windows, the COM path stops at the wrapper's own "not available" error for the
+    /// firewall policy object, and not at an exception from the runtime. That is because
+    /// <see cref="Type.GetTypeFromProgID(string)"/> answers null when there is no COM. The
+    /// wrapper's <c>OperatingSystem.IsWindows()</c> guard (CA1416) depends on this: it skips the
+    /// call off Windows, so it is only a no-op if the call already answered null there.
+    /// </summary>
+    private static void AssertFailedAtTheMissingFirewallPolicy(InvalidOperationException ex)
+    {
+        var cause = Assert.IsType<InvalidOperationException>(ex.InnerException);
+        Assert.Equal("Windows Firewall COM interface not available on this system", cause.Message);
+        Assert.Null(cause.InnerException);
+    }
 
     private static string WriteTempFile(string extension)
     {
