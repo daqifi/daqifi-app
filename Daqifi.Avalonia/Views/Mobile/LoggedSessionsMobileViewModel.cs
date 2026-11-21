@@ -601,10 +601,18 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
         try
         {
             await Task.Run(() => repo.DeleteSession(session));
-            Sessions.Remove(session);
+            RemoveListed(session.ID);
             StatusMessage = "Session deleted.";
             OnPropertyChanged(nameof(HasSessions));
             OnPropertyChanged(nameof(HasNoSessions));
+        }
+        catch (SessionReplacedException ex)
+        {
+            // Another writer deleted this recording, or stored a new one at its ID, while the confirm
+            // was open (#680 review). Nothing was deleted; re-read the list when this delete ends.
+            _appLogger.Warning(ex, "Mobile: a session changed before its delete, so nothing was deleted");
+            StatusMessage = "That session changed outside this list, so nothing was deleted.";
+            _refreshPending = true;
         }
         catch (Exception ex)
         {
@@ -663,12 +671,19 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
                 foreach (var session in toDelete)
                 {
                     try { repo.DeleteSession(session); succeeded.Add(session); }
+                    catch (SessionReplacedException ex)
+                    {
+                        // Changed by another writer while the confirm was open (#680 review): nothing
+                        // deleted, and the list is re-read when this delete ends.
+                        _appLogger.Warning(ex, $"Mobile: session {session.ID} changed before delete-all, so it was kept");
+                        _refreshPending = true;
+                    }
                     catch (Exception ex) { _appLogger.Error(ex, $"Mobile: delete-all failed for session {session.ID}"); }
                 }
                 return succeeded;
             });
 
-            foreach (var session in deleted) { Sessions.Remove(session); }
+            foreach (var session in deleted) { RemoveListed(session.ID); }
             OnPropertyChanged(nameof(HasSessions));
             OnPropertyChanged(nameof(HasNoSessions));
 
@@ -685,6 +700,17 @@ public partial class LoggedSessionsMobileViewModel : ObservableObject
         {
             IsBusy = false;
         }
+    }
+
+    /// <summary>
+    /// Removes every listed row with <paramref name="sessionId"/>, after a delete removed every stored
+    /// row with that ID. By ID, not by the object the delete was given (#680 review): a refresh
+    /// (<see cref="RefreshSessions"/>) can put a fresh object for the same recording in the list
+    /// while the confirm is open, and a session is equal only to itself.
+    /// </summary>
+    private void RemoveListed(int sessionId)
+    {
+        foreach (var listed in Sessions.Where(s => s.ID == sessionId).ToList()) { Sessions.Remove(listed); }
     }
 
     /// <summary>Lazily builds a <see cref="SessionDataRepository"/> over the mobile DI DbContext

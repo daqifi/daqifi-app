@@ -3661,7 +3661,22 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     void ILoggingSessionListHost.DisplaySessionOnPlot(LoggingSession session) => DbLogger.DisplayLoggingSession(session);
 
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.ILoggingSessionListHost.DeleteSessionFromDatabase
-    void ILoggingSessionListHost.DeleteSessionFromDatabase(LoggingSession session) => DbLogger.DeleteLoggingSession(session);
+    void ILoggingSessionListHost.DeleteSessionFromDatabase(LoggingSession session)
+    {
+        try
+        {
+            DbLogger.DeleteLoggingSession(session);
+        }
+        catch (SessionReplacedException)
+        {
+            // Another writer deleted this recording, or stored a new one at its ID, while the
+            // confirmation was open (#680 review). Nothing was deleted. Show what is stored at that ID
+            // now; the list view model tells the user. Posted, because this runs off the UI thread.
+            var id = session.ID;
+            Dispatcher.UIThread.Post(() => LoggingManager.Instance.ApplyPersistedSessionChanges([id], [id]));
+            throw;
+        }
+    }
 
     // @port: Daqifi.Desktop.ViewModels.DaqifiViewModel.ILoggingSessionListHost.ClearPlot
     void ILoggingSessionListHost.ClearPlot() => DbLogger.ClearPlot();

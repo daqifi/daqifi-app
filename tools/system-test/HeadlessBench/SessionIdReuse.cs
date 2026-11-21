@@ -3,6 +3,7 @@ using System.Text;
 using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.VisualTree;
+using CommunityToolkit.Mvvm.Input;
 using Daqifi.Desktop.Logger;
 using Daqifi.Desktop.Loggers;
 using Daqifi.Desktop.ViewModels;
@@ -17,7 +18,8 @@ using DesktopApp = Daqifi.Desktop.App;
 //   * --scripted session-id-reuse: no board. Seeds "Old zero", "Old one" and "Old two" (IDs 0, 1
 //     and 2). Deletes "Old two" with its row's DELETE button, then imports a CSV log through the
 //     app's own SD card importer, which gives the new session ID 2 again. DELETE ALL, then three
-//     imports, give IDs 0, 1 and 2 again.
+//     imports, give IDs 0, 1 and 2 again. Last, a row's DELETE confirmation stays open while a second
+//     writer replaces that recording with a new one at the same ID.
 //
 // Before #680 was fixed, LoggingSession.Equals compared only the ID. The session list's ListBox gave
 // the new session the row container of the deleted one, the two were equal, and the row kept the
@@ -66,6 +68,9 @@ internal static partial class HeadlessBench
     /// removes only the new session from the list and the database.</item>
     /// <item><c>after-all</c> — DELETE ALL, then three imports (IDs 0, 1 and 2 again): each row shows
     /// its own session, and each row's DELETE has its own session as the parameter.</item>
+    /// <item><c>replaced</c> — #693 review: while a row's DELETE confirmation is open, a second writer
+    /// deletes that recording and imports a new one, which gets the same ID. Accepting the
+    /// confirmation deletes nothing, says so, and the row then shows the stored recording.</item>
     /// </list>
     /// </summary>
     private static void RunSessionIdReuseRow(Window main, DaqifiViewModel shell)
@@ -165,6 +170,32 @@ internal static partial class HeadlessBench
         }
 
         Step(1, "LOGGED-DEL", "after-all", allOk, string.Join("; ", allEvidence), Capture(main, "t1-reuse-after-all"));
+
+        // ---- replaced: the confirmation of row 3 stays open while another writer replaces it.
+        var gamma = imported.Length == 3 ? imported[2] : null;
+        LoggingSession? replacement = null;
+        var replaced = ClickRowDelete(main, shell, 2, whileConfirmOpen: () =>
+        {
+            ExecuteSql($"DELETE FROM Samples WHERE LoggingSessionID = {gamma?.ID}; " +
+                       $"DELETE FROM SessionDeviceMetadata WHERE LoggingSessionID = {gamma?.ID}; " +
+                       $"DELETE FROM Sessions WHERE ID = {gamma?.ID};");
+            replacement = ImportLog(shell, logs, "independent_writer", addToList: false);
+        });
+        PumpFor(TimeSpan.FromMilliseconds(300));
+        var after = ReadRow(main, 2);
+        var sameId = replacement is not null && gamma is not null && replacement.ID == gamma.ID;
+        var survived = replacement is not null && StoredSessionIds().Contains(replacement.ID)
+                       && StoredSampleCount(replacement.ID) == ReuseImportSamples;
+        var told = replaced.Dialog?.Contains("nothing was deleted", StringComparison.Ordinal) == true;
+        var shownNow = replacement is not null && after.Name == replacement.Name
+                       && (after.Item as LoggingSession)?.ID == replacement.ID;
+        Step(1, "LOGGED-DEL", "replaced", gamma is not null && sameId && replaced.Finished && survived && told && shownNow,
+             $"row 3 DELETE asked '{replaced.Confirmation}'; while it was open, another writer replaced ID {gamma?.ID} with " +
+             $"'{replacement?.Name}' (ID {replacement?.ID}, the same ID={sameId}); after DELETE: the dialog said " +
+             $"'{replaced.Dialog}', the database holds IDs [{string.Join(", ", StoredSessionIds())}] with " +
+             $"{(replacement is null ? 0 : StoredSampleCount(replacement.ID))} samples in ID {replacement?.ID}, " +
+             $"row 3 shows '{after.Name}' [{after.Texts}]",
+             Capture(main, "t1-reuse-replaced"));
     }
 
     /// <summary>What a realized row of the pane's SessionList holds and shows.</summary>
@@ -187,16 +218,17 @@ internal static partial class HeadlessBench
             string.Join(" | ", texts));
     }
 
-    /// <summary>The outcome of a row's DELETE: what the confirmation asked, and whether the delete
-    /// then finished.</summary>
-    private readonly record struct RowDelete(string? Confirmation, bool Finished);
+    /// <summary>The outcome of a row's DELETE: what the confirmation asked, whether the delete then
+    /// finished, and the text of the message dialog it showed, if any.</summary>
+    private readonly record struct RowDelete(string? Confirmation, bool Finished, string? Dialog = null);
 
     /// <summary>
     /// Clicks the DELETE button of the realized row at <paramref name="index"/> the way a click does
-    /// (its own command with its own parameter), answers DELETE in the confirmation, and waits for
-    /// the delete to finish.
+    /// (its own command with its own parameter), runs <paramref name="whileConfirmOpen"/>, answers
+    /// DELETE in the confirmation, and waits for the delete to finish. A message dialog the delete
+    /// shows is read and closed, as the user would.
     /// </summary>
-    private static RowDelete ClickRowDelete(Window main, DaqifiViewModel shell, int index)
+    private static RowDelete ClickRowDelete(Window main, DaqifiViewModel shell, int index, Action? whileConfirmOpen = null)
     {
         Pump();
         var item = SessionList(main)?.ContainerFromIndex(index) as ListBoxItem;
@@ -206,7 +238,6 @@ internal static partial class HeadlessBench
             return new RowDelete($"(row {index + 1} has no DELETE button that can run)", false);
         }
 
-        var countBefore = shell.LoggingSessions.Count;
         command.Execute(button.CommandParameter);
         if (!PumpUntil(() => shell.ConfirmOverlay.IsOpen, ReuseStepTimeout))
         {
@@ -214,9 +245,21 @@ internal static partial class HeadlessBench
         }
 
         var asked = shell.ConfirmOverlay.Message;
+        whileConfirmOpen?.Invoke();
         shell.ConfirmOverlay.AffirmativeCommand.Execute(null);
-        var finished = PumpUntil(() => !shell.IsLoggedDataBusy && shell.LoggingSessions.Count < countBefore, ReuseStepTimeout);
-        return new RowDelete(asked, finished);
+        string? dialogText = null;
+        var running = (IAsyncRelayCommand)shell.DeleteLoggingSessionCommand;
+        var finished = PumpUntil(() =>
+        {
+            if (main.OwnedWindows.FirstOrDefault() is { } dialog)
+            {
+                dialogText = string.Join(" | ", dialog.GetVisualDescendants().OfType<TextBlock>()
+                    .Where(t => !string.IsNullOrEmpty(t.Text)).Select(t => t.Text));
+                dialog.Close();
+            }
+            return !running.IsRunning && !shell.IsLoggedDataBusy;
+        }, ReuseStepTimeout);
+        return new RowDelete(asked, finished, dialogText);
     }
 
     private static ListBox? SessionList(Window main) =>
@@ -231,7 +274,7 @@ internal static partial class HeadlessBench
     /// the app's own <see cref="SdCardSessionImporter"/> off the UI thread, then the persisted session
     /// added to the list. Returns that session, or null when the import persisted none.
     /// </summary>
-    private static LoggingSession? ImportLog(DaqifiViewModel shell, string directory, string name)
+    private static LoggingSession? ImportLog(DaqifiViewModel shell, string directory, string name, bool addToList = true)
     {
         var path = Path.Combine(directory, name + ".csv");
         var csv = new StringBuilder()
@@ -258,8 +301,11 @@ internal static partial class HeadlessBench
             return null;
         }
 
-        shell.LoggingSessions.Add(import.Result.Session);
-        PumpFor(TimeSpan.FromMilliseconds(200));
+        if (addToList)
+        {
+            shell.LoggingSessions.Add(import.Result.Session);
+            PumpFor(TimeSpan.FromMilliseconds(200));
+        }
         return import.Result.Session;
     }
 
@@ -269,6 +315,15 @@ internal static partial class HeadlessBench
 
     private static string ListedSessions(DaqifiViewModel shell) =>
         "[" + string.Join(", ", shell.LoggingSessions.Select(s => $"{s.ID} '{s.Name}'")) + "]";
+
+    private static void ExecuteSql(string sql)
+    {
+        using var connection = new SqliteConnection($"Data source={DesktopApp.DatabasePath};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.ExecuteNonQuery();
+    }
 
     private static List<int> StoredSessionIds()
     {

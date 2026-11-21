@@ -151,6 +151,9 @@ public class LoggingSessionListViewModel
     {
         const string failureTitle = "Delete Failed";
         const string failureMessage = "The logging session could not be deleted. See the application log for details.";
+        const string replacedTitle = "Session Changed";
+        const string replacedMessage = "This session was changed or deleted outside this list, so nothing was deleted. "
+                                       + "The list now shows what is stored.";
 
         // Held over the busy flag's finally so the dialog is shown after the pane stops saying it is
         // deleting, rather than behind a spinner that never clears — as DeleteAllSessionsAsync does.
@@ -195,6 +198,14 @@ public class LoggingSessionListViewModel
                     await Task.Run(() => _host.DeleteSessionFromDatabase(session));
                     deleteSucceeded = true;
                 }
+                catch (SessionReplacedException replaced)
+                {
+                    // Another writer deleted this recording, or stored a new one at its ID, while the
+                    // confirmation was open (#680 review). The repository deleted nothing, and the
+                    // host shows what is stored at that ID now. Expected, so not an Error.
+                    _appLogger.Warning(replaced, $"Session {session.ID} changed before its delete, so nothing was deleted.");
+                    dialog = (replacedTitle, replacedMessage);
+                }
                 catch (Exception dbEx)
                 {
                     _appLogger.Error(dbEx, $"Failed to delete session {session.ID} from database.");
@@ -203,7 +214,14 @@ public class LoggingSessionListViewModel
 
                 if (deleteSucceeded)
                 {
-                    _host.LoggingSessions.Remove(session);
+                    // By ID, not by the object the row gave (#680 review): the list can get a fresh
+                    // object for the same recording while the confirmation is open (the import of
+                    // earlier sessions replaces the object of a copy it adds to). The delete removed
+                    // every stored row with this ID, so no listed row with it shows stored data.
+                    foreach (var listed in _host.LoggingSessions.Where(s => s.ID == session.ID).ToList())
+                    {
+                        _host.LoggingSessions.Remove(listed);
+                    }
                     _host.NotifyLoggingSessionsChanged();
                 }
             }
