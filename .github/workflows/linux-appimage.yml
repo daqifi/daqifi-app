@@ -275,6 +275,11 @@ jobs:
             sudo apt-get update -q
             sudo apt-get install -y -q xvfb
           fi
+          # ImageMagick only takes the screenshot below, so failing to install it fails nothing.
+          if ! command -v import >/dev/null; then
+            { sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends imagemagick; } \
+              || echo "::warning::ImageMagick did not install; there will be no screenshot."
+          fi
           Xvfb :99 -screen 0 1280x800x24 > /dev/null 2>&1 &
           xvfb=$!
           trap 'kill "${xvfb}" 2> /dev/null || true' EXIT
@@ -319,9 +324,8 @@ jobs:
             # A picture of the virtual screen, for a reviewer: it shows that the window drew, not
             # only that the process stayed up. Best effort; it judges nothing.
             mkdir -p "${RUNNER_TEMP}/screenshot"
-            ffmpeg -loglevel error -f x11grab -video_size 1280x800 -i :99 -frames:v 1 \
-              "${RUNNER_TEMP}/screenshot/${name}.png" \
-              || echo "::warning::${name}: no screenshot (ffmpeg could not capture the display)."
+            import -display :99 -window root "${RUNNER_TEMP}/screenshot/${name}.png" \
+              || echo "::warning::${name}: no screenshot (ImageMagick could not capture the display)."
             kill -TERM -- "-${pid}" 2> /dev/null || true
             for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "${pid}" 2> /dev/null || break; sleep 1; done
             kill -KILL -- "-${pid}" 2> /dev/null || true
