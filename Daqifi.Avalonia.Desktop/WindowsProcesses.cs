@@ -40,6 +40,31 @@ internal static class WindowsProcesses
         return result;
     }
 
+    /// <summary>
+    /// Every process on the PC with its name and session, which Windows gives to any user for every
+    /// process, and its image path where this process may read it. For the start check of #509.
+    /// </summary>
+    public static IReadOnlyList<SessionProcess> Sessions()
+    {
+        var result = new List<SessionProcess>();
+        foreach (var process in Process.GetProcesses())
+        {
+            using (process)
+            {
+                try
+                {
+                    result.Add(new SessionProcess(process.Id, process.ProcessName, process.SessionId, ImagePath(process.Id)));
+                }
+                catch (InvalidOperationException)
+                {
+                    // exited since the list was taken
+                }
+            }
+        }
+
+        return result;
+    }
+
     private static string? ImagePath(int processId)
     {
         var handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, (uint)processId);
