@@ -66,12 +66,11 @@ public interface IStreamingDevice : IDevice
     // @port: Daqifi.Desktop.Device.IStreamingDevice.DevicePartNumber
     string DevicePartNumber { get; }
 
-    /// <summary>
-    /// Gets the device's hardware timestamp clock frequency in Hz.
-    /// Used as a fallback when parsing SD card files that lack this field.
-    /// </summary>
-    // @port: Daqifi.Desktop.Device.IStreamingDevice.TimestampFrequency
-    uint TimestampFrequency { get; }
+    // Through this interface, TimestampFrequency had one reader: the SD importer's copy of the
+    // parse configuration. GetSdCardParseConfiguration now carries the clock, from Core (#671).
+    // AbstractStreamingDevice keeps the property.
+    // @port: Daqifi.Desktop.Device.IStreamingDevice.TimestampFrequency (removed)
+
     // @port: Daqifi.Desktop.Device.IStreamingDevice.NetworkConfiguration
     NetworkConfiguration NetworkConfiguration { get; }
     // @port: Daqifi.Desktop.Device.IStreamingDevice.MacAddress

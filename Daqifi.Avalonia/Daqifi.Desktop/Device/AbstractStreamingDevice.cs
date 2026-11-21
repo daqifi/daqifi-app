@@ -610,8 +610,8 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// <summary>
     /// Gets the device's hardware timestamp clock frequency in Hz.
     /// Sourced from the underlying Core device, which populates it from the
-    /// <c>TimestampFreq</c> field in received status messages.
-    /// Used as a fallback when parsing SD card files that lack this field.
+    /// <c>TimestampFreq</c> field in received status messages. The SD card parser gets the
+    /// same clock through <see cref="GetSdCardParseConfiguration"/>.
     /// </summary>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.TimestampFrequency
     public uint TimestampFrequency => (CoreDeviceForSd ?? CoreDeviceForStreaming)?.TimestampFrequency ?? 0;

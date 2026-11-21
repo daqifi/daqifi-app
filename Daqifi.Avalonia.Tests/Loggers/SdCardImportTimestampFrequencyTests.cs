@@ -1,12 +1,11 @@
 using System.Runtime.CompilerServices;
 using Daqifi.Avalonia.Tests.Device;
 using Daqifi.Core.Device.SdCard;
-using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Logger;
 using Daqifi.Desktop.Loggers;
+using Google.Protobuf;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
-using CoreAnalogChannel = Daqifi.Core.Channel.AnalogChannel;
 
 namespace Daqifi.Avalonia.Tests.Loggers;
 
@@ -23,12 +22,20 @@ namespace Daqifi.Avalonia.Tests.Loggers;
 /// </para>
 ///
 /// <para>
-/// <c>BuildDeviceConfiguration</c> hardcoded <c>TimestampFrequency: 0</c>, which removed the
-/// middle rung entirely. That rung is not decorative: firmware 3.7.2 and earlier embed no
-/// frequency in SD logs while still reporting one live, so for those files the device was the only
-/// accurate source available. Dropping to the guess is not harmless — Core's default is a
-/// historical 50 MHz against shipped firmware's 42 MHz, which makes every reconstructed timestamp
-/// in the session roughly 19% fast, invisibly: the samples still look evenly spaced.
+/// The importer's own copy of the parse configuration (<c>BuildDeviceConfiguration</c>) hardcoded
+/// <c>TimestampFrequency: 0</c>, which removed the middle rung entirely. That rung is not
+/// decorative: firmware 3.7.2 and earlier embed no frequency in SD logs while still reporting one
+/// live, so for those files the device was the only accurate source available. Dropping to the
+/// guess is not harmless — Core's default was a historical 50 MHz against shipped firmware's
+/// 42 MHz, which made every reconstructed timestamp in the session roughly 19% fast, invisibly:
+/// the samples still looked evenly spaced.
+/// </para>
+///
+/// <para>
+/// #671 deleted that copy. The device now builds the configuration with Core's
+/// <c>SdCardDeviceConfiguration.FromDevice</c>, and <c>SdCardParseConfigurationTests</c> pins what
+/// it holds for each board. These rows pin the importer's half: the device's clock reaches the
+/// parser.
 /// </para>
 ///
 /// <para>
@@ -39,8 +46,17 @@ namespace Daqifi.Avalonia.Tests.Loggers;
 /// </summary>
 public sealed class SdCardImportTimestampFrequencyTests : IDisposable
 {
-    /// <summary>What shipped Nyquist firmware reports, and what Core's 50 MHz guess is not.</summary>
+    /// <summary>What shipped Nyquist firmware reports.</summary>
     private const uint DeviceClockHz = 42_000_000;
+
+    /// <summary>
+    /// A clock the parser's fallback (42 MHz since Core 1.10.0) cannot produce, so the spacing of
+    /// the imported samples shows which rung of the resolution order won.
+    /// </summary>
+    private const uint OtherDeviceClockHz = 40_000_000;
+
+    /// <summary>The ticks between two samples of the written log: 10.5 ms at 40 MHz.</summary>
+    private const uint TicksPerSample = 420_000;
 
     private readonly string _directory = Path.Combine(
         Path.GetTempPath(), "daqifi-avalonia-tests", "sd-import-ts-" + Guid.NewGuid().ToString("N"));
@@ -62,7 +78,7 @@ public sealed class SdCardImportTimestampFrequencyTests : IDisposable
         try { Directory.Delete(_directory, recursive: true); } catch { /* best-effort cleanup */ }
     }
 
-    // ---- The override handed to Core's parser -------------------------------------------------
+    // ---- The device's clock reaches Core's parser ----------------------------------------------
 
     /// <summary>
     /// The defect. A connected device that reports a clock must pass it to the parser, or the
@@ -70,43 +86,32 @@ public sealed class SdCardImportTimestampFrequencyTests : IDisposable
     /// silently falls through to the guess.
     /// </summary>
     [Fact]
-    public void The_parse_override_carries_the_devices_timestamp_clock()
+    public async Task A_log_that_states_no_clock_is_read_on_the_devices_clock()
     {
-        var device = DeviceReporting(DeviceClockHz);
+        var sessionId = await ImportFromDeviceReporting(OtherDeviceClockHz);
 
-        var config = SdCardSessionImporter.BuildDeviceConfiguration(device);
+        var line = Assert.Single(_log.Informations, i => i.Contains("SD card session config"));
+        Assert.Contains($"TimestampFreq={OtherDeviceClockHz} Hz (source: {nameof(SdCardTimestampSource.Device)})", line, StringComparison.Ordinal);
 
-        Assert.NotNull(config);
-        Assert.Equal(DeviceClockHz, config.TimestampFrequency);
+        // 420,000 ticks at 40 MHz. The 42 MHz fallback would give 10 ms.
+        var times = TimesOf(sessionId);
+        Assert.Equal(TimeSpan.FromMilliseconds(10.5).Ticks, times[1] - times[0]);
+        Assert.DoesNotContain(_log.Warnings, MentionsFrequency);
     }
 
     /// <summary>
     /// A device that reports no clock must not invent one. Zero is the honest value: it leaves the
-    /// rung empty so Core's own fallback governs, exactly as it would with no device at all.
+    /// rung empty so Core's own fallback governs, exactly as it would with no device at all, and
+    /// the import says that the timestamps rest on a guess.
     /// </summary>
     [Fact]
-    public void A_device_reporting_no_clock_leaves_the_override_at_zero()
+    public async Task A_device_reporting_no_clock_leaves_the_parser_on_its_fallback()
     {
-        var config = SdCardSessionImporter.BuildDeviceConfiguration(DeviceReporting(0));
+        await ImportFromDeviceReporting(0);
 
-        Assert.NotNull(config);
-        Assert.Equal(0u, config.TimestampFrequency);
-    }
-
-    /// <summary>
-    /// The clock travels with the rest of the device snapshot rather than replacing it — the
-    /// calibration and port data the override exists to carry must still be there.
-    /// </summary>
-    [Fact]
-    public void Carrying_the_clock_does_not_disturb_the_rest_of_the_snapshot()
-    {
-        var config = SdCardSessionImporter.BuildDeviceConfiguration(DeviceReporting(DeviceClockHz));
-
-        Assert.NotNull(config);
-        Assert.Equal(1, config.AnalogPortCount);
-        Assert.Equal("SN-OK", config.DeviceSerialNumber);
-        Assert.NotNull(config.CalibrationValues);
-        Assert.Single(config.CalibrationValues);
+        var line = Assert.Single(_log.Informations, i => i.Contains("SD card session config"));
+        Assert.Contains($"(source: {nameof(SdCardTimestampSource.Fallback)})", line, StringComparison.Ordinal);
+        Assert.Single(_log.Warnings, MentionsFrequency);
     }
 
     // ---- The warning -------------------------------------------------------------------------
@@ -189,11 +194,65 @@ public sealed class SdCardImportTimestampFrequencyTests : IDisposable
     private static bool MentionsFrequency(string warning) =>
         warning.Contains("frequency", StringComparison.OrdinalIgnoreCase);
 
-    private static RecordingStreamingDevice DeviceReporting(uint frequencyHz)
+    /// <summary>
+    /// Imports a log that states no clock from a device whose configuration states
+    /// <paramref name="frequencyHz"/>, and returns the session's ID.
+    /// </summary>
+    private async Task<int> ImportFromDeviceReporting(uint frequencyHz)
     {
-        var device = new RecordingStreamingDevice { TimestampFrequency = frequencyHz };
-        device.DataChannels.Add(new AnalogChannel(device, new CoreAnalogChannel(0)) { Name = "AI0" });
-        return device;
+        var device = new RecordingStreamingDevice
+        {
+            SdCardConfiguration = new SdCardDeviceConfiguration(
+                AnalogPortCount: 1,
+                DigitalPortCount: 0,
+                TimestampFrequency: frequencyHz,
+                DeviceSerialNumber: "SN-OK",
+                DevicePartNumber: "Nq1",
+                FirmwareRevision: "3.9.1",
+                CalibrationValues: [(1.0, 0.0)],
+                Resolution: 4096,
+                PortRange: [10.0],
+                InternalScaleM: [1.0]),
+            OnDownload = (name, _) => Task.FromResult(WriteLogThatStatesNoClock(name))
+        };
+
+        var result = await Importer().ImportFromDeviceAsync(device, "log_20260908_141236.bin");
+
+        // Guards the helper, not the subject, as in Import below.
+        Assert.True(result.SessionPersisted);
+        return result.Session.ID;
+    }
+
+    /// <summary>
+    /// A protobuf SD log in the temp directory, where the importer requires a download to land:
+    /// four samples of one analog input, <see cref="TicksPerSample"/> apart, and no clock.
+    /// </summary>
+    private static SdCardDownloadResult WriteLogThatStatesNoClock(string name)
+    {
+        var path = Path.Combine(Path.GetTempPath(), "daqifi-464-" + Guid.NewGuid().ToString("N") + ".bin");
+
+        using (var stream = File.Create(path))
+        {
+            for (var i = 0; i < 4; i++)
+            {
+                var message = new DaqifiOutMessage { MsgTimeStamp = (uint)((i + 1) * TicksPerSample) };
+                message.AnalogInData.Add(2048);
+                message.WriteDelimitedTo(stream);
+            }
+        }
+
+        return new SdCardDownloadResult(name, new FileInfo(path).Length, TimeSpan.Zero, path);
+    }
+
+    private List<long> TimesOf(int sessionId)
+    {
+        using var context = Factory().CreateDbContext();
+        return context.Samples.AsNoTracking()
+            .Where(s => s.LoggingSessionID == sessionId)
+            .Select(s => s.TimestampTicks)
+            .Distinct()
+            .OrderBy(t => t)
+            .ToList();
     }
 
     private SdCardSessionImporter Importer() =>

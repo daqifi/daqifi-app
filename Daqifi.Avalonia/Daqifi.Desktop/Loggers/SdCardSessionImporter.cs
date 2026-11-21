@@ -117,21 +117,22 @@ public class SdCardSessionImporter : ISdCardSessionImporter
         _logger.Information($"Starting import of '{fileName}' from device {device.DeviceSerialNo}");
 
         // Read the device's configuration BEFORE the download, while the device is connected, and
-        // parse with that snapshot (#548). A DISCONNECT clears DataChannels at once, but Core lets
-        // a download that holds its operation lock run to the end — so read after the download,
-        // the configuration was gone and a complete file was parsed as raw counts, with no digital
-        // channels and a guessed clock, then saved as Complete.
-        var deviceConfig = BuildDeviceConfiguration(device);
+        // parse with that snapshot (#548). A DISCONNECT tears the device down at once, but Core
+        // lets a download that holds its operation lock run to the end — so read after the
+        // download, the configuration was gone and a complete file was parsed as raw counts, with
+        // no digital channels and a guessed clock, then saved as Complete. The device builds it
+        // with Core's SdCardDeviceConfiguration.FromDevice (#671).
+        var deviceConfig = device.GetSdCardParseConfiguration();
         if (deviceConfig == null)
         {
-            // No analog channels: the device is disconnecting, or its channels were never read.
-            // A file parsed without a configuration keeps raw counts and loses its digital
-            // channels, so stop here rather than save a session that only looks imported. This
-            // type takes the classifier's "connection lost, reconnect and try again" arm, which
-            // is the remedy in both cases.
+            // No configuration: the device is not connected or is disconnecting, or it reported no
+            // analog channels. A file parsed without a configuration keeps raw counts and loses its
+            // digital channels, so stop here rather than save a session that only looks imported.
+            // This type takes the classifier's "connection lost, reconnect and try again" arm,
+            // which is the remedy in each case.
             throw new Daqifi.Core.Device.DeviceNotConnectedException(
-                $"Device {device.DeviceSerialNo} reported no analog channels, so '{fileName}' cannot be " +
-                "converted to volts. The import was not started.");
+                $"Device {device.DeviceSerialNo} is not connected or reported no analog channels, so " +
+                $"'{fileName}' cannot be converted to volts. The import was not started.");
         }
 
         // Download to temp file, bounded by a stall watchdog. Core exposes no timeout on either
@@ -870,54 +871,6 @@ public class SdCardSessionImporter : ISdCardSessionImporter
         using var transaction = context.Database.BeginTransaction();
         context.BulkInsert(batch);
         transaction.Commit();
-    }
-
-    /// <summary>
-    /// Builds an <see cref="SdCardDeviceConfiguration"/> from the connected device's channel data.
-    /// This provides calibration, resolution, port range, and internal scale values so the
-    /// SD card parser can convert raw ADC counts to real voltage values, plus the device's
-    /// timestamp clock so it can convert raw tick counts to times.
-    /// </summary>
-    /// <remarks>
-    /// Internal so tests can assert what is handed to the parser; production code reaches it
-    /// through <see cref="ImportFromDeviceAsync"/>.
-    /// </remarks>
-    // @port: Daqifi.Desktop.Loggers.SdCardSessionImporter.BuildDeviceConfiguration
-    internal static SdCardDeviceConfiguration? BuildDeviceConfiguration(IStreamingDevice device)
-    {
-        var analogChannels = device.DataChannels
-            .OfType<AnalogChannel>()
-            .ToList();
-
-        if (analogChannels.Count == 0)
-        {
-            return null;
-        }
-
-        var digitalCount = device.DataChannels
-            .Count(ch => ch.Type == Daqifi.Core.Channel.ChannelType.Digital);
-
-        return new SdCardDeviceConfiguration(
-            AnalogPortCount: analogChannels.Count,
-            DigitalPortCount: digitalCount,
-            // The device's LIVE clock, not 0. Core resolves the frequency in ranked order —
-            // the file, then this override, then a guess — and this is the middle rung.
-            // Firmware 3.7.2 and earlier embed no frequency in SD logs while still reporting
-            // one in their status message, so for those files this is the only accurate source
-            // available. Passing 0 skipped straight to the guess, and Core's guess is a
-            // historical 50 MHz against shipped firmware's 42 MHz, which makes every
-            // reconstructed timestamp in the session roughly 19% fast (#464). A file that
-            // states its own frequency still wins, so this can only ever improve the outcome.
-            TimestampFrequency: device.TimestampFrequency,
-            DeviceSerialNumber: device.DeviceSerialNo,
-            DevicePartNumber: device.DevicePartNumber,
-            FirmwareRevision: device.DeviceVersion,
-            CalibrationValues: analogChannels
-                .Select(ch => (ch.CalibrationMValue, ch.CalibrationBValue))
-                .ToArray(),
-            Resolution: analogChannels[0].Resolution,
-            PortRange: analogChannels.Select(ch => ch.PortRange).ToArray(),
-            InternalScaleM: analogChannels.Select(ch => ch.InternalScaleMValue).ToArray());
     }
 
     // @port: Daqifi.Desktop.Loggers.SdCardSessionImporter.AssignChannelColors

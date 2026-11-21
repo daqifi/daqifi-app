@@ -191,8 +191,6 @@ internal sealed class ScriptedDevice : IStreamingDevice
 
     public string DevicePartNumber => "Nq1";
 
-    public uint TimestampFrequency => 42_000_000;
-
     public NetworkConfiguration NetworkConfiguration { get; } = new();
 
     public string MacAddress { get; set; } = string.Empty;

@@ -160,9 +160,11 @@ exist, which is why the diff flags it.
 
 - `LoggingManager.ParseProfiles` — profile XML parsing moved into a dedicated
   `ProfileXmlStore`. Profiles load, activate, save and delete downstream.
-- `AbstractStreamingDevice.GetSdCardParseConfiguration` — became
+- ~~`AbstractStreamingDevice.GetSdCardParseConfiguration` — became
   `SdCardSessionImporter.BuildDeviceConfiguration`, so the config is built where it is
-  consumed instead of every device carrying the method.
+  consumed instead of every device carrying the method.~~ **Ported since #671.** The
+  importer's copy of Core's `SdCardDeviceConfiguration.FromDevice` drifted from Core two
+  times, so the method is back on the device, as upstream has it, and Core builds it.
 - `Logger.ChannelBuffer` / `SummaryBuffer` and their 13 `*Ticks` accumulators — the
   port's `SummaryLogger` keeps the same statistics but stores and presents them in
   milliseconds rather than raw ticks.

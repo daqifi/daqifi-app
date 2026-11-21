@@ -4,7 +4,6 @@ using Daqifi.Core.Communication.Transport;
 using Daqifi.Core.Device;
 using Daqifi.Core.Device.Capabilities;
 using Daqifi.Core.Device.SdCard;
-using Daqifi.Desktop.Loggers;
 using Xunit;
 using UsbStreamingDevice = Daqifi.Desktop.Device.UsbDevice.UsbStreamingDevice;
 
@@ -74,9 +73,6 @@ public class SdCardParseConfigurationTests
             // The serial the importer writes into every sample when the log states none must be the
             // serial the rest of the app shows for this device.
             Assert.Equal(device.DeviceSerialNo, configuration!.DeviceSerialNumber);
-
-            // #671: the importer's own copy of this builder gave the same value on this device.
-            AssertConfiguration(expected, SdCardSessionImporter.BuildDeviceConfiguration(device));
         }
         finally
         {
@@ -106,7 +102,6 @@ public class SdCardParseConfigurationTests
             Assert.Equal(16, device.DataChannels.Count);
 
             Assert.Null(device.GetSdCardParseConfiguration());
-            Assert.Null(SdCardSessionImporter.BuildDeviceConfiguration(device));
         }
         finally
         {
@@ -132,7 +127,6 @@ public class SdCardParseConfigurationTests
         device.Disconnect();
 
         Assert.Null(device.GetSdCardParseConfiguration());
-        Assert.Null(SdCardSessionImporter.BuildDeviceConfiguration(device));
     }
 
     #region Rows
