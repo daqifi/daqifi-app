@@ -78,6 +78,13 @@ public class LoggingSession : ObservableObject
     public long? PreviousFirstSampleId { get; set; }
 
     /// <summary>
+    /// For a session the import of earlier sessions copied, the ID of the last old sample the copy
+    /// holds; null for every other session. Only <see cref="PreviousSessionImport"/> writes it, so it
+    /// can copy the samples an old session gets after its copy (#514). Downstream addition.
+    /// </summary>
+    public long? PreviousLastSampleId { get; set; }
+
+    /// <summary>
     /// True when this row came from an import that did not finish, so what it holds is a prefix of
     /// the log rather than the whole of it. Downstream addition: the session-list rows on both
     /// heads show a chip on this, which is the difference between "your import failed" and "your

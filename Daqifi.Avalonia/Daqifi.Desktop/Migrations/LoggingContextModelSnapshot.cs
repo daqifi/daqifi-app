@@ -80,6 +80,9 @@ partial class LoggingContextModelSnapshot : ModelSnapshot
                 b.Property<long?>("PreviousFirstSampleId")
                     .HasColumnType("INTEGER");
 
+                b.Property<long?>("PreviousLastSampleId")
+                    .HasColumnType("INTEGER");
+
                 b.Property<long?>("SampleCount")
                     .HasColumnType("INTEGER");
 

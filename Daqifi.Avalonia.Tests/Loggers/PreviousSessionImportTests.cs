@@ -38,10 +38,9 @@ public sealed class PreviousSessionImportTests : IDisposable
     }
 
     private PreviousSessionImport WithFreeSpace(long bytes) =>
-        new(_previous, _current, _markers) { RecordingWindow = TimeSpan.Zero, FreeSpace = _ => bytes };
+        new(_previous, _current, _markers) { FreeSpace = _ => bytes };
 
-    // No recording window: the test files are always "just written".
-    private PreviousSessionImport Import() => new(_previous, _current, _markers) { RecordingWindow = TimeSpan.Zero };
+    private PreviousSessionImport Import() => new(_previous, _current, _markers);
 
     private async Task<ImportOutcome> RunImport(PreviousSessionImport? import = null, IProgress<double>? progress = null)
     {
@@ -313,24 +312,23 @@ public sealed class PreviousSessionImportTests : IDisposable
     }
 
     [Fact]
-    public async Task A_cleanup_stopped_after_its_first_batch_is_finished_by_the_next_import()
+    public async Task A_copy_stopped_part_way_is_continued_by_the_next_import()
     {
         CreatePreviousDatabase();
         var span = PreviousSessionImport.BatchSpan;
         AddBulkPreviousSession(1, SameSecond, 1, 2 * span + 10);
         var partial = await StopAnImportAfter(batches: 2);
 
-        // Its clean-up then stopped after the first batch of samples was deleted, as a closed app
-        // would leave it. This is the batch DeleteSessions commits first.
-        Execute(_current,
-            $"DELETE FROM Samples WHERE ID IN (SELECT ID FROM Samples WHERE LoggingSessionID = {partial} LIMIT {span})");
-
+        Assert.True(Import().HasSessionsToImport());
         var outcome = await RunImport();
 
-        Assert.Equal([(int)partial], outcome.Removed);
-        Assert.Single(outcome.Imported);
+        Assert.Empty(outcome.Removed);
+        Assert.Equal([(int)partial], outcome.Imported);
         Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
         Assert.Equal(2 * span + 10, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples"));
+        Assert.Equal(2 * span + 10, Scalar<long>(_current, $"SELECT SampleCount FROM Sessions WHERE ID = {partial}"));
+        Assert.Equal((long)SessionStatus.Complete, Scalar<long>(_current, $"SELECT Status FROM Sessions WHERE ID = {partial}"));
+        Assert.False(Import().HasSessionsToImport());
     }
 
     // Stops an import after some batches, as a killed or closed app would. Returns the partial
@@ -458,24 +456,89 @@ public sealed class PreviousSessionImportTests : IDisposable
     }
 
     [Fact]
-    public async Task An_interrupted_session_is_deleted_and_imported_again_in_full()
+    public async Task A_failed_copy_with_no_last_sample_ID_is_kept_and_its_session_is_copied_again_beside_it()
     {
+        // A partial copy that records no last sample ID (none made by a release) cannot be continued.
+        // The import never deletes it; it makes a complete copy beside it.
         CreatePreviousDatabase();
         AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1, 2, 3);
-        // What a killed import leaves once startup has flagged it: a partial copy, ImportFailed.
         Execute(_current,
             "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousFirstSampleId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1);" +
             "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
             "VALUES (7, 1.5, 10, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);");
 
         Assert.True(Import().HasSessionsToImport());
-        var imported = (await RunImport()).Imported;
+        var outcome = await RunImport();
 
-        Assert.Single(imported);
-        Assert.NotEqual(7, imported[0]);
-        Assert.Equal(0L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions WHERE ID = 7"));
-        Assert.Equal(3L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples"));
-        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions WHERE Status = 0"));
+        Assert.Empty(outcome.Removed);
+        var copy = Assert.Single(outcome.Imported);
+        Assert.NotEqual(7, copy);
+        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = 7"));
+        Assert.Equal(3L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task A_copy_stopped_after_its_last_batch_is_marked_complete_by_the_next_import()
+    {
+        // Every sample is in, but the import stopped before it marked the copy complete.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1, 2);
+        Execute(_current,
+            "INSERT INTO Sessions (ID, SessionStart, Name, Status, SampleCount, PreviousFirstSampleId, PreviousLastSampleId) " +
+            "VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 2, 1, 2);" +
+            "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            "VALUES (7, 1.5, 10, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1), (7, 2.5, 20, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);");
+
+        Assert.True(Import().HasSessionsToImport());
+        Assert.Equal([7], (await RunImport()).Imported);
+
+        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
+        Assert.Equal((long)SessionStatus.Complete, Scalar<long>(_current, "SELECT Status FROM Sessions WHERE ID = 7"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task A_session_that_takes_a_new_copy_ID_after_its_last_batch_is_not_marked_complete()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1);
+
+        // After the copy's only batch, the user deletes it, and a failed SD card import gets its ID.
+        var outcome = await RunImport(progress: AfterTheFirstBatch(() =>
+        {
+            var copy = Scalar<long>(_current, $"SELECT ID FROM Sessions WHERE Status = {(int)SessionStatus.Importing}");
+            Execute(_current,
+                $"DELETE FROM SessionDeviceMetadata WHERE LoggingSessionID = {copy}; DELETE FROM Samples WHERE LoggingSessionID = {copy}; " +
+                $"DELETE FROM Sessions WHERE ID = {copy};" +
+                $"INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES ({copy}, '2026-11-20 10:00:00', 'Failed SD import', {(int)SessionStatus.ImportFailed});");
+        }));
+
+        Assert.Empty(outcome.Imported);
+        Assert.Equal((long)SessionStatus.ImportFailed, Scalar<long>(_current, "SELECT Status FROM Sessions WHERE Name = 'Failed SD import'"));
+    }
+
+    [Fact]
+    public async Task A_copy_is_not_continued_from_a_session_whose_first_sample_differs()
+    {
+        // In the new database the sample at the copy's last ID is the same, but the first is not:
+        // another board's log. It is imported as a session of its own.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41", "Card log", 1, 2);
+        var copy = Assert.Single((await RunImport()).Imported);
+
+        ReplacePreviousDatabase();
+        Execute(_previous,
+            "INSERT INTO Sessions (ID, SessionStart, Name, SampleCount) VALUES (1, '2026-03-29 18:51:41', 'Other board', 3);" +
+            "INSERT INTO Samples (ID, LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            "VALUES (1, 1, 1.5, 10, 'Nq2', 'AI0', 'SN-OTHER', '#00FF00', 1);");
+        AddPreviousSample(1, 2);
+        AddPreviousSample(1, 3);
+
+        await RunImport();
+
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+        Assert.Equal(3L, CopiedSamples("Other board"));
     }
 
     [Fact]
@@ -496,7 +559,7 @@ public sealed class PreviousSessionImportTests : IDisposable
         Assert.Single(interrupted.Imported);
 
         Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions WHERE Status = 0"));
-        // The partial copy is flagged failed at once, so a retry in the same run replaces it.
+        // The partial copy is flagged failed at once, so a retry in the same run continues it.
         Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions WHERE Status = 2"));
         Assert.Equal(2L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
 
@@ -595,7 +658,7 @@ public sealed class PreviousSessionImportTests : IDisposable
             begin.ExecuteNonQuery();
         }
 
-        var import = new PreviousSessionImport(_previous, _current, _markers) { RecordingWindow = TimeSpan.Zero, LockTimeoutSeconds = 1 };
+        var import = new PreviousSessionImport(_previous, _current, _markers) { LockTimeoutSeconds = 1 };
         var run = Task.Run(() => import.ImportAsync(new ImportOutcome()));
 
         var finished = await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(30)));
@@ -617,7 +680,7 @@ public sealed class PreviousSessionImportTests : IDisposable
             transaction.Commit();
         });
 
-        var import = new PreviousSessionImport(_previous, _current, _markers) { RecordingWindow = TimeSpan.Zero, LockTimeoutSeconds = 20 };
+        var import = new PreviousSessionImport(_previous, _current, _markers) { LockTimeoutSeconds = 20 };
         var outcome = new ImportOutcome();
         await Task.Run(() => import.ImportAsync(outcome));
         await release;
@@ -663,69 +726,616 @@ public sealed class PreviousSessionImportTests : IDisposable
         Assert.Equal(1L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {imported[0]}"));
     }
 
-    [Fact]
-    public async Task A_session_that_grows_during_the_copy_is_left_for_later()
+    // The earlier version writes a session's sample count only when its recording stops, so a
+    // session without one has no recorded end: it may still be recording.
+    private void ForgetSampleCount(long sessionId) =>
+        Execute(_previous, $"UPDATE Sessions SET SampleCount = NULL WHERE ID = {sessionId};");
+
+    private void AddPreviousSample(long sessionId, long sampleId) => Execute(_previous, SampleInsert(sessionId, sampleId));
+
+    private static string SampleInsert(long sessionId, long sampleId) =>
+        "INSERT INTO Samples (ID, LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+        $"VALUES ({sampleId}, {sessionId}, {sampleId}.5, {sampleId * 10}, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);";
+
+    // A sample the other app records through a connection it keeps open.
+    private static void Record(SqliteConnection recorder, long sessionId, long sampleId)
     {
-        CreatePreviousDatabase();
-        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Recording", 1, 2);
-        var grew = false;
-        var progress = new SynchronousProgress(fraction =>
+        using var insert = recorder.CreateCommand();
+        insert.CommandText = SampleInsert(sessionId, sampleId);
+        insert.ExecuteNonQuery();
+    }
+
+    // Many samples at once for an old session, with consecutive IDs.
+    private void AddBulkPreviousSamples(long sessionId, long firstSampleId, long count) =>
+        Execute(_previous,
+            "INSERT INTO Samples (ID, LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            $"WITH RECURSIVE c(x) AS (SELECT {firstSampleId} UNION ALL SELECT x + 1 FROM c WHERE x < {firstSampleId + count - 1}) " +
+            $"SELECT x, {sessionId}, x, x, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1 FROM c;");
+
+    private long CopiedSamples(string name) => Scalar<long>(_current,
+        $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = (SELECT ID FROM Sessions WHERE Name = '{name}')");
+
+    // The other app writes the old database once, after the first batch of the copy is in.
+    private static SynchronousProgress AfterTheFirstBatch(Action write) => OncePast(0, write);
+
+    // The other app writes the old database once, when the import's progress first passes a point.
+    private static SynchronousProgress OncePast(double point, Action write)
+    {
+        var wrote = false;
+        return new SynchronousProgress(fraction =>
         {
-            // The other app writes another sample while this session is being copied.
-            if (fraction > 0 && !grew)
+            if (fraction > point && !wrote)
             {
-                grew = true;
-                Execute(_previous,
-                    "INSERT INTO Samples (ID, LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
-                    "VALUES (3, 1, 3.5, 30, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);");
+                wrote = true;
+                write();
             }
         });
-
-        var outcome = await RunImport(progress: progress);
-
-        Assert.Empty(outcome.Imported);
-        Assert.Equal(1, outcome.LeftForLater);
-        Assert.Equal(0L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
-        Assert.Equal(0L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples"));
-        Assert.True(Import().HasSessionsToImport(), "It must be offered again.");
     }
 
     [Fact]
-    public async Task The_newest_session_of_a_file_written_moments_ago_is_left_for_later()
+    public async Task A_sample_added_during_the_copy_is_copied_by_the_next_import()
     {
+        // The other app writes another sample while this session is copied. The copy holds the
+        // samples there were when the import listed the session; the new one is offered again.
         CreatePreviousDatabase();
-        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Finished", 1);
-        AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Maybe still recording", 2);
-        var import = new PreviousSessionImport(_previous, _current, _markers) { RecordingWindow = TimeSpan.FromHours(1) };
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Recording", 1, 2);
 
-        var outcome = await RunImport(import);
-
-        Assert.Single(outcome.Imported);
-        Assert.Equal(1, outcome.LeftForLater);
-        Assert.Equal("Finished", Scalar<string>(_current, "SELECT Name FROM Sessions"));
-        Assert.True(import.HasSessionsToImport(), "The newest session must be offered again.");
-    }
-
-    [Fact]
-    public async Task Without_AUTOINCREMENT_a_session_left_for_later_keeps_the_offer_open()
-    {
-        // No copy can be proved here (sample IDs can be given twice), so the import skips nothing.
-        CreatePreviousDatabase(autoincrement: false);
-        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Finished", 1);
-        AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Maybe still recording", 2);
-        var recording = new PreviousSessionImport(_previous, _current, _markers) { RecordingWindow = TimeSpan.FromHours(1) };
-
-        var first = await RunImport(recording);
+        var first = await RunImport(progress: AfterTheFirstBatch(() => AddPreviousSample(1, 3)));
 
         Assert.Single(first.Imported);
-        Assert.Equal(1, first.LeftForLater);
-        Assert.True(Import().HasSessionsToImport(), "The newest session must be offered again.");
+        Assert.Equal(2L, CopiedSamples("Recording"));
+        Assert.True(Import().HasSessionsToImport(), "The new sample must be offered.");
 
-        // The next import copies the newest session, and the finished one again: a duplicate, not
-        // a loss. Then the offer ends.
-        Assert.Equal(2, (await RunImport()).Imported.Count);
-        Assert.Equal(2L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions WHERE Name = 'Finished'"));
+        Assert.Equal(first.Imported, (await RunImport()).Imported);
+        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
+        Assert.Equal(3L, CopiedSamples("Recording"));
+        Assert.Equal(3L, Scalar<long>(_current, "SELECT SampleCount FROM Sessions"));
         Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task An_older_session_still_recording_beside_a_newer_one_is_copied_in_full_by_the_next_import()
+    {
+        // Two copies of the earlier version record at once (#514), so their sample IDs interleave.
+        // The newer session gets a sample during the import, the older one only after it.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Older recording", 1, 2);
+        AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Newer recording", 3, 4);
+        ForgetSampleCount(1);
+        ForgetSampleCount(2);
+
+        Assert.Equal(2, (await RunImport(progress: AfterTheFirstBatch(() => AddPreviousSample(2, 5)))).Imported.Count);
+        Assert.True(Import().HasSessionsToImport(), "The newer session's new sample must be offered.");
+
+        // The older session gets its last sample, then both recordings stop and record their counts.
+        AddPreviousSample(1, 6);
+        Execute(_previous, "UPDATE Sessions SET SampleCount = 3;");
+
+        Assert.Equal(2, (await RunImport()).Imported.Count);
+        Assert.Equal(2L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
+        Assert.Equal(3L, CopiedSamples("Older recording"));
+        Assert.Equal(3L, CopiedSamples("Newer recording"));
+        Assert.Equal(3L, Scalar<long>(_current, "SELECT SampleCount FROM Sessions WHERE Name = 'Older recording'"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task A_session_counted_while_it_recorded_is_copied_in_full_by_the_next_import()
+    {
+        // A second copy of the earlier version that starts up writes a count for each session that
+        // has none yet, also one the first copy is still recording. That count matches the samples
+        // so far, so the session looks finished. The import does not read it.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Counted while recording", 1, 2);
+        AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Newer recording", 3);
+        ForgetSampleCount(2);
+
+        Assert.Equal(2, (await RunImport(progress: AfterTheFirstBatch(() => AddPreviousSample(2, 4)))).Imported.Count);
+
+        // The older session gets its third sample, then both recordings stop and record their counts.
+        AddPreviousSample(1, 5);
+        Execute(_previous, "UPDATE Sessions SET SampleCount = 3 WHERE ID = 1; UPDATE Sessions SET SampleCount = 2 WHERE ID = 2;");
+
+        Assert.Equal(2, (await RunImport()).Imported.Count);
+        Assert.Equal(3L, CopiedSamples("Counted while recording"));
+        Assert.Equal(2L, CopiedSamples("Newer recording"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_session_that_gets_a_sample_later_in_the_import_is_brought_up_to_date_by_the_next_import(bool writeAheadLog)
+    {
+        // The first session has no new sample during its own copy, so that copy finishes. Its next
+        // sample comes while the second session is copied.
+        CreatePreviousDatabase();
+        if (writeAheadLog)
+        {
+            Execute(_previous, "PRAGMA journal_mode = WAL;");
+        }
+
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Copied first", 1, 2);
+        AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Copied second", 3, 4, 5);
+
+        // Two of the five sample IDs are done when the first session's copy ends; the write comes
+        // after the second session's batch.
+        Assert.Equal(2, (await RunImport(progress: OncePast(0.4, () => AddPreviousSample(1, 6)))).Imported.Count);
+        Assert.True(Import().HasSessionsToImport(), "The first session's new sample must be offered.");
+
+        Assert.Single((await RunImport()).Imported);
+        Assert.Equal(3L, CopiedSamples("Copied first"));
+        Assert.Equal(3L, CopiedSamples("Copied second"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task A_session_written_to_the_write_ahead_log_is_brought_up_to_date_by_the_next_import()
+    {
+        // The other app records in WAL mode and keeps its connection open, so its commits stay in
+        // the -wal file.
+        CreatePreviousDatabase();
+        Execute(_previous, "PRAGMA journal_mode = WAL;");
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Recording", 1, 2);
+        using var recorder = new SqliteConnection(TestDatabase.ConnectionString(_previous));
+        recorder.Open();
+        Record(recorder, 1, 3);
+
+        Assert.Single((await RunImport()).Imported);
+        Assert.Equal(3L, CopiedSamples("Recording"));
+
+        Record(recorder, 1, 4);
+        Assert.True(Import().HasSessionsToImport(), "The sample after the import must be offered.");
+        recorder.Close();
+
+        Assert.Single((await RunImport()).Imported);
+        Assert.Equal(4L, CopiedSamples("Recording"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task A_sample_added_after_a_quiet_import_is_copied_by_the_next_import()
+    {
+        // The recorder is open but has written nothing for a long time, so the import copies its two
+        // samples. Its third sample comes after the import, and then it stops. No check at import
+        // time can see that sample coming.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Quiet recording", 1, 2);
+        using var recorder = new SqliteConnection(TestDatabase.ConnectionString(_previous));
+        recorder.Open();
+        File.SetLastWriteTimeUtc(_previous, DateTime.UtcNow.AddHours(-1));
+
+        Assert.Single((await RunImport()).Imported);
+
+        // As the app does after an import: nothing is left, so the offer is retired.
+        Assert.False(Import().CheckForSessionsToImport());
+        Import().MarkDone();
+
+        Record(recorder, 1, 3);
+        recorder.Close();
+
+        Assert.True(Import().HasSessionsToImport(), "The new sample must be offered.");
+        await RunImport();
+        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
+        Assert.Equal(3L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples"));
+        Assert.Equal(3L, Scalar<long>(_current, "SELECT SampleCount FROM Sessions"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task Once_the_offer_is_retired_an_import_brings_copies_up_to_date_and_imports_no_new_session()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Imported", 1, 2);
+        await RunImport();
+        Import().MarkDone();
+        AddPreviousSample(1, 3);
+        AddPreviousSession(2, "2026-11-20 09:00:00.0000000", "Recorded after the import", 4);
+
+        var outcome = await RunImport();
+
+        Assert.Single(outcome.Imported);
+        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
+        Assert.Equal(3L, CopiedSamples("Imported"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task A_copy_brought_up_to_date_gets_the_devices_its_recording_picked_up()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Recording", 1);
+        Execute(_previous, "INSERT INTO SessionDeviceMetadata VALUES (1, 'SN-TEST', 'Nq1', 1000);");
+        var copy = Assert.Single((await RunImport()).Imported);
+
+        AddPreviousSample(1, 2);
+        Execute(_previous, "INSERT INTO SessionDeviceMetadata VALUES (1, 'SN-OTHER', 'Nq2', 500);");
+        await RunImport();
+
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM SessionDeviceMetadata WHERE LoggingSessionID = {copy}"));
+    }
+
+    [Fact]
+    public async Task A_copy_deleted_during_the_import_is_not_brought_back()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Kept", 1, 2);
+        AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Deleted meanwhile", 3, 4);
+        await RunImport();
+        AddPreviousSample(1, 5);
+        AddPreviousSample(2, 6);
+        var kept = Scalar<long>(_current, "SELECT ID FROM Sessions WHERE Name = 'Kept'");
+        var deleted = Scalar<long>(_current, "SELECT ID FROM Sessions WHERE Name = 'Deleted meanwhile'");
+
+        // The user deletes the second copy once the first one is brought up to date.
+        var outcome = await RunImport(progress: AfterTheFirstBatch(() => Execute(_current,
+            $"DELETE FROM Samples WHERE LoggingSessionID = {deleted}; DELETE FROM Sessions WHERE ID = {deleted};")));
+
+        Assert.Equal([(int)kept], outcome.Imported);
+        Assert.Equal(3L, CopiedSamples("Kept"));
+        Assert.Equal(0L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {deleted}"));
+        Assert.Equal(0L, Scalar<long>(_current, $"SELECT COUNT(*) FROM SessionDeviceMetadata WHERE LoggingSessionID = {deleted}"));
+    }
+
+    [Fact]
+    public async Task Bringing_a_copy_up_to_date_stopped_part_way_keeps_its_samples_and_last_sample_ID_in_step()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Long recording", 1);
+        var copy = Assert.Single((await RunImport()).Imported);
+        // The recording goes on for more than one batch.
+        var later = PreviousSessionImport.BatchSpan + 10;
+        AddBulkPreviousSamples(1, 2, later);
+
+        using (var stop = new CancellationTokenSource())
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Import().ImportAsync(
+                new ImportOutcome(), new SynchronousProgress(fraction => { if (fraction > 0) stop.Cancel(); }), stop.Token));
+        }
+
+        var afterOneBatch = 1 + PreviousSessionImport.BatchSpan;
+        Assert.Equal(afterOneBatch, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+        Assert.Equal(afterOneBatch, Scalar<long>(_current, $"SELECT SampleCount FROM Sessions WHERE ID = {copy}"));
+        Assert.Equal(afterOneBatch, Scalar<long>(_current, $"SELECT PreviousLastSampleId FROM Sessions WHERE ID = {copy}"));
+        Assert.Equal((long)SessionStatus.Complete, Scalar<long>(_current, $"SELECT Status FROM Sessions WHERE ID = {copy}"));
+
+        Assert.Equal([copy], (await RunImport()).Imported);
+        Assert.Equal(1 + later, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+        Assert.Equal(1 + later, Scalar<long>(_current, $"SELECT SampleCount FROM Sessions WHERE ID = {copy}"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task Brings_a_copy_up_to_date_across_batch_boundaries_in_one_import()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Long recording", 1);
+        var copy = Assert.Single((await RunImport()).Imported);
+        var later = PreviousSessionImport.BatchSpan + 10;
+        AddBulkPreviousSamples(1, 2, later);
+
+        Assert.Equal([copy], (await RunImport()).Imported);
+
+        Assert.Equal(1 + later, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+        Assert.Equal(1 + later, Scalar<long>(_current, $"SELECT PreviousLastSampleId FROM Sessions WHERE ID = {copy}"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task Needs_disk_space_only_for_the_samples_a_copy_is_behind()
+    {
+        CreatePreviousDatabase();
+        AddBulkPreviousSession(1, "2026-03-29 18:51:41.7774381", 1, 20_000);
+        await RunImport();
+        // The recording goes on for as many samples again: half the old file is left to copy.
+        AddBulkPreviousSamples(1, 20_001, 20_000);
+        var fileLength = new FileInfo(_previous).Length;
+
+        await Assert.ThrowsAsync<NotEnoughDiskSpaceException>(() => RunImport(WithFreeSpace(fileLength / 4)));
+        Assert.Equal(20_000L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples"));
+
+        Assert.Single((await RunImport(WithFreeSpace(fileLength * 3 / 4))).Imported);
+        Assert.Equal(40_000L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples"));
+    }
+
+    // A new database at the same path, as a reinstall or a restored backup can leave. Its sample IDs
+    // start again at 1.
+    private void ReplacePreviousDatabase()
+    {
+        File.Delete(_previous);
+        CreatePreviousDatabase();
+    }
+
+    [Fact]
+    public async Task A_copy_is_not_continued_from_a_later_recording_in_a_new_database_at_the_same_path()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Original recording", 1, 2);
+        var copy = Assert.Single((await RunImport()).Imported);
+        Import().MarkDone();
+
+        // Its samples have the same IDs, and (as all test samples, made from the ID) the same
+        // values. Only the start tells the two recordings apart.
+        ReplacePreviousDatabase();
+        AddPreviousSession(1, "2026-11-20 09:00:00.0000000", "Later recording", 1, 2, 3);
+
+        Assert.False(Import().HasSessionsToImport());
+        Assert.Empty((await RunImport()).Imported);
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+    }
+
+    [Fact]
+    public async Task A_later_recording_in_a_new_database_at_the_same_path_is_imported_as_a_session_of_its_own()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Original recording", 1, 2);
+        await RunImport();
+        ReplacePreviousDatabase();
+        AddPreviousSession(1, "2026-11-20 09:00:00.0000000", "Later recording", 1, 2, 3);
+
+        Assert.True(Import().HasSessionsToImport(), "The later recording must be offered.");
+        await RunImport();
+
+        Assert.Equal(2L, CopiedSamples("Original recording"));
+        Assert.Equal(3L, CopiedSamples("Later recording"));
+    }
+
+    [Fact]
+    public async Task A_copy_is_not_continued_unless_the_old_sample_at_its_last_sample_ID_is_its_last_sample()
+    {
+        // Two SD card logs from the same second can share the start, and in a new database also the
+        // first sample ID. Here even the first sample is the same; the second one has another time.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41", "Card log", 1, 2);
+        var copy = Assert.Single((await RunImport()).Imported);
+        Import().MarkDone();
+
+        ReplacePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41", "Card log", 1);
+        Execute(_previous,
+            "INSERT INTO Samples (ID, LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            "VALUES (2, 1, 2.5, 25, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);");
+        AddPreviousSample(1, 3);
+
+        Assert.False(Import().HasSessionsToImport());
+        Assert.Empty((await RunImport()).Imported);
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+    }
+
+    [Fact]
+    public async Task A_different_recording_with_only_the_first_reading_of_a_copy_is_offered_and_imported_beside_it()
+    {
+        // The offer is not retired yet. A new database at the same path holds a recording with the
+        // same start and first reading as a complete copy, but another second reading and a third
+        // sample: a different recording. Both must be kept, each as a session of its own.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41", "Card log", 1, 2);
+        var copy = Assert.Single((await RunImport()).Imported);
+
+        ReplacePreviousDatabase();
+        Execute(_previous, "INSERT INTO Sessions (ID, SessionStart, Name, SampleCount) VALUES (1, '2026-03-29 18:51:41', 'Restored log', 3);");
+        AddPreviousSample(1, 1);
+        Execute(_previous,
+            "INSERT INTO Samples (ID, LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            "VALUES (2, 1, 2.5, 25, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);");
+        AddPreviousSample(1, 3);
+
+        Assert.True(Import().HasSessionsToImport(), "The other recording must be offered.");
+        await RunImport();
+
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+        Assert.Equal(3L, CopiedSamples("Restored log"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task A_copy_is_not_continued_when_the_old_sample_at_its_last_sample_ID_belongs_to_another_session()
+    {
+        // In the new database the sample at the copy's last ID has the same values (test samples are
+        // made from their ID), but another session recorded it.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41", "Card log", 1, 2);
+        var copy = Assert.Single((await RunImport()).Imported);
+        Import().MarkDone();
+
+        ReplacePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41", "Card log", 1);
+        AddPreviousSession(9, "2026-03-29 18:51:41", "Another card log", 2);
+        AddPreviousSample(1, 3);
+
+        Assert.False(Import().HasSessionsToImport());
+        Assert.Empty((await RunImport()).Imported);
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+    }
+
+    // A card log of another board: same start (to the second), first sample ID 1, other readings.
+    private void AddOtherBoardSession(long id, string start, int samples)
+    {
+        Execute(_previous, $"INSERT INTO Sessions (ID, SessionStart, Name, SampleCount) VALUES ({id}, '{start}', 'Other board', {samples});");
+        for (var sampleId = 1; sampleId <= samples; sampleId++)
+        {
+            Execute(_previous,
+                "INSERT INTO Samples (ID, LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+                $"VALUES ({sampleId}, {id}, {sampleId}.75, {1000 + sampleId}, 'Nq2', 'AI0', 'SN-OTHER', '#00FF00', 1);");
+        }
+    }
+
+    [Fact]
+    public async Task A_partial_copy_is_kept_when_a_new_database_at_the_same_path_holds_the_card_log_of_another_board()
+    {
+        CreatePreviousDatabase();
+        AddBulkPreviousSession(1, "2026-03-29 18:51:41", 1, PreviousSessionImport.BatchSpan + 10);
+        var partial = await StopAnImportAfter(1);
+
+        ReplacePreviousDatabase();
+        AddOtherBoardSession(1, "2026-03-29 18:51:41", 3);
+        await RunImport();
+
+        // The samples copied before the stop are the only ones left of that recording.
+        Assert.Equal(PreviousSessionImport.BatchSpan, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {partial}"));
+        Assert.Equal(3L, CopiedSamples("Other board"));
+    }
+
+    [Fact]
+    public async Task The_card_log_of_another_board_from_the_same_second_in_a_new_database_is_imported_as_a_session_of_its_own()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41", "Card log", 1, 2);
+        var copy = Assert.Single((await RunImport()).Imported);
+
+        ReplacePreviousDatabase();
+        AddOtherBoardSession(1, "2026-03-29 18:51:41", 3);
+
+        Assert.True(Import().HasSessionsToImport(), "The other board's log must be offered.");
+        await RunImport();
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+        Assert.Equal(3L, CopiedSamples("Other board"));
+    }
+
+    [Fact]
+    public async Task A_session_with_the_last_reading_of_a_copy_that_takes_its_ID_during_the_import_gets_no_old_samples()
+    {
+        // The new session at the copy's ID holds the same reading as the copy's last sample, as an
+        // SD card import of the same data can. It has no last sample ID of an import.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Kept", 1, 2);
+        AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Deleted meanwhile", 3, 4);
+        await RunImport();
+        AddPreviousSample(1, 5);
+        AddPreviousSample(2, 6);
+        var reused = Scalar<long>(_current, "SELECT ID FROM Sessions WHERE Name = 'Deleted meanwhile'");
+
+        await RunImport(progress: AfterTheFirstBatch(() => Execute(_current,
+            $"DELETE FROM Samples WHERE LoggingSessionID = {reused}; DELETE FROM Sessions WHERE ID = {reused};" +
+            $"INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES ({reused}, '2026-11-20 10:00:00', 'SD import of the same card', 0);" +
+            "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            $"VALUES ({reused}, 4.5, 40, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);")));
+
+        Assert.Equal(1L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {reused}"));
+        Assert.Equal(1L, Scalar<long>(_current, $"SELECT PreviousLastSampleId IS NULL FROM Sessions WHERE ID = {reused}"));
+    }
+
+    [Fact]
+    public async Task A_session_that_takes_a_copied_session_ID_during_the_import_gets_no_old_samples()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Kept", 1, 2);
+        AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Deleted meanwhile", 3, 4);
+        Execute(_previous, "INSERT INTO SessionDeviceMetadata VALUES (2, 'SN-TEST', 'Nq1', 1000);");
+        await RunImport();
+        AddPreviousSample(1, 5);
+        AddPreviousSample(2, 6);
+        var kept = Scalar<long>(_current, "SELECT ID FROM Sessions WHERE Name = 'Kept'");
+        var reused = Scalar<long>(_current, "SELECT ID FROM Sessions WHERE Name = 'Deleted meanwhile'");
+
+        // Once the first copy is brought up to date, the user deletes the second one, and the app
+        // logs a new session that gets the same ID (the allocator takes the highest one plus one).
+        var outcome = await RunImport(progress: AfterTheFirstBatch(() => Execute(_current,
+            $"DELETE FROM SessionDeviceMetadata WHERE LoggingSessionID = {reused};" +
+            $"DELETE FROM Samples WHERE LoggingSessionID = {reused}; DELETE FROM Sessions WHERE ID = {reused};" +
+            $"INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES ({reused}, '2026-11-20 10:00:00', 'Logged meanwhile', 0);" +
+            "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            $"VALUES ({reused}, 9.5, 90, 'Nq1', 'AI0', 'SN-NEW', '#FF0000', 1);")));
+
+        Assert.Equal([(int)kept], outcome.Imported);
+        Assert.Equal(3L, CopiedSamples("Kept"));
+        Assert.Equal(1L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {reused}"));
+        Assert.Equal(1L, Scalar<long>(_current, $"SELECT SampleCount IS NULL AND PreviousLastSampleId IS NULL FROM Sessions WHERE ID = {reused}"));
+        Assert.Equal(0L, Scalar<long>(_current, $"SELECT COUNT(*) FROM SessionDeviceMetadata WHERE LoggingSessionID = {reused}"));
+    }
+
+    [Fact]
+    public async Task A_copy_stopped_right_after_its_last_new_samples_has_the_devices_its_recording_picked_up()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Recording", 1);
+        Execute(_previous, "INSERT INTO SessionDeviceMetadata VALUES (1, 'SN-TEST', 'Nq1', 1000);");
+        var copy = Assert.Single((await RunImport()).Imported);
+        AddPreviousSample(1, 2);
+        Execute(_previous, "INSERT INTO SessionDeviceMetadata VALUES (1, 'SN-OTHER', 'Nq2', 500);");
+
+        // The import stops right after the batch with the new sample is in (a crash, say).
+        await Assert.ThrowsAsync<IOException>(() => RunImport(progress: AfterTheFirstBatch(() => throw new IOException("Stopped"))));
+        await RunImport();
+
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM SessionDeviceMetadata WHERE LoggingSessionID = {copy}"));
+    }
+
+    [Fact]
+    public async Task Needs_disk_space_only_for_the_samples_a_sparse_tail_holds()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Quiet recording", 1);
+        await RunImport();
+        Import().MarkDone();
+        // Another recording takes 100,000 sample IDs, and then the first one adds one sample.
+        AddBulkPreviousSession(2, "2026-03-30 18:51:41.7774381", 2, 100_000);
+        AddPreviousSample(1, 100_002);
+        var fileLength = new FileInfo(_previous).Length;
+
+        // Room for a hundredth of the old file: plenty for one sample, not for the ID span.
+        Assert.Single((await RunImport(WithFreeSpace(fileLength / 100))).Imported);
+        Assert.Equal(2L, CopiedSamples("Quiet recording"));
+    }
+
+    [Fact]
+    public async Task A_complete_copy_with_no_last_sample_ID_is_a_copy_and_is_not_compared()
+    {
+        // Copies made before copies recorded their last sample (no release made any) cannot be
+        // compared with their old session. Such a complete copy still counts as the copy: its
+        // session is not copied again, and the samples after its first one are not added.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, SameSecond, "Imported before", 1, 2, 3);
+        AddCurrentSession(5, SessionStatus.Complete, previousFirstSampleId: 1);
+
+        Assert.False(Import().HasSessionsToImport());
+        Assert.Empty((await RunImport()).Imported);
+        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Sessions"));
+    }
+
+    [Fact]
+    public async Task A_session_with_no_recorded_end_is_imported_when_nothing_writes_the_old_database()
+    {
+        // The earlier version stopped before it wrote the count (a crash, say) and has not run since.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Never counted", 1, 2);
+        ForgetSampleCount(1);
+
+        var outcome = await RunImport();
+
+        Assert.Single(outcome.Imported);
+        Assert.Equal(2L, Scalar<long>(_current, "SELECT SampleCount FROM Sessions WHERE Status = 0"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task Without_AUTOINCREMENT_an_import_ends_the_offer_itself()
+    {
+        // No copy can be proved here (sample IDs can be given twice), so a later check would offer
+        // every session again.
+        CreatePreviousDatabase(autoincrement: false);
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Finished", 1);
+        AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Also finished", 2);
+
+        Assert.Equal(2, (await RunImport()).Imported.Count);
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
+    public async Task Without_AUTOINCREMENT_a_copy_never_takes_samples_from_a_session_that_reuses_its_sample_IDs()
+    {
+        // Here a recreated session can get its predecessor's sample IDs, so a copy's last sample ID
+        // proves nothing, and the copy is not compared at all.
+        CreatePreviousDatabase(autoincrement: false);
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Deleted later", 1, 2);
+        var copy = Assert.Single((await RunImport()).Imported);
+        Execute(_previous, "DELETE FROM Samples; DELETE FROM Sessions;");
+        AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Reuses the IDs", 1, 2, 3);
+
+        Assert.False(Import().HasSessionsToImport());
+        await RunImport();
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
     }
 
     [Fact]
@@ -734,7 +1344,8 @@ public sealed class PreviousSessionImportTests : IDisposable
         CreatePreviousDatabase();
         AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1, 2);
         Execute(_current,
-            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousFirstSampleId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 1, 1);" +
+            "INSERT INTO Sessions (ID, SessionStart, Name, Status, SampleCount, PreviousFirstSampleId, PreviousLastSampleId) " +
+            "VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 1, 1, 1, 1);" +
             "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
             "VALUES (7, 1.5, 10, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);");
 
@@ -746,12 +1357,14 @@ public sealed class PreviousSessionImportTests : IDisposable
     }
 
     [Fact]
-    public async Task The_visible_list_drops_replaced_partial_copies_and_shows_imported_sessions_in_order()
+    public async Task The_visible_list_shows_a_continued_partial_copy_complete_and_in_order()
     {
         CreatePreviousDatabase();
         AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1, 2);
+        // A partial copy that stopped after the old session's first sample.
         Execute(_current,
-            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousFirstSampleId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1);" +
+            "INSERT INTO Sessions (ID, SessionStart, Name, Status, SampleCount, PreviousFirstSampleId, PreviousLastSampleId) " +
+            "VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1, 1, 1);" +
             "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
             "VALUES (7, 1.5, 10, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);" +
             "INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES (3, '2026-01-01 00:00:00.0000000', 'Native', 0);" +
@@ -764,7 +1377,8 @@ public sealed class PreviousSessionImportTests : IDisposable
         var outcome = await RunImport();
         manager.ApplyPersistedSessionChanges(outcome.Removed, outcome.Imported);
 
-        Assert.Equal([3, outcome.Imported[0]], manager.LoggingSessions.Select(s => s.ID));
+        Assert.Equal([7], outcome.Imported);
+        Assert.Equal([3, 7], manager.LoggingSessions.Select(s => s.ID));
         Assert.Same(native, manager.LoggingSessions[0]);
         Assert.Equal(SessionStatus.Complete, manager.LoggingSessions[1].Status);
         Assert.Equal(2L, manager.LoggingSessions[1].SampleCount);
@@ -807,38 +1421,6 @@ public sealed class PreviousSessionImportTests : IDisposable
         Execute(_current, $"INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES ({promised}, '2026-11-03 00:00:00.0000000', 'Live', 0);");
 
         Assert.NotEqual(promised, imported[0]);
-    }
-
-    [Fact]
-    public async Task Deletes_a_partial_copy_larger_than_one_batch_completely()
-    {
-        CreatePreviousDatabase();
-        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1);
-        var rows = PreviousSessionImport.BatchSpan + 10;
-        Execute(_current,
-            "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousFirstSampleId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1);" +
-            "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
-            $"WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < {rows}) " +
-            "SELECT 7, x, x, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1 FROM c;");
-
-        var outcome = await RunImport();
-
-        Assert.Equal([7], outcome.Removed);
-        Assert.Equal(0L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = 7"));
-        Assert.Equal(1L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples"));
-    }
-
-    [Fact]
-    public async Task Reports_the_partial_copies_it_replaced()
-    {
-        CreatePreviousDatabase();
-        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1);
-        Execute(_current, "INSERT INTO Sessions (ID, SessionStart, Name, Status, PreviousFirstSampleId) VALUES (7, '2026-03-29 18:51:41.7774381', 'Session_1', 2, 1);");
-
-        var outcome = await RunImport();
-
-        Assert.Equal([7], outcome.Removed);
-        Assert.Single(outcome.Imported);
     }
 
     [Fact]
