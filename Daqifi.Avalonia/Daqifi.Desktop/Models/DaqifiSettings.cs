@@ -187,6 +187,36 @@ public class DaqifiSettings
         return DelimiterImportResult.Copied;
     }
 
+    /// <summary>
+    /// Records that the user keeps the current delimiter: what Dismiss on the import from an
+    /// earlier version means. Writes the same "chosen" flag that the import's own write sets, so
+    /// the import never replaces this delimiter afterwards and the offer does not come back for it
+    /// (#512 review round 3). Under the writers' lock, and only while the file still says the
+    /// delimiter is the first-launch default. Best effort: logged, never thrown.
+    /// </summary>
+    /// <returns>Whether the file now records the delimiter as chosen.</returns>
+    internal bool KeepCsvDelimiter()
+    {
+        try
+        {
+            EnsureSettingsDirectory();
+            using var held = AppDataFile.HoldWriteLock(_settingsXmlPath);
+
+            if (ReadStoredDelimiter(_settingsXmlPath) is not { } stored || stored.ChosenByUser == false)
+            {
+                WriteSettingsFile(_csvDelimiter, chosenByUser: true);
+            }
+
+            _csvDelimiterIsFirstLaunchDefault = false;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Instance.Warning(ex, "Could not record that the user keeps the current CSV delimiter");
+            return false;
+        }
+    }
+
     private void RaiseIfChanged(string previous)
     {
         if (_csvDelimiter != previous)
@@ -376,13 +406,21 @@ public class DaqifiSettings
     /// <exception cref="UnauthorizedAccessException">The file could not be reached.</exception>
     internal static StoredDelimiter? ReadStoredDelimiter(string settingsXmlPath)
     {
-        if (!File.Exists(settingsXmlPath))
+        XElement settings;
+        try
+        {
+            // Opened, not tested with File.Exists first: File.Exists is also false for a file the
+            // process may not look at, and "cannot read" must not pass for "nothing there" (#512
+            // review round 3). Only a file or folder that is really not there counts as absent.
+            using var stream = new FileStream(settingsXmlPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            settings = XElement.Load(stream);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
             return null;
         }
 
-        using var stream = new FileStream(settingsXmlPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        if (XElement.Load(stream).Element("CsvDelimiter") is not { } element)
+        if (settings.Element("CsvDelimiter") is not { } element)
         {
             return null;
         }

@@ -95,7 +95,7 @@ public sealed class PreviousVersionImport
     public void MarkDone()
     {
         Sessions.MarkDone();
-        SettingsImport.MarkDone();
+        SettingsImport.MarkDone(_profiles(), _settings());
     }
 
     /// <summary>The line the bell shows when an Import finished.</summary>

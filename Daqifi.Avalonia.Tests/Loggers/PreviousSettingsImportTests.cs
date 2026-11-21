@@ -40,11 +40,15 @@ public sealed class PreviousSettingsImportTests : IDisposable
     private string OldSettings => Path.Combine(Old, PreviousSettingsImport.SettingsFileName);
     private string CurrentProfiles => Path.Combine(Current, PreviousSettingsImport.ProfilesFileName);
     private string CurrentSettings => Path.Combine(Current, PreviousSettingsImport.SettingsFileName);
-    private string ProfilesMarker => Path.Combine(Current, PreviousSettingsImport.ProfilesMarkerFileName);
-    private string DelimiterMarker => Path.Combine(Current, PreviousSettingsImport.DelimiterMarkerFileName);
+    /// <summary>Whether this user's profiles file records that the import ran.</summary>
+    private bool ProfilesRecorded()
+    {
+        ProfileXmlStore.ReadWithoutRepair(CurrentProfiles, out var recorded);
+        return recorded;
+    }
 
-    /// <summary>Which parts the import has marked as done.</summary>
-    private (bool Profiles, bool Delimiter) Done() => (File.Exists(ProfilesMarker), File.Exists(DelimiterMarker));
+    /// <summary>Whether a fresh start (new settings, new importer) would still offer the import.</summary>
+    private bool OfferedAtNextLaunch() => Import().HasSettingsToImport(CurrentProfiles, Settings());
 
     public PreviousSettingsImportTests()
     {
@@ -75,7 +79,7 @@ public sealed class PreviousSettingsImportTests : IDisposable
     /// <summary>This user's settings. Like the app's first launch, this writes the default comma.</summary>
     private DaqifiSettings Settings() => new(CurrentSettings);
 
-    private PreviousSettingsImport Import() => new(Old, Current, _log);
+    private PreviousSettingsImport Import() => new(Old, _log);
 
     /// <summary>One profile as the release WPF app writes it (its AddAndRemoveProfileXml).</summary>
     private static string WpfProfile(Guid id, string name, bool withChannels = true) => $"""
@@ -163,7 +167,8 @@ public sealed class PreviousSettingsImportTests : IDisposable
 
         // No settings file in the old folder: that is nothing to read, so the import is done and
         // nothing is reported.
-        Assert.Equal((true, true), Done());
+        Assert.True(ProfilesRecorded());
+        Assert.False(OfferedAtNextLaunch());
         Assert.Empty(_log.Warnings);
     }
 
@@ -252,7 +257,7 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.Contains(_log.Warnings, warning => warning.Contains(damaged));
         Assert.Empty(_log.Errors);
         AssertSameFiles(before, Snapshot(Old));
-        Assert.Equal((true, true), Done());
+        Assert.False(OfferedAtNextLaunch());
     }
 
     /// <summary>
@@ -291,8 +296,8 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.True(outcome.DelimiterCopied);
         Assert.Equal(";", settings.CsvDelimiter);
         Assert.Equal(";", Settings().CsvDelimiter);
-        // No profiles file in the old folder: nothing to read, so that part is done too.
-        Assert.Equal((true, true), Done());
+        // No profiles file in the old folder: nothing to read, so nothing is left to offer.
+        Assert.False(OfferedAtNextLaunch());
     }
 
     /// <summary>A delimiter the user chose here is theirs, so the old one does not replace it.</summary>
@@ -340,15 +345,25 @@ public sealed class PreviousSettingsImportTests : IDisposable
         WriteProfiles(OldProfiles, WpfProfile(BenchId, "Theirs"));
         WriteDelimiter(OldSettings, ",");
         var longAgo = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-        File.SetLastWriteTimeUtc(CurrentProfiles, longAgo);
         File.SetLastWriteTimeUtc(CurrentSettings, longAgo);
-        var before = Snapshot(Current);
+        var settingsBefore = File.ReadAllBytes(CurrentSettings);
 
         var outcome = await Import().ImportAsync(manager, settings);
 
+        // The settings file is not touched. The profiles file keeps its one profile, as it was,
+        // and gains only the record that the import ran (#512 review round 3).
         Assert.Equal(0, outcome.ProfilesAdded);
         Assert.False(outcome.DelimiterCopied);
-        AssertSameFiles(before, Snapshot(Current).Where(f => !f.Key.StartsWith(".previous-settings-import-", StringComparison.Ordinal)).ToDictionary());
+        Assert.Equal(settingsBefore, File.ReadAllBytes(CurrentSettings));
+        Assert.Equal(longAgo, File.GetLastWriteTimeUtc(CurrentSettings));
+        Assert.Equal("Mine", Assert.Single(Manager().SubscribedProfiles).Name);
+        Assert.True(ProfilesRecorded());
+
+        // Once the import is recorded, a later Import writes nothing at all.
+        File.SetLastWriteTimeUtc(CurrentProfiles, longAgo);
+        var before = Snapshot(Current);
+        await Import().ImportAsync(manager, settings);
+        AssertSameFiles(before, Snapshot(Current));
     }
 
     /// <summary>
@@ -395,7 +410,8 @@ public sealed class PreviousSettingsImportTests : IDisposable
         }
 
         var profilesLocked = lockedFile == PreviousSettingsImport.ProfilesFileName;
-        Assert.Equal((!profilesLocked, profilesLocked), Done());
+        Assert.Equal(!profilesLocked, ProfilesRecorded());
+        Assert.True(OfferedAtNextLaunch());
         Assert.False(first.Complete);
         Assert.Contains(_log.Warnings, warning => warning.Contains("tries again"));
 
@@ -408,7 +424,8 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.Equal(!profilesLocked, second.DelimiterCopied);
         Assert.Equal(";", settings.CsvDelimiter);
         Assert.True(second.Complete);
-        Assert.Equal((true, true), Done());
+        Assert.True(ProfilesRecorded());
+        Assert.False(OfferedAtNextLaunch());
     }
 
     /// <summary>
@@ -429,7 +446,7 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.Empty(manager.SubscribedProfiles);
         Assert.Single(_log.Errors);
         Assert.False(outcome.Complete);
-        Assert.Equal((false, true), Done());
+        Assert.True(Import().HasSettingsToImport(manager.ProfilesFilePath, Settings()));
     }
 
     /// <summary>Off Windows, and under a <c>DAQIFI_DATA_DIR</c> override, there is nothing to read.</summary>
@@ -441,13 +458,13 @@ public sealed class PreviousSettingsImportTests : IDisposable
         WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
         var manager = Manager();
 
-        var none = new PreviousSettingsImport(null, Current, _log);
+        var none = new PreviousSettingsImport(null, _log);
         Assert.False(none.HasSettingsToImport(CurrentProfiles, Settings()));
         var outcome = await none.ImportAsync(manager, Settings());
 
         Assert.Equal(0, outcome.ProfilesAdded);
         Assert.Empty(manager.SubscribedProfiles);
-        Assert.Equal((false, false), Done());
+        Assert.False(ProfilesRecorded());
         // Nothing is tried, so nothing fails and nothing is reported: not even the summary line.
         Assert.Empty(_log.Errors);
         Assert.Empty(_log.Warnings);
@@ -596,10 +613,15 @@ public sealed class PreviousSettingsImportTests : IDisposable
     {
         WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
         WriteDelimiter(OldSettings, ";");
-        Import().MarkDone();
+        var dismissedIn = Settings();
+        Import().MarkDone(Manager(), dismissedIn);
+        Assert.False(Import().HasSettingsToImport(CurrentProfiles, dismissedIn));
+
+        // A later launch: the Dismiss must be in the files, not only in memory.
         var manager = Manager();
         var settings = Settings();
 
+        Assert.False(Import().HasSettingsToImport(CurrentProfiles, settings));
         var outcome = await Import().ImportAsync(manager, settings);
 
         Assert.Equal(0, outcome.ProfilesAdded);
@@ -671,7 +693,7 @@ public sealed class PreviousSettingsImportTests : IDisposable
             case "both parts done":
                 WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
                 WriteDelimiter(OldSettings, ";");
-                Import().MarkDone();
+                Import().MarkDone(manager, settings);
                 break;
         }
 
@@ -809,26 +831,30 @@ public sealed class PreviousSettingsImportTests : IDisposable
     }
 
     /// <summary>
-    /// Round 2, P2. Only the profiles marker cannot be written. A part whose work is done but not
-    /// recorded could run again and undo what the user changed since, so the part does no work
-    /// until its record is written, and the import is not complete. Once the marker can be
-    /// written, the profile comes across, and a profile the user then deletes stays deleted.
+    /// Round 2, P2, as the round-3 design meets it. The record of the profiles part cannot be
+    /// written: here because another writer holds the profiles lock, so the one write that holds
+    /// both the profiles and their record fails. Nothing is added, nothing is recorded, and the
+    /// import is not complete. Later the profile comes across with its record, and a profile the
+    /// user then deletes stays deleted.
     /// </summary>
     [Fact]
-    public async Task A_profiles_marker_that_cannot_be_written_stops_the_part_until_it_can_be()
+    public async Task A_profiles_record_that_cannot_be_written_stops_the_part_until_it_can_be()
     {
         WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
-        Directory.CreateDirectory(ProfilesMarker);
         var manager = Manager();
         var settings = Settings();
 
-        var first = await Import().ImportAsync(manager, settings);
+        SettingsImportOutcome first;
+        using (new FileStream(CurrentProfiles + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            first = await Import().ImportAsync(manager, settings);
+        }
 
         Assert.False(first.Complete);
         Assert.Equal(0, first.ProfilesAdded);
         Assert.Empty(manager.SubscribedProfiles);
+        Assert.False(ProfilesRecorded());
 
-        Directory.Delete(ProfilesMarker);
         var second = await Import().ImportAsync(manager, settings);
         Assert.True(second.Complete);
         Assert.Equal(1, second.ProfilesAdded);
@@ -864,6 +890,65 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.True(outcome.DelimiterCopied);
         Assert.Equal("Bench rig", Assert.Single(Manager().SubscribedProfiles).Name);
         Assert.Equal(";", Settings().CsvDelimiter);
+    }
+
+    /// <summary>
+    /// Round 3, P1, the new design at every step. A run is cut off at each step (an exception from
+    /// the step hook stands for a closed app or a power cut there). A fresh start (new manager,
+    /// settings and importer, as after a restart) must find each part either done with its record
+    /// or not done, with no record, and still offered: never recorded without the work. A retry
+    /// then finishes, and a profile the user deletes after that stays deleted and is not offered.
+    /// </summary>
+    /// <remarks>
+    /// Cut off inside the profiles write, the write is abandoned before the file is replaced, as a
+    /// power cut would leave it. The run then goes on to the delimiter, which a real cut would not
+    /// do; this test checks only what that leaves on disk.
+    /// </remarks>
+    [Theory]
+    [InlineData(nameof(PreviousSettingsImport.Step.ProfilesRead))]
+    [InlineData(nameof(PreviousSettingsImport.Step.ProfilesWriting))]
+    [InlineData(nameof(PreviousSettingsImport.Step.ProfilesWritten))]
+    [InlineData(nameof(PreviousSettingsImport.Step.DelimiterRead))]
+    [InlineData(nameof(PreviousSettingsImport.Step.DelimiterWritten))]
+    public async Task A_run_cut_off_at_any_step_leaves_each_part_done_or_offered_and_the_next_Import_finishes(string cutAt)
+    {
+        WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
+        WriteDelimiter(OldSettings, ";");
+        var step = Enum.Parse<PreviousSettingsImport.Step>(cutAt);
+        var cutOff = new PreviousSettingsImport(Old, _log)
+        {
+            AtStep = reached =>
+            {
+                if (reached == step)
+                {
+                    throw new IOException("Stands for a closed app or a power cut.");
+                }
+            },
+        };
+
+        await cutOff.ImportAsync(Manager(), Settings());
+
+        // After a restart: the profile is here exactly when its record is, and the delimiter is
+        // the old one exactly when the file says it was chosen. Whatever is missing is offered.
+        var profileHere = Manager().SubscribedProfiles.Any(p => p.ProfileId == BenchId);
+        Assert.Equal(profileHere, ProfilesRecorded());
+        var stored = DaqifiSettings.ReadStoredDelimiter(CurrentSettings);
+        var delimiterHere = stored?.Value == ";";
+        Assert.Equal(delimiterHere, stored?.ChosenByUser == true);
+        Assert.Equal(!(profileHere && delimiterHere), OfferedAtNextLaunch());
+
+        var retry = await Import().ImportAsync(Manager(), Settings());
+
+        Assert.True(retry.Complete);
+        var manager = Manager();
+        Assert.Equal("Bench rig", Assert.Single(manager.SubscribedProfiles).Name);
+        Assert.Equal(";", Settings().CsvDelimiter);
+        Assert.False(OfferedAtNextLaunch());
+
+        Assert.True(manager.UnsubscribeProfile(manager.SubscribedProfiles.Single()));
+        Assert.False(OfferedAtNextLaunch());
+        Assert.Equal(0, (await Import().ImportAsync(Manager(), Settings())).ProfilesAdded);
+        Assert.Empty(Manager().SubscribedProfiles);
     }
 
     private const string NeedsEnforcedPermissions =

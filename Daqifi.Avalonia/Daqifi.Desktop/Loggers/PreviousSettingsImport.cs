@@ -1,6 +1,5 @@
 // Downstream addition (#512) — no upstream counterpart, so no `// @port:` marker.
 
-using Daqifi.Desktop.Common;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.Models;
 
@@ -16,30 +15,26 @@ namespace Daqifi.Desktop.Logger;
 /// <b>The old files are only read.</b> The release DAQiFi Desktop (WPF) app still uses that folder.
 /// The files are opened for reading only and shared for writing, so that the other app can still
 /// save them during the read. A damaged file is skipped with a log line. It is never moved aside
-/// or repaired, as the app does with its own files.
+/// or repaired, as the app does with its own files. A file that cannot be opened (locked, no
+/// access) is not taken for an absent one: that part fails, and the next Import tries again.
 /// </para>
 /// <para>
 /// <b>Nothing that the user has is replaced.</b> A profile comes across only when no profile with
 /// its ID is here (<see cref="LoggingManager.AddProfilesNotYetSaved"/>). The delimiter comes across
-/// only while this user's delimiter is still the default that the first launch wrote
-/// (<see cref="DaqifiSettings.CsvDelimiterIsFirstLaunchDefault"/>). A delimiter that the user set,
-/// a comma included, is kept, and so is one in a settings file from an earlier build, which does
-/// not say whether it was set.
+/// only while this user's settings file says it is the first-launch default, read again under the
+/// settings writers' lock (<see cref="DaqifiSettings.ImportCsvDelimiter"/>), so a choice saved by
+/// another running copy is kept too.
 /// </para>
 /// <para>
-/// <b>Once per part.</b> The profiles and the delimiter each have a marker. Without one, a profile
-/// that the user deletes after the import would come back at the next Import. They are two
-/// markers, so a retry after one part failed cannot undo what the user changed in the other (#512
-/// review). A marker is written before its part does any work and taken away if the work fails,
-/// so no work is ever done without a record (#512 review round 2). A part fails when an old file
-/// could not be opened or this user's file could not be written, and the next Import tries it
-/// again. Rereading a damaged file gives the same result, so that part counts as done.
-/// </para>
-/// <para>
-/// <b>The delimiter is decided against the file, not memory.</b> Another running copy of the app
-/// may have saved the user's choice after this copy loaded its settings, so
-/// <see cref="DaqifiSettings.ImportCsvDelimiter"/> reads the file again under the settings
-/// writers' lock before it replaces anything (#512 review round 2).
+/// <b>Each part's record is in the file that the part writes, in the same write.</b> The profiles
+/// part sets <see cref="ProfileXmlStore.ImportRecordAttribute"/> in this user's profiles file in
+/// the write that adds the profiles. The delimiter part's record is the "chosen" flag that the
+/// write of the delimiter sets. A run cut off at any point therefore leaves each part either done
+/// and recorded, or not done and not recorded, and a later Import does exactly the parts that are
+/// not done (#512 review round 3). A part that is recorded does not run again, so a profile that
+/// the user deletes after the import stays deleted (#512 review). Two earlier designs used marker
+/// files, and each left a window: written after the work, a lost marker let a later run undo the
+/// user's changes; written before it, a marker could stand without the work.
 /// </para>
 /// </remarks>
 public sealed class PreviousSettingsImport
@@ -50,36 +45,52 @@ public sealed class PreviousSettingsImport
     /// <summary>The retry's text when a part did not finish (an old file locked, say).</summary>
     public const string RetryMessage = "Couldn't import all the saved profiles and settings yet.";
 
-    /// <summary>Marks the profiles as done, in the per-user data folder.</summary>
-    internal const string ProfilesMarkerFileName = ".previous-settings-import-profiles-done";
-
-    /// <summary>Marks the delimiter as done, in the per-user data folder.</summary>
-    internal const string DelimiterMarkerFileName = ".previous-settings-import-delimiter-done";
-
     /// <summary>The profiles file, by the same name in both folders.</summary>
     internal const string ProfilesFileName = "DAQifiProfilesConfiguration.xml";
 
     /// <summary>The settings file that holds the delimiter, by the same name in both folders.</summary>
     internal const string SettingsFileName = "DAQifiConfiguration.xml";
 
-    private readonly string _markerDirectory;
+    /// <summary>The points of an import at which a test can cut the run off, in order.</summary>
+    internal enum Step
+    {
+        /// <summary>The old profiles were read; nothing is written yet.</summary>
+        ProfilesRead,
+
+        /// <summary>Inside the profiles write, under the lock, before the file is replaced.</summary>
+        ProfilesWriting,
+
+        /// <summary>The profiles and their record are on disk.</summary>
+        ProfilesWritten,
+
+        /// <summary>The old delimiter was read; the settings file is not written yet.</summary>
+        DelimiterRead,
+
+        /// <summary>The delimiter part is finished.</summary>
+        DelimiterWritten,
+    }
+
     private readonly IAppLogger _appLogger;
 
     /// <param name="previousDirectory">
     /// The earlier version's folder, or <c>null</c> when there is none to read (not Windows, or a
     /// <c>DAQIFI_DATA_DIR</c> override is in effect).
     /// </param>
-    /// <param name="markerDirectory">Where the "done" markers are kept.</param>
     /// <param name="appLogger">Where skipped files and failures are reported.</param>
-    internal PreviousSettingsImport(string? previousDirectory, string markerDirectory, IAppLogger? appLogger = null)
+    internal PreviousSettingsImport(string? previousDirectory, IAppLogger? appLogger = null)
     {
         PreviousDirectory = previousDirectory;
-        _markerDirectory = markerDirectory;
         _appLogger = appLogger ?? AppLogger.Instance;
     }
 
     /// <summary>The earlier version's folder, or <c>null</c> when this import does nothing.</summary>
     internal string? PreviousDirectory { get; }
+
+    /// <summary>
+    /// Called at each <see cref="Step"/>. Tests throw from it to stand for a closed app or a power
+    /// cut at that point. <c>null</c> in the app.
+    /// </summary>
+    internal Action<Step>? AtStep { get; init; }
 
     /// <summary>
     /// The import for this PC. Windows only, because no other platform ever used
@@ -107,13 +118,13 @@ public sealed class PreviousSettingsImport
             // Nothing to read means nothing to import, never a failed Import.
         }
 
-        return new PreviousSettingsImport(previous, AppDataPaths.DataDirectory);
+        return new PreviousSettingsImport(previous);
     }
 
     /// <summary>
-    /// Whether a part that is not done still has something this user lacks, so the bell offers
-    /// Import even when there are no sessions to copy (#512 review). Reads the old files and this
-    /// user's profiles file, so call it off the UI thread. Never throws.
+    /// Whether a part still has something this user lacks, so the bell offers Import even when
+    /// there are no sessions to copy (#512 review). Reads the old files and this user's profiles
+    /// file, so call it off the UI thread. Never throws.
     /// </summary>
     /// <param name="currentProfilesPath">This user's profiles file.</param>
     /// <param name="settings">This user's settings.</param>
@@ -132,11 +143,11 @@ public sealed class PreviousSettingsImport
     }
 
     /// <summary>
-    /// Copies the old profiles and delimiter that this user does not have, each part unless its
-    /// marker says it is done. Reads the old files on a worker thread, then changes
-    /// <paramref name="profiles"/> and <paramref name="settings"/> on the calling thread, which in
-    /// the app is the UI thread that the Profiles pane is bound to. Never throws: a failure is
-    /// logged, <see cref="SettingsImportOutcome.Complete"/> is false, and the next Import tries again.
+    /// Copies the old profiles and delimiter that this user does not have. Reads the old files on a
+    /// worker thread, then changes <paramref name="profiles"/> and <paramref name="settings"/> on
+    /// the calling thread, which in the app is the UI thread that the Profiles pane is bound to.
+    /// Never throws: a failure is logged, <see cref="SettingsImportOutcome.Complete"/> is false, and
+    /// the next Import tries again.
     /// </summary>
     public async Task<SettingsImportOutcome> ImportAsync(LoggingManager profiles, DaqifiSettings settings)
     {
@@ -148,8 +159,15 @@ public sealed class PreviousSettingsImport
                 return outcome;
             }
 
-            await RunPartAsync(ProfilesMarkerFileName, () => ImportProfilesAsync(profiles, outcome), outcome);
-            await RunPartAsync(DelimiterMarkerFileName, () => ImportDelimiterAsync(settings, outcome), outcome);
+            if (!await ImportProfilesAsync(profiles, outcome))
+            {
+                outcome.Complete = false;
+            }
+
+            if (!await ImportDelimiterAsync(settings, outcome))
+            {
+                outcome.Complete = false;
+            }
 
             _appLogger.Information(
                 $"Import from an earlier DAQiFi version: {outcome.ProfilesAdded} profile(s) copied; " +
@@ -167,16 +185,17 @@ public sealed class PreviousSettingsImport
 
     /// <summary>
     /// Records that the import is finished with, both parts, so it is not offered again: what the
-    /// user's Dismiss means. Best effort: a record that cannot be written means the offer comes
-    /// back at the next launch.
+    /// user's Dismiss means. The records go where the import's own records go: the profiles file,
+    /// and the delimiter's "chosen" flag. Best effort: a record that cannot be written means the
+    /// offer comes back at the next launch.
     /// </summary>
-    public void MarkDone()
+    public void MarkDone(LoggingManager profiles, DaqifiSettings settings)
     {
-        MarkDone(ProfilesMarkerFileName);
-        MarkDone(DelimiterMarkerFileName);
+        profiles.RecordEarlierVersionImport();
+        settings.KeepCsvDelimiter();
     }
 
-    /// <returns>Whether the profiles part is done.</returns>
+    /// <returns>Whether the profiles part is finished.</returns>
     private async Task<bool> ImportProfilesAsync(LoggingManager profiles, SettingsImportOutcome outcome)
     {
         var (oldProfiles, read) = await Task.Run(() =>
@@ -186,19 +205,40 @@ public sealed class PreviousSettingsImport
             return false;
         }
 
+        AtStep?.Invoke(Step.ProfilesRead);
+
         try
         {
-            outcome.ProfilesAdded = profiles.AddProfilesNotYetSaved(oldProfiles).Count;
-            return true;
+            // One write adds the profiles this user lacks and records that the import ran. When the
+            // file already has the record, it adds nothing.
+            outcome.ProfilesAdded = profiles.AddProfilesNotYetSaved(InsideTheWrite(oldProfiles)).Count;
         }
         catch (Exception ex)
         {
             _appLogger.Error(ex, "Saving the profiles from an earlier DAQiFi version failed");
             return false;
         }
+
+        AtStep?.Invoke(Step.ProfilesWritten);
+        return true;
     }
 
-    /// <returns>Whether the delimiter part is done.</returns>
+    /// <summary>
+    /// The candidates, read inside the profiles write: <see cref="LoggingManager.AddProfilesNotYetSaved"/>
+    /// goes through them under the lock, before the file is replaced, so this is where
+    /// <see cref="Step.ProfilesWriting"/> falls.
+    /// </summary>
+    private IEnumerable<Profile> InsideTheWrite(List<Profile> candidates)
+    {
+        foreach (var profile in candidates)
+        {
+            yield return profile;
+        }
+
+        AtStep?.Invoke(Step.ProfilesWriting);
+    }
+
+    /// <returns>Whether the delimiter part is finished.</returns>
     private async Task<bool> ImportDelimiterAsync(DaqifiSettings settings, SettingsImportOutcome outcome)
     {
         var (oldDelimiter, read) = await Task.Run(() =>
@@ -208,6 +248,19 @@ public sealed class PreviousSettingsImport
             return false;
         }
 
+        AtStep?.Invoke(Step.DelimiterRead);
+
+        var finished = CopyDelimiter(oldDelimiter, settings, outcome);
+        if (finished)
+        {
+            AtStep?.Invoke(Step.DelimiterWritten);
+        }
+
+        return finished;
+    }
+
+    private bool CopyDelimiter(string? oldDelimiter, DaqifiSettings settings, SettingsImportOutcome outcome)
+    {
         if (!WouldReplace(oldDelimiter, settings))
         {
             return true;
@@ -247,11 +300,6 @@ public sealed class PreviousSettingsImport
 
     private bool ProfilesArePending(string currentProfilesPath)
     {
-        if (IsDone(ProfilesMarkerFileName))
-        {
-            return false;
-        }
-
         List<Profile> oldProfiles;
         try
         {
@@ -259,7 +307,8 @@ public sealed class PreviousSettingsImport
         }
         catch (Exception ex)
         {
-            // Damaged: nothing will ever come of it. Locked: the Import can try, and says if it failed.
+            // Damaged: nothing will ever come of it. Locked or no access: the Import can try, and
+            // says if it failed.
             return !ProfileXmlStore.IsUnreadableContent(ex);
         }
 
@@ -272,7 +321,13 @@ public sealed class PreviousSettingsImport
         HashSet<Guid> here;
         try
         {
-            here = ProfileXmlStore.ReadWithoutRepair(currentProfilesPath).Select(p => p.ProfileId).ToHashSet();
+            var current = ProfileXmlStore.ReadWithoutRepair(currentProfilesPath, out var recorded);
+            if (recorded)
+            {
+                return false;
+            }
+
+            here = current.Select(p => p.ProfileId).ToHashSet();
         }
         catch
         {
@@ -287,11 +342,6 @@ public sealed class PreviousSettingsImport
 
     private bool DelimiterIsPending(DaqifiSettings settings)
     {
-        if (IsDone(DelimiterMarkerFileName))
-        {
-            return false;
-        }
-
         string? oldDelimiter;
         try
         {
@@ -310,7 +360,8 @@ public sealed class PreviousSettingsImport
     /// <summary>
     /// Reads one old file. Returns <paramref name="none"/> for a file that is damaged or that could
     /// not be reached, and says which: a damaged file counts as read (rereading it gives the same
-    /// result), and one that could not be reached is tried again at the next Import.
+    /// result), and one that could not be reached (locked, no access) is tried again at the next
+    /// Import.
     /// </summary>
     private (T Value, bool Done) ReadOld<T>(string fileName, Func<string, T> read, Func<Exception, bool> isDamaged, T none)
     {
@@ -332,70 +383,6 @@ public sealed class PreviousSettingsImport
             return (none, false);
         }
     }
-
-    /// <summary>
-    /// Runs one part, unless its marker says it is done.
-    /// </summary>
-    /// <remarks>
-    /// The marker is written <b>first</b>. A part whose work is done but not recorded could run
-    /// again at a later Import and undo what the user changed since, such as a profile they
-    /// deleted (#512 review round 2). So a marker that cannot be written stops the part, and the
-    /// import is not complete. When the work then fails, the marker is taken away again, and the
-    /// next Import tries the part again.
-    /// </remarks>
-    private async Task RunPartAsync(string markerFileName, Func<Task<bool>> work, SettingsImportOutcome outcome)
-    {
-        if (IsDone(markerFileName))
-        {
-            return;
-        }
-
-        if (!MarkDone(markerFileName))
-        {
-            outcome.Complete = false;
-            return;
-        }
-
-        if (!await work())
-        {
-            outcome.Complete = false;
-            Unmark(markerFileName);
-        }
-    }
-
-    private bool IsDone(string markerFileName) => File.Exists(Path.Combine(_markerDirectory, markerFileName));
-
-    /// <summary>Records that one part is done, so it does not run again.</summary>
-    /// <returns>Whether the record was written.</returns>
-    private bool MarkDone(string markerFileName)
-    {
-        try
-        {
-            Directory.CreateDirectory(_markerDirectory);
-            File.WriteAllText(Path.Combine(_markerDirectory, markerFileName), string.Empty);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _appLogger.Warning(ex, "Could not record a part of the settings import from an earlier DAQiFi version; it is tried again later");
-            return false;
-        }
-    }
-
-    /// <summary>Takes a part's marker away after its work failed, so that the next Import tries it again.</summary>
-    private void Unmark(string markerFileName)
-    {
-        try
-        {
-            File.Delete(Path.Combine(_markerDirectory, markerFileName));
-        }
-        catch (Exception ex)
-        {
-            // The part now looks done without its work, so it does not run again. Rare, because the
-            // folder accepted the marker a moment ago, and logged so that it can be found.
-            _appLogger.Error(ex, "Could not take back the marker of a failed part of the settings import from an earlier DAQiFi version; that part will not run again");
-        }
-    }
 }
 
 /// <summary>What <see cref="PreviousSettingsImport.ImportAsync"/> brought over.</summary>
@@ -408,8 +395,8 @@ public sealed class SettingsImportOutcome
     public bool DelimiterCopied { get; set; }
 
     /// <summary>
-    /// Whether every part is done. <c>false</c> when an old file could not be opened or this user's
-    /// file could not be written; the Import is then offered again.
+    /// Whether every part is finished. <c>false</c> when an old file could not be opened or this
+    /// user's file could not be written; the Import is then offered again.
     /// </summary>
     public bool Complete { get; set; } = true;
 }

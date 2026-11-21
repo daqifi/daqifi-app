@@ -69,7 +69,7 @@ public sealed class PreviousVersionImportOfferTests : IDisposable
 
     private PreviousVersionImport Import(LoggingManager manager, DaqifiSettings settings) => new(
         new PreviousSessionImport(null, Path.Combine(Current, "DAQiFiDatabase.db"), Current),
-        new PreviousSettingsImport(Old, Current, _log),
+        new PreviousSettingsImport(Old, _log),
         () => manager,
         () => settings);
 
@@ -158,7 +158,7 @@ public sealed class PreviousVersionImportOfferTests : IDisposable
         var manager = Manager();
         var import = new PreviousVersionImport(
             new PreviousSessionImport(previousDatabase, currentDatabase, Current),
-            new PreviousSettingsImport(Old, Current, _log),
+            new PreviousSettingsImport(Old, _log),
             () => manager,
             () => new DaqifiSettings(Path.Combine(Current, PreviousSettingsImport.SettingsFileName)));
 

@@ -134,16 +134,53 @@ internal sealed class ProfileXmlStore
     /// The file could not be read. <see cref="IsUnreadableContent"/> tells whether its content is
     /// the cause (a damaged file) or the file could not be reached (locked, no access).
     /// </exception>
-    internal static List<Profile> ReadWithoutRepair(string filePath)
+    internal static List<Profile> ReadWithoutRepair(string filePath) => ReadWithoutRepair(filePath, out _);
+
+    /// <inheritdoc cref="ReadWithoutRepair(string)"/>
+    /// <param name="filePath">The profiles file.</param>
+    /// <param name="hasImportRecord">Whether the file says the import from an earlier version ran (<see cref="HasImportRecord"/>).</param>
+    internal static List<Profile> ReadWithoutRepair(string filePath, out bool hasImportRecord)
     {
-        if (!File.Exists(filePath))
+        hasImportRecord = false;
+        XDocument document;
+        try
+        {
+            // Opened, not tested with File.Exists first: File.Exists is also false for a file the
+            // process may not look at, and "cannot read" must not pass for "nothing there" (#512
+            // review round 3). Only a file or folder that is really not there counts as absent.
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            document = XDocument.Load(stream);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
             return [];
         }
 
-        using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        return ReadProfiles(XDocument.Load(stream));
+        hasImportRecord = HasImportRecord(document);
+        return ReadProfiles(document);
     }
+
+    /// <summary>
+    /// The attribute on <c>&lt;Profiles&gt;</c> that records that the import from an earlier
+    /// version ran (#512 review round 3).
+    /// </summary>
+    /// <remarks>
+    /// It is written in the same atomic write as the profiles that the import adds, under the
+    /// writers' lock, so the record and the work can only exist together: a run cut off at any
+    /// point leaves both or neither. A separate marker file could not do that. Written after the
+    /// work it could be lost, so a later run brought back a profile the user had deleted; written
+    /// first it could stand without the work. Older builds ignore the attribute when they read the
+    /// file and keep it when they write it.
+    /// </remarks>
+    internal const string ImportRecordAttribute = "importedFromEarlierVersion";
+
+    /// <summary>Whether the document records that the import from an earlier version ran.</summary>
+    internal static bool HasImportRecord(XDocument document) =>
+        (string?)document.Root?.Attribute(ImportRecordAttribute) == "true";
+
+    /// <summary>Records in the document that the import from an earlier version ran.</summary>
+    internal static void SetImportRecord(XDocument document) =>
+        document.Root?.SetAttributeValue(ImportRecordAttribute, "true");
 
     /// <summary>
     /// Reads the document, lets <paramref name="change"/> change it, and writes it back, while it

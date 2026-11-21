@@ -562,8 +562,10 @@ public partial class LoggingManager : ObservableObject
     /// this one loaded it. The display, because after a damaged file was moved aside the pane can
     /// hold profiles that the new file does not have yet. The read, the check and the write are one
     /// step under the writers' lock (<see cref="ProfileXmlStore.Edit"/>), so a profile that another
-    /// window saves meanwhile is kept. Nothing is written when there is nothing to add, so an
-    /// import with nothing new leaves the user's file as it was.
+    /// window saves meanwhile is kept. The same write records that the import ran
+    /// (<see cref="ProfileXmlStore.ImportRecordAttribute"/>), so the record exists exactly when
+    /// the work does. When the file already has the record, nothing is added and nothing is
+    /// written: a profile missing then was deleted by the user (#512 review round 3).
     /// </remarks>
     /// <returns>The profiles added, in the order given.</returns>
     /// <exception cref="IOException">The profiles file could not be read or written. Nothing was added.</exception>
@@ -574,6 +576,13 @@ public partial class LoggingManager : ObservableObject
 
         _profileStore.Edit(doc =>
         {
+            // The import ran here before: a profile missing now was deleted by the user, so nothing
+            // is added and nothing is written (#512 review round 3).
+            if (ProfileXmlStore.HasImportRecord(doc))
+            {
+                return false;
+            }
+
             foreach (var profile in candidates)
             {
                 // The file check also catches the same ID twice in candidates: the first is in doc by now.
@@ -587,7 +596,10 @@ public partial class LoggingManager : ObservableObject
                 added.Add(profile);
             }
 
-            return added.Count > 0;
+            // In the same write as the profiles, so a run cut off at any point leaves both or
+            // neither (#512 review round 3). Written even when nothing was added: the import ran.
+            ProfileXmlStore.SetImportRecord(doc);
+            return true;
         });
 
         foreach (var profile in added)
@@ -600,6 +612,29 @@ public partial class LoggingManager : ObservableObject
 
     /// <summary>The profiles file this manager reads and writes.</summary>
     internal string ProfilesFilePath => _profileStore.FilePath;
+
+    /// <summary>
+    /// Records in the profiles file that the import from an earlier version is finished with,
+    /// without adding anything: what the user's Dismiss means. Best effort: logged, never thrown.
+    /// </summary>
+    /// <returns>Whether the file now has the record.</returns>
+    internal bool RecordEarlierVersionImport()
+    {
+        try
+        {
+            _profileStore.Edit(doc =>
+            {
+                ProfileXmlStore.SetImportRecord(doc);
+                return true;
+            });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warning(ex, "Could not record that the import of profiles from an earlier DAQiFi version is finished with");
+            return false;
+        }
+    }
 
     // @port: Daqifi.Desktop.Logger.LoggingManager.UnsubscribeProfile
     /// <summary>
