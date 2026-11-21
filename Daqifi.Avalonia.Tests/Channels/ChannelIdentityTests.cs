@@ -63,7 +63,88 @@ public sealed class ChannelIdentityTests
         return device;
     }
 
+    /// <summary>
+    /// A board that reported no serial number, as Core 1.10.0 allows: <paramref name="macAddress"/>
+    /// is its only durable identifier, or it has none when that is empty.
+    /// </summary>
+    private static BenchDevice UnserializedBoard(string macAddress, params string[] names)
+    {
+        var device = Device(string.Empty, names);
+        device.MacAddress = macAddress;
+        return device;
+    }
+
     private static LoggingManager NewManager() => new(new UnusedContextFactory());
+
+    /// <summary>
+    /// PR #678 review: two boards that reported no serial number, told apart by their MAC addresses
+    /// as <c>ConnectionManager</c> tells them apart. Input 0 of each is a different channel, and both
+    /// must be subscribed and recorded.
+    /// </summary>
+    [Fact]
+    public void Input_0_of_two_boards_with_no_serial_and_different_MAC_addresses_are_both_subscribed()
+    {
+        var first = UnserializedBoard("AA-BB-CC-00-00-01", "AI0").DataChannels[0];
+        var second = UnserializedBoard("AA-BB-CC-00-00-02", "Temp").DataChannels[0];
+        var manager = NewManager();
+
+        manager.Subscribe(first);
+        manager.Subscribe(second);
+
+        Assert.Equal(2, manager.SubscribedChannels.Count);
+        Assert.False(first.Equals(second));
+    }
+
+    /// <summary>
+    /// The same with no MAC address either (a USB board with no serial). Nothing durable tells the
+    /// boards apart, so each device wrapper is its own device.
+    /// </summary>
+    [Fact]
+    public void Input_0_of_two_boards_with_no_identifier_at_all_are_both_subscribed()
+    {
+        var first = UnserializedBoard(string.Empty, "AI0").DataChannels[0];
+        var second = UnserializedBoard(string.Empty, "AI0").DataChannels[0];
+        var manager = NewManager();
+
+        manager.Subscribe(first);
+        manager.Subscribe(second);
+
+        Assert.Equal(2, manager.SubscribedChannels.Count);
+        Assert.True(first.Equals(first), "A channel is always itself, identifiable or not.");
+    }
+
+    /// <summary>
+    /// A board with no serial reconnects with a new wrapper. Its MAC address says it is the same
+    /// board, so the old connection's instance is replaced (#597), not kept beside the new one.
+    /// </summary>
+    [Fact]
+    public void A_leftover_from_the_same_board_with_no_serial_is_replaced_when_the_MAC_address_agrees()
+    {
+        var manager = NewManager();
+        var oldInstance = UnserializedBoard("AA-BB-CC-00-00-01", "Temp").DataChannels[0];
+        manager.Subscribe(oldInstance);
+        oldInstance.IsActive = false;
+
+        var newInstance = UnserializedBoard("aa:bb:cc:00:00:01", "AI0").DataChannels[0];
+        manager.SubscribeReplacingStale(newInstance);
+
+        Assert.Same(newInstance, Assert.Single(manager.SubscribedChannels));
+    }
+
+    /// <summary>
+    /// The storage half. The database, Logged Data and the live plot key a sample by serial number
+    /// and recorded name, so two boards that share the blank serial must not share a recorded name.
+    /// </summary>
+    [Fact]
+    public void Two_boards_with_no_serial_record_input_0_under_different_names()
+    {
+        var first = UnserializedBoard("AA-BB-CC-00-00-01", "AI0").DataChannels[0];
+        var second = UnserializedBoard("AA-BB-CC-00-00-02", "AI0").DataChannels[0];
+
+        LoggingManager.FixRecordedNames([first, second]);
+
+        Assert.NotEqual(first.RecordedName, second.RecordedName);
+    }
 
     /// <summary>
     /// The board half of the issue's reproduction: AI1 renamed to "AI0", then only its tile clicked.

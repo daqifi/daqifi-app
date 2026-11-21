@@ -227,6 +227,120 @@ public sealed class ProfileActivationTests : IDisposable
     }
 
     /// <summary>
+    /// PR #678 review: AI0 and AI1 both named Temp, only AI1 on when the profile is captured. The
+    /// profile must turn on AI1, the input it captured, and not the first channel with that name.
+    /// </summary>
+    [Fact]
+    public async Task A_profile_with_one_of_two_same_named_channels_turns_on_the_input_it_captured()
+    {
+        var device = Connect("PROFILE-DUP-2");
+        device.DataChannels[0].Name = "Temp";
+        device.DataChannels[1].Name = "Temp";
+        device.AddChannel(device.DataChannels[1]);
+        LoggingManager.Instance.Subscribe(device.DataChannels[1]);
+        var profile = CaptureCurrentSettings("One of two of one name");
+        LoggingManager.Instance.Unsubscribe(device.DataChannels[1]);
+        device.RemoveChannel(device.DataChannels[1]);
+
+        await Activate(profile);
+
+        Assert.True(profile.IsProfileActive);
+        Assert.Equal("2", device.LastAdcMask()); // AI1, as captured
+        Assert.False(device.DataChannels[0].IsActive);
+        Assert.True(device.DataChannels[1].IsActive);
+    }
+
+    /// <summary>The same through the profiles file: the input survives the save and the load.</summary>
+    [Fact]
+    public async Task A_profile_read_back_from_the_file_turns_on_the_input_it_captured()
+    {
+        var device = Connect("PROFILE-DUP-3");
+        device.DataChannels[0].Name = "Temp";
+        device.DataChannels[1].Name = "Temp";
+        device.AddChannel(device.DataChannels[1]);
+        LoggingManager.Instance.Subscribe(device.DataChannels[1]);
+        var saved = CaptureCurrentSettings("One of two of one name, from the file");
+        LoggingManager.Instance.Unsubscribe(device.DataChannels[1]);
+        device.RemoveChannel(device.DataChannels[1]);
+
+        LoggingManager.Instance.LoadProfilesFromXml();
+        var reloaded = LoggingManager.Instance.SubscribedProfiles.Single(p => p.ProfileId == saved.ProfileId);
+        Assert.NotSame(saved, reloaded);
+        await Activate(reloaded);
+
+        Assert.Equal("2", device.LastAdcMask());
+        Assert.True(device.DataChannels[1].IsActive);
+        Assert.False(device.DataChannels[0].IsActive);
+    }
+
+    /// <summary>
+    /// A profile saved before input numbers were stored names a channel only by its name. When two
+    /// channels now have that name, the app cannot tell which input the profile means. It must say
+    /// so and change nothing, not turn on the first of them.
+    /// </summary>
+    [Fact]
+    public async Task An_older_profile_that_names_one_of_two_same_named_channels_is_refused_with_the_reason()
+    {
+        var device = Connect("PROFILE-OLD-1");
+        device.DataChannels[0].Name = "Temp";
+        device.DataChannels[1].Name = "Temp";
+        var profile = OlderProfile("Older, ambiguous", device, "Temp");
+
+        await Activate(profile);
+
+        Assert.False(profile.IsProfileActive);
+        Assert.Contains("Temp", _pane.DrawerError, StringComparison.Ordinal);
+        Assert.DoesNotContain(device.DataChannels, c => c.IsActive);
+    }
+
+    /// <summary>An older profile whose names are unique on the device still applies by name.</summary>
+    [Fact]
+    public async Task An_older_profile_with_unique_names_still_applies_by_name()
+    {
+        var device = Connect("PROFILE-OLD-2");
+        var profile = OlderProfile("Older, unique", device, "AI2");
+
+        await Activate(profile);
+
+        Assert.True(profile.IsProfileActive);
+        Assert.Equal("4", device.LastAdcMask()); // AI2
+    }
+
+    /// <summary>
+    /// A profile in the shape files had before input numbers were stored: each channel entry holds
+    /// only a name and a type.
+    /// </summary>
+    private static Profile OlderProfile(string name, IStreamingDevice device, params string[] channelNames)
+    {
+        var profile = new Profile
+        {
+            Name = name,
+            ProfileId = Guid.NewGuid(),
+            CreatedOn = DateTime.Now,
+            Devices =
+            [
+                new ProfileDevice
+                {
+                    DeviceName = device.Name,
+                    DevicePartName = device.DevicePartNumber,
+                    DeviceSerialNo = device.DeviceSerialNo,
+                    MacAddress = device.MacAddress,
+                    SamplingFrequency = 100,
+                    Channels = [.. channelNames.Select(n => new ProfileChannel
+                    {
+                        Name = n,
+                        Type = "Analog Input",
+                        IsChannelActive = true,
+                        SerialNo = device.DeviceSerialNo,
+                    })],
+                },
+            ],
+        };
+        Assert.True(LoggingManager.Instance.SubscribeProfile(profile));
+        return profile;
+    }
+
+    /// <summary>
     /// The same round trip through the file: the profile activated is the one read back from the
     /// profiles XML, which is what a profile saved in an earlier session is. Passes on the unfixed
     /// code too; it pins that the save and the load agree, which the issue asked to be checked.
