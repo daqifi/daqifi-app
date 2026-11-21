@@ -468,4 +468,124 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.Equal(",", settings.CsvDelimiter);
         Assert.Contains(nameof(SettingsViewModel.IsSemicolonDelimiter), changed);
     }
+
+    // ---- Review of PR #667 (2026-11-21). Each test below follows the reviewer's reproduction. ----
+
+    /// <summary>
+    /// Review P1. Another window saves a profile after the import read this user's file and before
+    /// it wrote its merged copy. An atomic replace keeps the file whole, but without one lock for
+    /// the read, the change and the write, the import writes its older copy over the other save.
+    /// </summary>
+    /// <remarks>
+    /// The candidates are read inside the import's read-and-write, so a lazy sequence is where the
+    /// other window's save can overlap. With no lock the other save finishes at once. With a shared
+    /// lock it waits for the import, so the wait here gives up after a second and the import goes on.
+    /// </remarks>
+    [Fact]
+    public async Task A_profile_another_window_saves_during_the_import_is_kept()
+    {
+        var manager = Manager();
+        var otherWindow = Manager();
+        Task<bool>? otherSave = null;
+
+        IEnumerable<Profile> CandidatesThatOverlapAnotherSave()
+        {
+            otherSave = Task.Run(() => otherWindow.SubscribeProfile(UsersProfile(FieldId, "Saved in the other window")));
+            otherSave.Wait(TimeSpan.FromSeconds(1));
+            yield return UsersProfile(BenchId, "Bench rig");
+        }
+
+        manager.AddProfilesNotYetSaved(CandidatesThatOverlapAnotherSave());
+
+        Assert.True(await otherSave!);
+        Assert.Equal(new[] { BenchId, FieldId }.Order(), Manager().SubscribedProfiles.Select(p => p.ProfileId).Order());
+    }
+
+    /// <summary>
+    /// Review P2. Profiles and the delimiter are two separate files. When only the delimiter could
+    /// not be read, the retry must not bring back a profile the user deleted in between.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_after_a_locked_settings_file_does_not_bring_back_a_deleted_profile()
+    {
+        WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
+        WriteDelimiter(OldSettings, ";");
+        var manager = Manager();
+        var settings = Settings();
+        using (new FileStream(OldSettings, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.Equal(1, (await Import().ImportAsync(manager, settings)).ProfilesAdded);
+        }
+
+        Assert.True(manager.UnsubscribeProfile(manager.SubscribedProfiles.Single()));
+
+        var retry = await Import().ImportAsync(manager, settings);
+
+        Assert.Equal(0, retry.ProfilesAdded);
+        Assert.Empty(manager.SubscribedProfiles);
+        Assert.True(retry.DelimiterCopied);
+        Assert.Equal(";", settings.CsvDelimiter);
+    }
+
+    /// <summary>
+    /// Review P2. When this user's settings file cannot be written, the delimiter did not come
+    /// across: it is not reported as copied, it is not kept in memory (so a retry still writes it),
+    /// and a retry in the same run copies it once the folder can be written.
+    /// </summary>
+    [Fact]
+    public async Task A_delimiter_that_cannot_be_saved_is_not_reported_copied_and_is_tried_again()
+    {
+        WriteDelimiter(OldSettings, ";");
+        var blocker = Path.Combine(_root, "settings-blocker");
+        File.WriteAllText(blocker, "a file where a folder should be");
+        var settingsPath = Path.Combine(blocker, PreviousSettingsImport.SettingsFileName);
+        var settings = new DaqifiSettings(settingsPath);
+        var manager = Manager();
+
+        var first = await Import().ImportAsync(manager, settings);
+
+        Assert.False(first.DelimiterCopied);
+        Assert.Equal(",", settings.CsvDelimiter);
+
+        File.Delete(blocker);
+        Directory.CreateDirectory(blocker);
+        var retry = await Import().ImportAsync(manager, settings);
+
+        Assert.True(retry.DelimiterCopied);
+        Assert.Equal(";", new DaqifiSettings(settingsPath).CsvDelimiter);
+    }
+
+    /// <summary>
+    /// Review P2. The user selected a semicolon and then a comma again. That comma is a choice,
+    /// even though it is the same text as the first-launch default, so the import keeps it.
+    /// </summary>
+    [Fact]
+    public async Task A_comma_the_user_selected_before_the_import_is_kept()
+    {
+        var settings = Settings();
+        settings.CsvDelimiter = ";";
+        settings.CsvDelimiter = ",";
+        WriteDelimiter(OldSettings, ";");
+
+        var outcome = await Import().ImportAsync(Manager(), Settings());
+
+        Assert.False(outcome.DelimiterCopied);
+        Assert.Equal(",", Settings().CsvDelimiter);
+    }
+
+    /// <summary>
+    /// Review P2, the conservative rule. A settings file that an earlier build wrote does not say
+    /// whether its comma was chosen, so the import keeps it rather than guess.
+    /// </summary>
+    [Fact]
+    public async Task A_comma_in_a_settings_file_from_an_earlier_build_is_kept()
+    {
+        File.WriteAllText(CurrentSettings, "<DAQifiSettings><CsvDelimiter>,</CsvDelimiter></DAQifiSettings>");
+        WriteDelimiter(OldSettings, ";");
+
+        var outcome = await Import().ImportAsync(Manager(), Settings());
+
+        Assert.False(outcome.DelimiterCopied);
+        Assert.Equal(",", Settings().CsvDelimiter);
+    }
 }
