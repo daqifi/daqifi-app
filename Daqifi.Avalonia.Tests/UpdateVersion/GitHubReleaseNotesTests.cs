@@ -191,4 +191,109 @@ public class GitHubReleaseNotesTests
         Assert.Equal("3.4.0", section.Version);
         Assert.Contains(section.Blocks[0].Spans, s => s.Link == GitHubReleaseNotes.ReleasePage("3.4.0"));
     }
+
+    // ---- PR #695 review: every page up to the installed version ----
+
+    private static Uri PageUri(int number) => number == 1
+        ? GitHubReleaseNotes.FirstPage
+        : new Uri($"https://api.github.com/repositories/1/releases?per_page=100&page={number}");
+
+    /// <summary>A releases API of several pages: each page links the next, but the last. Records each request.</summary>
+    private sealed class Pages(params string[] answers)
+    {
+        public List<Uri> Requested { get; } = [];
+
+        public Task<ReleasesPage> Fetch(Uri uri, CancellationToken cancellationToken)
+        {
+            Requested.Add(uri);
+            var number = uri == GitHubReleaseNotes.FirstPage ? 1 : int.Parse(uri.Query.Split("page=")[^1]);
+            return Task.FromResult(new ReleasesPage(answers[number - 1], number < answers.Length ? PageUri(number + 1) : null));
+        }
+    }
+
+    /// <summary>
+    /// The releases API lists prereleases on the same pages, before any filter. A stable release in
+    /// the range that falls on page two is still in the notes.
+    /// </summary>
+    [Fact]
+    public async Task A_stable_release_on_page_two_is_in_the_notes()
+    {
+        var pages = new Pages(
+            Answer(("v3.6.0", false, "Six."), ("v3.6.0-rc.1", true, "rc"), ("v3.5.1-beta.1", true, "beta")),
+            Answer(("v3.5.0", false, "Five."), ("v3.4.0", false, "Four."), ("v3.3.0", false, "Three.")));
+
+        var notes = await GitHubReleaseNotes.LoadAsync(pages.Fetch, "3.3.0", "3.6.0", CancellationToken.None);
+
+        Assert.True(notes.HasPending);
+        Assert.Equal(["3.6.0", "3.5.0", "3.4.0"], notes.Sections.Select(s => s.Version));
+        Assert.Equal([PageUri(1), PageUri(2)], pages.Requested);
+    }
+
+    /// <summary>A user a few versions behind finds the installed version on page one: one request, even with more pages.</summary>
+    [Fact]
+    public async Task A_page_that_reaches_the_installed_version_is_the_last_one_read()
+    {
+        var pages = new Pages(
+            Answer(("v3.4.0", false, "Four."), ("v3.3.0", false, "Three.")),
+            Answer(("v3.2.0", false, "Two.")));
+
+        var notes = await GitHubReleaseNotes.LoadAsync(pages.Fetch, "3.3.0", "3.4.0", CancellationToken.None);
+
+        Assert.Equal(["3.4.0"], notes.Sections.Select(s => s.Version));
+        Assert.Equal([PageUri(1)], pages.Requested);
+    }
+
+    /// <summary>
+    /// Paging stops at <see cref="GitHubReleaseNotes.MaxPages"/>. The notes read are shown, and a last
+    /// section says that older notes are not, with a link to every release.
+    /// </summary>
+    [Fact]
+    public async Task Paging_stops_at_the_cap_and_says_that_older_notes_are_not_shown()
+    {
+        var answers = Enumerable.Range(1, GitHubReleaseNotes.MaxPages + 5)
+            .Select(n => n == 1 ? Answer(("v9.0.0", false, "Nine.")) : Answer(($"v8.{100 - n}.0", false, $"Page {n}.")))
+            .ToArray();
+        var pages = new Pages(answers);
+
+        var notes = await GitHubReleaseNotes.LoadAsync(pages.Fetch, "1.0.0", "9.0.0", CancellationToken.None);
+
+        Assert.Equal(GitHubReleaseNotes.MaxPages, pages.Requested.Count);
+        Assert.True(notes.HasPending);
+        Assert.Equal("9.0.0", notes.Sections[0].Version);
+        Assert.Equal(GitHubReleaseNotes.MaxPages, notes.Sections.Count - 1);
+        var last = notes.Sections[^1];
+        Assert.Equal("Earlier releases", last.Version);
+        var spans = Assert.Single(last.Blocks).Spans;
+        Assert.Contains(
+            (GitHubReleaseNotes.MaxPages * 100).ToString("N0", System.Globalization.CultureInfo.InvariantCulture),
+            string.Concat(spans.Select(s => s.Text)));
+        Assert.Contains(spans, s => s.Link == GitHubReleaseNotes.AllReleasesPage);
+    }
+
+    [Theory]
+    [InlineData(
+        "<https://api.github.com/repositories/123/releases?per_page=100&page=2>; rel=\"next\", <https://api.github.com/repositories/123/releases?per_page=100&page=5>; rel=\"last\"",
+        "https://api.github.com/repositories/123/releases?per_page=100&page=2")]
+    [InlineData(
+        "<https://api.github.com/repositories/123/releases?per_page=100&page=4>; rel=\"prev\", <https://api.github.com/repositories/123/releases?per_page=100&page=1>; rel=\"first\"",
+        null)]
+    [InlineData("<https://example.com/releases?page=2>; rel=\"next\"", null)]
+    [InlineData("<http://api.github.com/repositories/123/releases?page=2>; rel=\"next\"", null)]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void Next_page_is_the_rel_next_address_on_the_api_host(string? linkHeader, string? expected) =>
+        Assert.Equal(expected is null ? null : new Uri(expected), GitHubReleaseNotes.NextPage(linkHeader));
+
+    /// <summary>An answer without the offered version's release is no result to keep: the next check asks again.</summary>
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("not json")]
+    [InlineData("[{\"tag_name\":\"v3.3.0\",\"prerelease\":false,\"draft\":false,\"body\":\"Old.\"}]")]
+    public async Task An_answer_without_the_offered_release_is_not_a_result(string json)
+    {
+        var notes = await GitHubReleaseNotes.LoadAsync(new Pages(json).Fetch, "3.3.0", "3.4.0", CancellationToken.None);
+
+        Assert.False(notes.HasPending);
+        Assert.Equal(GitHubReleaseNotes.Unavailable("3.4.0").Select(s => s.Version), notes.Sections.Select(s => s.Version));
+    }
 }

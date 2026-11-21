@@ -2957,7 +2957,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         post: action => Dispatcher.UIThread.Post(action),
         // The release notes of the version on offer, from its GitHub release (#347). Fetched only
         // while an update is on offer, and never awaited by the update itself.
-        fetchReleaseNotes: GitHubReleaseNotes.FetchAsync);
+        fetchReleasePage: GitHubReleaseNotes.FetchPageAsync);
 
     private Notifications? _updateNotice;
 

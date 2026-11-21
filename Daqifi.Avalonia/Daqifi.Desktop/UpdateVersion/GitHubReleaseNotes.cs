@@ -15,6 +15,16 @@ public sealed record PublishedRelease(string Version, bool IsPrerelease, string?
 /// <summary>The notes of one release, under its version.</summary>
 public sealed record ReleaseNotesSection(string Version, IReadOnlyList<NoteBlock> Blocks);
 
+/// <summary>One page of a releases API answer, and the address of the next page, or <c>null</c> on the last.</summary>
+public sealed record ReleasesPage(string Json, Uri? Next);
+
+/// <summary>
+/// The notes for an offered version. <see cref="HasPending"/> is true only when the answer held the
+/// offered version's own release: anything else (an empty or unreadable list, or one without that
+/// release) is worth asking again at the next check.
+/// </summary>
+public sealed record ReleaseNotesResult(IReadOnlyList<ReleaseNotesSection> Sections, bool HasPending);
+
 /// <summary>
 /// The release notes of the pending update, from this repository's GitHub releases (#347). The
 /// release body is the one source of the notes: the app keeps no copy of them.
@@ -26,9 +36,9 @@ public sealed record ReleaseNotesSection(string Version, IReadOnlyList<NoteBlock
 /// choose its channel: a version with a prerelease label follows prereleases.
 /// <para>
 /// The releases API takes no token here, so GitHub allows few requests from one address. The
-/// UPDATES section fetches only when an update is on offer, once for each version, and one request
-/// lists up to <see cref="PAGE_SIZE"/> releases. A copy more releases behind than that gets the notes
-/// of the newest <see cref="PAGE_SIZE"/>.
+/// UPDATES section fetches only when an update is on offer, once for each version, and reads pages
+/// of <see cref="PAGE_SIZE"/> releases only until one reaches the installed version
+/// (<see cref="LoadAsync"/>), at most <see cref="MaxPages"/>.
 /// </para>
 /// </remarks>
 public static class GitHubReleaseNotes
@@ -36,7 +46,14 @@ public static class GitHubReleaseNotes
     private const string REPOSITORY = "daqifi/daqifi-app";
     private const int PAGE_SIZE = 100;
 
-    private static readonly Uri ReleasesApi = new($"https://api.github.com/repos/{REPOSITORY}/releases?per_page={PAGE_SIZE}");
+    /// <summary>The first page of the releases API, newest release first.</summary>
+    public static readonly Uri FirstPage = new($"https://api.github.com/repos/{REPOSITORY}/releases?per_page={PAGE_SIZE}");
+
+    /// <summary>The page that lists every release, for notes older than the pages read.</summary>
+    public const string AllReleasesPage = $"https://github.com/{REPOSITORY}/releases";
+
+    /// <summary>The most pages of <see cref="PAGE_SIZE"/> releases one load reads.</summary>
+    public const int MaxPages = 10;
 
     private static readonly Lazy<HttpClient> Client = new(() =>
     {
@@ -52,16 +69,82 @@ public static class GitHubReleaseNotes
     });
 
     /// <summary>
-    /// Reads the releases API answer from GitHub, without a token. The one place the notes touch the
-    /// network; <see cref="ViewModels.AppUpdateViewModel"/> takes it as a delegate, so tests give
-    /// their own answer.
+    /// Reads one page of the releases API from GitHub, without a token, and the address of the next
+    /// page from its <c>Link</c> header. The one place the notes touch the network;
+    /// <see cref="ViewModels.AppUpdateViewModel"/> takes it as a delegate, so tests give their own pages.
     /// </summary>
-    public static async Task<string> FetchAsync(CancellationToken cancellationToken)
+    public static async Task<ReleasesPage> FetchPageAsync(Uri page, CancellationToken cancellationToken)
     {
-        using var response = await Client.Value.GetAsync(ReleasesApi, cancellationToken);
+        using var response = await Client.Value.GetAsync(page, cancellationToken);
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsStringAsync(cancellationToken);
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        return new ReleasesPage(json, NextPage(response.Headers.TryGetValues("Link", out var links) ? string.Join(",", links) : null));
     }
+
+    /// <summary>
+    /// The <c>rel="next"</c> address in a <c>Link</c> header, or <c>null</c>. Only an https address on
+    /// the API's own host is followed.
+    /// </summary>
+    public static Uri? NextPage(string? linkHeader)
+    {
+        if (string.IsNullOrWhiteSpace(linkHeader)) { return null; }
+
+        foreach (var link in linkHeader.Split(','))
+        {
+            var parts = link.Split(';');
+            var address = parts[0].Trim();
+            var isNext = parts.Skip(1).Any(p => p.Trim().Equals("rel=\"next\"", StringComparison.OrdinalIgnoreCase));
+            if (!isNext || address.Length < 2 || address[0] != '<' || address[^1] != '>') { continue; }
+
+            return Uri.TryCreate(address[1..^1], UriKind.Absolute, out var next)
+                   && next.Scheme == Uri.UriSchemeHttps
+                   && next.Host == FirstPage.Host
+                ? next
+                : null;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Reads the releases from <see cref="FirstPage"/> on, and gives the notes for <paramref name="pending"/>.
+    /// The API lists releases newest first, prereleases included, so the range can go on past the
+    /// first page: the next page is read until a page reaches the installed version, the history
+    /// ends, or <see cref="MaxPages"/> pages are read. A user a few versions behind finds the
+    /// installed version on the first page, so one request is the usual case. When the cap stops
+    /// the reading first, the notes end with a section that says so (#695 review).
+    /// </summary>
+    /// <exception cref="Exception">Whatever <paramref name="fetchPage"/> throws, for example with no network.</exception>
+    public static async Task<ReleaseNotesResult> LoadAsync(
+        Func<Uri, CancellationToken, Task<ReleasesPage>> fetchPage, string? installed, string pending, CancellationToken cancellationToken)
+    {
+        var releases = new List<PublishedRelease>();
+        var address = FirstPage;
+        for (var read = 1; ; read++)
+        {
+            var page = await fetchPage(address, cancellationToken);
+            if (Read(page.Json) is not { } onPage) { return new(Unavailable(pending), false); }
+
+            releases.AddRange(onPage);
+            if (page.Next is null || ReachesInstalled(onPage, installed, pending))
+            {
+                return Notes(releases, installed, pending, truncated: false);
+            }
+
+            if (read >= MaxPages) { return Notes(releases, installed, pending, truncated: true); }
+            address = page.Next;
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="page"/> lists the installed version or an older one, so no later
+    /// page holds a release in the range. Without a version for this copy, only the pending release
+    /// is in the range, so the page that lists it is enough.
+    /// </summary>
+    private static bool ReachesInstalled(IEnumerable<PublishedRelease> page, string? installed, string pending) =>
+        ReleaseVersion.TryParse(installed, out var from)
+            ? page.Any(r => ReleaseVersion.TryParse(r.Version, out var v) && v.CompareTo(from) <= 0)
+            : page.Any(r => SameVersion(r.Version, pending));
 
     /// <summary>The page of the release of <paramref name="version"/>.</summary>
     public static string ReleasePage(string version) =>
@@ -120,34 +203,61 @@ public static class GitHubReleaseNotes
     }
 
     /// <summary>
-    /// The notes the UPDATES section shows for <paramref name="pending"/>: each release in the range
-    /// under its version, newest first. A release with no body, a pending version the answer does not
-    /// list, and an answer that cannot be read each give <see cref="Unavailable"/>. Never throws.
+    /// The notes the UPDATES section shows for <paramref name="pending"/> from one page: each release
+    /// in the range under its version, newest first. A release with no body, a pending version the
+    /// answer does not list, and an answer that cannot be read each give <see cref="Unavailable"/>.
+    /// Never throws.
     /// </summary>
-    public static IReadOnlyList<ReleaseNotesSection> Sections(string json, string? installed, string pending)
+    public static IReadOnlyList<ReleaseNotesSection> Sections(string json, string? installed, string pending) =>
+        Read(json) is { } releases ? Notes(releases, installed, pending, truncated: false).Sections : Unavailable(pending);
+
+    /// <summary>
+    /// The notes for <paramref name="pending"/> from the releases read: each release in the range
+    /// under its version, newest first. Without the pending release they are <see cref="Unavailable"/>.
+    /// </summary>
+    /// <param name="truncated">
+    /// True when <see cref="MaxPages"/> stopped the reading before the installed version. The notes
+    /// then end with a section that says older notes are not shown, and links every release.
+    /// </param>
+    public static ReleaseNotesResult Notes(IReadOnlyList<PublishedRelease> releases, string? installed, string pending, bool truncated)
     {
-        IReadOnlyList<PublishedRelease> releases;
-        try
-        {
-            releases = Between(Parse(json), installed, pending);
-        }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException or ArgumentException)
-        {
-            return Unavailable(pending);
-        }
+        var inRange = Between(releases, installed, pending);
+        if (!inRange.Any(r => SameVersion(r.Version, pending))) { return new(Unavailable(pending), false); }
 
-        if (!releases.Any(r => ReleaseVersion.TryParse(r.Version, out var v)
-                               && ReleaseVersion.TryParse(pending, out var p) && v.CompareTo(p) == 0))
-        {
-            return Unavailable(pending);
-        }
-
-        return releases
+        var sections = inRange
             .Select(release => NotesMarkdown.Parse(release.Body) is { Count: > 0 } blocks
                 ? new ReleaseNotesSection(release.Version, blocks)
                 : Unavailable(release.Version, release.Page))
             .ToList();
+        if (truncated) { sections.Add(EarlierReleases); }
+        return new(sections, true);
     }
+
+    private static readonly ReleaseNotesSection EarlierReleases = new("Earlier releases",
+    [
+        new NoteParagraph(
+        [
+            new NoteSpan($"Only the newest {(MaxPages * PAGE_SIZE).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} " +
+                         "releases were read, so the notes of older releases are not shown. "),
+            new NoteSpan("See all releases", Link: AllReleasesPage),
+        ]),
+    ]);
+
+    /// <summary>The releases of one page, or <c>null</c> when it cannot be read.</summary>
+    private static List<PublishedRelease>? Read(string json)
+    {
+        try
+        {
+            return [.. Parse(json)];
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    private static bool SameVersion(string a, string b) =>
+        ReleaseVersion.TryParse(a, out var x) && ReleaseVersion.TryParse(b, out var y) && x.CompareTo(y) == 0;
 
     /// <summary>What is shown when the notes of <paramref name="version"/> cannot be shown: a line, and a link to its release page.</summary>
     public static IReadOnlyList<ReleaseNotesSection> Unavailable(string version) =>
