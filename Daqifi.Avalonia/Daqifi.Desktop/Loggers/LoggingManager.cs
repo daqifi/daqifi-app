@@ -439,21 +439,24 @@ public partial class LoggingManager : ObservableObject
     {
         try
         {
-            var doc = _profileStore.Open();
-            var updated = BuildProfileElement(profile);
-            var existing = FindProfileElement(doc, profile.ProfileId);
-
-            if (existing != null)
+            // Under the writers' lock, so a save in another window is not lost (#512 review).
+            _profileStore.Edit(doc =>
             {
-                existing.ReplaceWith(updated);
-            }
-            else
-            {
-                AppLogger.Warning($"Profile with ID {profile.ProfileId} was not in the profiles file; writing it back.");
-                doc.Root?.Add(updated);
-            }
+                var updated = BuildProfileElement(profile);
+                var existing = FindProfileElement(doc, profile.ProfileId);
 
-            _profileStore.Save(doc);
+                if (existing != null)
+                {
+                    existing.ReplaceWith(updated);
+                }
+                else
+                {
+                    AppLogger.Warning($"Profile with ID {profile.ProfileId} was not in the profiles file; writing it back.");
+                    doc.Root?.Add(updated);
+                }
+
+                return true;
+            });
             return true;
         }
         catch (Exception ex)
@@ -480,21 +483,23 @@ public partial class LoggingManager : ObservableObject
     {
         try
         {
-            var doc = _profileStore.Open();
-
-            if (profile != null)
+            // Under the writers' lock, so a save in another window is not lost (#512 review).
+            _profileStore.Edit(doc =>
             {
-                if (AddProfileFlag)
+                if (profile != null)
                 {
-                    doc.Root?.Add(BuildProfileElement(profile));
+                    if (AddProfileFlag)
+                    {
+                        doc.Root?.Add(BuildProfileElement(profile));
+                    }
+                    else
+                    {
+                        FindProfileElement(doc, profile.ProfileId)?.Remove();
+                    }
                 }
-                else
-                {
-                    FindProfileElement(doc, profile.ProfileId)?.Remove();
-                }
-            }
 
-            _profileStore.Save(doc);
+                return true;
+            });
             return true;
         }
         catch (Exception ex)
@@ -554,42 +559,47 @@ public partial class LoggingManager : ObservableObject
     /// </summary>
     /// <remarks>
     /// Both are checked. The file, because another copy of the app may have written to it since
-    /// this one read it. The display, because after a damaged file was moved aside the pane can
-    /// hold profiles that the new file does not have yet. Nothing is written when there is nothing
-    /// to add, so an import with nothing new leaves the user's file as it was.
+    /// this one loaded it. The display, because after a damaged file was moved aside the pane can
+    /// hold profiles that the new file does not have yet. The read, the check and the write are one
+    /// step under the writers' lock (<see cref="ProfileXmlStore.Edit"/>), so a profile that another
+    /// window saves meanwhile is kept. Nothing is written when there is nothing to add, so an
+    /// import with nothing new leaves the user's file as it was.
     /// </remarks>
     /// <returns>The profiles added, in the order given.</returns>
     /// <exception cref="IOException">The profiles file could not be read or written. Nothing was added.</exception>
     /// <exception cref="UnauthorizedAccessException">As above.</exception>
     internal List<Profile> AddProfilesNotYetSaved(IEnumerable<Profile> candidates)
     {
-        var doc = _profileStore.Open();
         var added = new List<Profile>();
 
-        foreach (var profile in candidates)
+        _profileStore.Edit(doc =>
         {
-            // The file check also catches the same ID twice in candidates: the first is in doc by now.
-            if (FindProfileElement(doc, profile.ProfileId) is not null
-                || SubscribedProfiles.Any(p => p.ProfileId == profile.ProfileId))
+            foreach (var profile in candidates)
             {
-                continue;
+                // The file check also catches the same ID twice in candidates: the first is in doc by now.
+                if (FindProfileElement(doc, profile.ProfileId) is not null
+                    || SubscribedProfiles.Any(p => p.ProfileId == profile.ProfileId))
+                {
+                    continue;
+                }
+
+                doc.Root?.Add(BuildProfileElement(profile));
+                added.Add(profile);
             }
 
-            doc.Root?.Add(BuildProfileElement(profile));
-            added.Add(profile);
-        }
+            return added.Count > 0;
+        });
 
-        if (added.Count > 0)
+        foreach (var profile in added)
         {
-            _profileStore.Save(doc);
-            foreach (var profile in added)
-            {
-                SubscribedProfiles.Add(profile);
-            }
+            SubscribedProfiles.Add(profile);
         }
 
         return added;
     }
+
+    /// <summary>The profiles file this manager reads and writes.</summary>
+    internal string ProfilesFilePath => _profileStore.FilePath;
 
     // @port: Daqifi.Desktop.Logger.LoggingManager.UnsubscribeProfile
     /// <summary>

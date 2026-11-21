@@ -2159,10 +2159,11 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
         try
         {
-            var import = PreviousSessionImport.ForThisPc(App.DatabasePath);
-            if (await Task.Run(import.HasSessionsToImport))
+            // Sessions, or saved profiles and settings with no sessions to copy (#512).
+            var import = PreviousVersionImport.ForThisPc(App.DatabasePath);
+            if (await Task.Run(import.CheckOffer) is { } message)
             {
-                Dispatcher.UIThread.Post(() => ShowPreviousSessionNotice(OfferedImportNotice(import, PreviousSessionImport.OfferMessage)));
+                Dispatcher.UIThread.Post(() => ShowPreviousSessionNotice(OfferedImportNotice(import, message)));
             }
         }
         catch (Exception ex)
@@ -2198,7 +2199,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         return $"Not enough disk space to import: it needs about {size}.";
     }
 
-    private Notifications OfferedImportNotice(PreviousSessionImport import, string message) => new()
+    private Notifications OfferedImportNotice(PreviousVersionImport import, string message) => new()
     {
         Message = message,
         ActionText = "Import",
@@ -2244,7 +2245,7 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         }
     }
 
-    private async Task ImportPreviousSessionsAsync(PreviousSessionImport import)
+    internal async Task ImportPreviousSessionsAsync(PreviousVersionImport import)
     {
         if (_isImportingPreviousSessions)
         {
@@ -2267,13 +2268,13 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         try
         {
             ShowProgress(0);
-            // Saved profiles and the CSV delimiter too (#512). Never throws.
-            await PreviousSettingsImport.ForThisPc().ImportAsync(LoggingManager.Instance, DaqifiSettings.Instance);
             // Created here, on the UI thread, so its callbacks come back to it.
             var progress = new Progress<double>(ShowProgress);
+            SettingsImportOutcome settings;
             try
             {
-                await Task.Run(() => import.ImportAsync(outcome, progress));
+                // Saved profiles and the CSV delimiter first (#512), then the sessions.
+                settings = await import.ImportAsync(outcome, progress);
             }
             finally
             {
@@ -2285,20 +2286,16 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
             // Not done while anything is left (a session still recording), or when the check
             // failed and cannot say: offered again next launch.
-            if (await Task.Run(import.CheckForSessionsToImport) == false)
+            if (await Task.Run(import.Sessions.CheckForSessionsToImport) == false)
             {
-                import.MarkDone();
+                import.Sessions.MarkDone();
             }
 
-            ShowPreviousSessionNotice(new Notifications
-            {
-                Message = outcome.Imported.Count switch
-                {
-                    0 => "Nothing new to import yet.",
-                    1 => "Imported 1 session.",
-                    var n => $"Imported {n} sessions.",
-                }
-            });
+            // A profiles or settings part that did not finish (an old file locked, say) keeps a
+            // retry here, even when no session is left (#512 review).
+            ShowPreviousSessionNotice(settings.Complete
+                ? new Notifications { Message = PreviousVersionImport.ResultMessage(outcome.Imported.Count, settings) }
+                : OfferedImportNotice(import, PreviousSettingsImport.RetryMessage));
         }
         catch (ImportAlreadyRunningException ex)
         {

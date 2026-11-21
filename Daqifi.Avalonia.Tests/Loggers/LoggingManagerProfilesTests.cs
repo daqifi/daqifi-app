@@ -226,7 +226,9 @@ public sealed class LoggingManagerProfilesTests : IDisposable
     }
 
     /// <summary>
-    /// A clean run must not leave recovery litter beside the profiles file.
+    /// A clean run must not leave recovery litter beside the profiles file. The one other file is
+    /// the empty lock that every writer holds (#512 review), which stays in place on purpose:
+    /// deleting it while another window waits on it would let two writers in at once.
     /// </summary>
     [Fact]
     public void An_ordinary_save_moves_nothing_aside()
@@ -234,7 +236,10 @@ public sealed class LoggingManagerProfilesTests : IDisposable
         Assert.True(NewManager().SubscribeProfile(NewProfile()));
 
         Assert.Empty(Directory.GetFiles(_directory, "*.corrupt-*"));
-        Assert.Equal(ProfilePath, Assert.Single(Directory.GetFiles(_directory)));
+        Assert.Equal(
+            new[] { ProfilePath, ProfilePath + ".lock" }.Order(StringComparer.Ordinal),
+            Directory.GetFiles(_directory).Order(StringComparer.Ordinal));
+        Assert.Equal(0, new FileInfo(ProfilePath + ".lock").Length);
     }
 
     /// <summary>

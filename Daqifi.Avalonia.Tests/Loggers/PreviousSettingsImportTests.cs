@@ -40,7 +40,11 @@ public sealed class PreviousSettingsImportTests : IDisposable
     private string OldSettings => Path.Combine(Old, PreviousSettingsImport.SettingsFileName);
     private string CurrentProfiles => Path.Combine(Current, PreviousSettingsImport.ProfilesFileName);
     private string CurrentSettings => Path.Combine(Current, PreviousSettingsImport.SettingsFileName);
-    private string Marker => Path.Combine(Current, PreviousSettingsImport.MarkerFileName);
+    private string ProfilesMarker => Path.Combine(Current, PreviousSettingsImport.ProfilesMarkerFileName);
+    private string DelimiterMarker => Path.Combine(Current, PreviousSettingsImport.DelimiterMarkerFileName);
+
+    /// <summary>Which parts the import has marked as done.</summary>
+    private (bool Profiles, bool Delimiter) Done() => (File.Exists(ProfilesMarker), File.Exists(DelimiterMarker));
 
     public PreviousSettingsImportTests()
     {
@@ -159,7 +163,7 @@ public sealed class PreviousSettingsImportTests : IDisposable
 
         // No settings file in the old folder: that is nothing to read, so the import is done and
         // nothing is reported.
-        Assert.True(File.Exists(Marker));
+        Assert.Equal((true, true), Done());
         Assert.Empty(_log.Warnings);
     }
 
@@ -248,7 +252,7 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.Contains(_log.Warnings, warning => warning.Contains(damaged));
         Assert.Empty(_log.Errors);
         AssertSameFiles(before, Snapshot(Old));
-        Assert.True(File.Exists(Marker));
+        Assert.Equal((true, true), Done());
     }
 
     /// <summary>
@@ -278,6 +282,8 @@ public sealed class PreviousSettingsImportTests : IDisposable
     public async Task The_old_delimiter_replaces_the_default()
     {
         WriteDelimiter(OldSettings, ";");
+        Settings();
+        // A later launch: what marks the comma as the default must survive in the file.
         var settings = Settings();
 
         var outcome = await Import().ImportAsync(Manager(), settings);
@@ -285,8 +291,8 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.True(outcome.DelimiterCopied);
         Assert.Equal(";", settings.CsvDelimiter);
         Assert.Equal(";", Settings().CsvDelimiter);
-        // No profiles file in the old folder: nothing to read, so the import is done.
-        Assert.True(File.Exists(Marker));
+        // No profiles file in the old folder: nothing to read, so that part is done too.
+        Assert.Equal((true, true), Done());
     }
 
     /// <summary>A delimiter the user chose here is theirs, so the old one does not replace it.</summary>
@@ -342,7 +348,7 @@ public sealed class PreviousSettingsImportTests : IDisposable
 
         Assert.Equal(0, outcome.ProfilesAdded);
         Assert.False(outcome.DelimiterCopied);
-        AssertSameFiles(before, Snapshot(Current).Where(f => f.Key != PreviousSettingsImport.MarkerFileName).ToDictionary());
+        AssertSameFiles(before, Snapshot(Current).Where(f => !f.Key.StartsWith(".previous-settings-import-", StringComparison.Ordinal)).ToDictionary());
     }
 
     /// <summary>
@@ -388,19 +394,21 @@ public sealed class PreviousSettingsImportTests : IDisposable
             first = await Import().ImportAsync(manager, settings);
         }
 
-        Assert.False(File.Exists(Marker));
+        var profilesLocked = lockedFile == PreviousSettingsImport.ProfilesFileName;
+        Assert.Equal((!profilesLocked, profilesLocked), Done());
+        Assert.False(first.Complete);
         Assert.Contains(_log.Warnings, warning => warning.Contains("tries again"));
 
         var second = await Import().ImportAsync(manager, settings);
 
-        var profilesLocked = lockedFile == PreviousSettingsImport.ProfilesFileName;
         // The file that could be read came across the first time; the locked one the second time.
         Assert.Equal(profilesLocked ? 0 : 1, first.ProfilesAdded);
         Assert.Equal(profilesLocked, first.DelimiterCopied);
         Assert.Equal(profilesLocked ? 1 : 0, second.ProfilesAdded);
         Assert.Equal(!profilesLocked, second.DelimiterCopied);
         Assert.Equal(";", settings.CsvDelimiter);
-        Assert.True(File.Exists(Marker));
+        Assert.True(second.Complete);
+        Assert.Equal((true, true), Done());
     }
 
     /// <summary>
@@ -420,7 +428,8 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.Equal(0, outcome.ProfilesAdded);
         Assert.Empty(manager.SubscribedProfiles);
         Assert.Single(_log.Errors);
-        Assert.False(File.Exists(Marker));
+        Assert.False(outcome.Complete);
+        Assert.Equal((false, true), Done());
     }
 
     /// <summary>Off Windows, and under a <c>DAQIFI_DATA_DIR</c> override, there is nothing to read.</summary>
@@ -432,11 +441,13 @@ public sealed class PreviousSettingsImportTests : IDisposable
         WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
         var manager = Manager();
 
-        var outcome = await new PreviousSettingsImport(null, Current, _log).ImportAsync(manager, Settings());
+        var none = new PreviousSettingsImport(null, Current, _log);
+        Assert.False(none.HasSettingsToImport(CurrentProfiles, Settings()));
+        var outcome = await none.ImportAsync(manager, Settings());
 
         Assert.Equal(0, outcome.ProfilesAdded);
         Assert.Empty(manager.SubscribedProfiles);
-        Assert.False(File.Exists(Marker));
+        Assert.Equal((false, false), Done());
         // Nothing is tried, so nothing fails and nothing is reported: not even the summary line.
         Assert.Empty(_log.Errors);
         Assert.Empty(_log.Warnings);
@@ -571,6 +582,70 @@ public sealed class PreviousSettingsImportTests : IDisposable
 
         Assert.False(outcome.DelimiterCopied);
         Assert.Equal(",", Settings().CsvDelimiter);
+    }
+
+    /// <summary>
+    /// Review P1, the offer: the bell offers Import for profiles or a delimiter this user lacks,
+    /// and for nothing else. Each row is one reason to offer or not to.
+    /// </summary>
+    [Theory]
+    [InlineData("new profile", true)]
+    [InlineData("profile already here", false)]
+    [InlineData("new delimiter", true)]
+    [InlineData("unsupported delimiter", false)]
+    [InlineData("delimiter the user chose", false)]
+    [InlineData("locked profiles file", true)]
+    [InlineData("damaged profiles file", false)]
+    [InlineData("locked settings file", true)]
+    [InlineData("damaged settings file", false)]
+    [InlineData("both parts done", false)]
+    public void The_offer_is_made_only_for_something_this_user_lacks(string oldFolder, bool offered)
+    {
+        var manager = Manager();
+        var settings = Settings();
+        switch (oldFolder)
+        {
+            case "new profile":
+                WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
+                break;
+            case "profile already here":
+                Assert.True(manager.SubscribeProfile(UsersProfile(BenchId, "Mine")));
+                WriteProfiles(OldProfiles, WpfProfile(BenchId, "Theirs"));
+                WriteDelimiter(OldSettings, ",");
+                break;
+            case "new delimiter":
+                WriteDelimiter(OldSettings, ";");
+                break;
+            case "unsupported delimiter":
+                WriteDelimiter(OldSettings, "|");
+                break;
+            case "delimiter the user chose":
+                settings.CsvDelimiter = ";";
+                WriteDelimiter(OldSettings, ",");
+                break;
+            case "locked profiles file":
+            case "damaged profiles file":
+                File.WriteAllText(OldProfiles, "<Profiles><Profile><Name>Bench");
+                break;
+            case "locked settings file":
+            case "damaged settings file":
+                File.WriteAllText(OldSettings, "<DAQifiSettings><CsvDelimiter>;");
+                break;
+            case "both parts done":
+                WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
+                WriteDelimiter(OldSettings, ";");
+                Import().MarkDone();
+                break;
+        }
+
+        using var held = oldFolder switch
+        {
+            "locked profiles file" => new FileStream(OldProfiles, FileMode.Open, FileAccess.ReadWrite, FileShare.None),
+            "locked settings file" => new FileStream(OldSettings, FileMode.Open, FileAccess.ReadWrite, FileShare.None),
+            _ => null,
+        };
+
+        Assert.Equal(offered, Import().HasSettingsToImport(CurrentProfiles, settings));
     }
 
     /// <summary>

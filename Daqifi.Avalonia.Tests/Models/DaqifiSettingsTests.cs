@@ -165,6 +165,26 @@ public sealed class DaqifiSettingsTests : IDisposable
     }
 
     /// <summary>
+    /// A delimiter chosen in Settings that cannot be saved is still used for this session, as it
+    /// always was. Only the import from an earlier version puts the old one back (#512 review), so
+    /// that its retry writes the delimiter again.
+    /// </summary>
+    [Fact]
+    public void A_choice_that_cannot_be_saved_is_kept_for_the_session_but_an_import_is_undone()
+    {
+        var blocker = Path.Combine(_directory, "blocker");
+        File.WriteAllText(blocker, "not a directory");
+        var settings = new DaqifiSettings(Path.Combine(blocker, "DAQifiConfiguration.xml"));
+
+        Assert.False(settings.TrySetCsvDelimiter(";"));
+        Assert.Equal(",", settings.CsvDelimiter);
+        Assert.True(settings.CsvDelimiterIsFirstLaunchDefault);
+
+        settings.CsvDelimiter = ";";
+        Assert.Equal(";", settings.CsvDelimiter);
+    }
+
+    /// <summary>
     /// The same distinction, stated directly on the predicate that draws it. Getting this wrong
     /// destroys the user's file in one direction and leaves #193's permanent failure in place in
     /// the other.
