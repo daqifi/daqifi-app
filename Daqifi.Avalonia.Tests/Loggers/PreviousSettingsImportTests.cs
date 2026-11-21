@@ -84,7 +84,7 @@ public sealed class PreviousSettingsImportTests : IDisposable
                 <DeviceName>Nyquist 1</DeviceName>
                 <DevicePartNumber>Nq1</DevicePartNumber>
                 <MACAddress>00:11:22:33:44:55</MACAddress>
-                <DeviceSerialNo>7E2815916200E898</DeviceSerialNo>
+                <DeviceSerialNo>SERIAL-A</DeviceSerialNo>
                 {(withChannels ? "<Channels><Channel><Name>AI0</Name><Type>Analog</Type><IsActive>true</IsActive></Channel></Channels>" : string.Empty)}
                 <SamplingFrequency>100</SamplingFrequency>
               </Device>
@@ -110,9 +110,9 @@ public sealed class PreviousSettingsImportTests : IDisposable
                 DeviceName = "Nyquist 1",
                 DevicePartName = "Nq1",
                 MacAddress = "00:11:22:33:44:55",
-                DeviceSerialNo = "7E2815916200E898",
+                DeviceSerialNo = "SERIAL-A",
                 SamplingFrequency = 5000,
-                Channels = [new ProfileChannel { Name = "AI3", Type = "Analog", IsChannelActive = true, SerialNo = "7E2815916200E898" }],
+                Channels = [new ProfileChannel { Name = "AI3", Type = "Analog", IsChannelActive = true, SerialNo = "SERIAL-A" }],
             },
         ],
     };
@@ -437,7 +437,10 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.Equal(0, outcome.ProfilesAdded);
         Assert.Empty(manager.SubscribedProfiles);
         Assert.False(File.Exists(Marker));
+        // Nothing is tried, so nothing fails and nothing is reported: not even the summary line.
+        Assert.Empty(_log.Errors);
         Assert.Empty(_log.Warnings);
+        Assert.Empty(_log.Informations);
     }
 
     /// <summary>
