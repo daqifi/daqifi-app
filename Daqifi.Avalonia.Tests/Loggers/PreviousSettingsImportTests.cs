@@ -644,6 +644,9 @@ public sealed class PreviousSettingsImportTests : IDisposable
     [InlineData("comma in a file from an earlier build", false)]
     [InlineData("comma rewritten without a flag after launch", false)]
     [InlineData("settings file here busy", true)]
+    [InlineData("comma chosen earlier, settings file busy", false)]
+    [InlineData("comma from an earlier build, settings file busy", false)]
+    [InlineData("dismissed in this run, settings file busy", false)]
     [InlineData("locked profiles file", true)]
     [InlineData("damaged profiles file", false)]
     [InlineData("locked settings file", true)]
@@ -694,6 +697,22 @@ public sealed class PreviousSettingsImportTests : IDisposable
                 // The file cannot be read now, so the check cannot settle it: the Import can try.
                 WriteDelimiter(OldSettings, ";");
                 break;
+            // The next three: the file is busy at the check, so what this copy loaded or did in
+            // this run must settle the delimiter on its own.
+            case "comma chosen earlier, settings file busy":
+                File.WriteAllText(CurrentSettings, "<DAQifiSettings><CsvDelimiter chosenByUser=\"true\">,</CsvDelimiter></DAQifiSettings>");
+                settings = Settings();
+                WriteDelimiter(OldSettings, ";");
+                break;
+            case "comma from an earlier build, settings file busy":
+                File.WriteAllText(CurrentSettings, "<DAQifiSettings><CsvDelimiter>,</CsvDelimiter></DAQifiSettings>");
+                settings = Settings();
+                WriteDelimiter(OldSettings, ";");
+                break;
+            case "dismissed in this run, settings file busy":
+                WriteDelimiter(OldSettings, ";");
+                Import().MarkDone(manager, settings);
+                break;
             case "locked profiles file":
             case "damaged profiles file":
                 File.WriteAllText(OldProfiles, "<Profiles><Profile><Name>Bench");
@@ -713,7 +732,8 @@ public sealed class PreviousSettingsImportTests : IDisposable
         {
             "locked profiles file" => new FileStream(OldProfiles, FileMode.Open, FileAccess.ReadWrite, FileShare.None),
             "locked settings file" => new FileStream(OldSettings, FileMode.Open, FileAccess.ReadWrite, FileShare.None),
-            "settings file here busy" => new FileStream(CurrentSettings, FileMode.Open, FileAccess.ReadWrite, FileShare.None),
+            _ when oldFolder.EndsWith("settings file busy", StringComparison.Ordinal) || oldFolder == "settings file here busy"
+                => new FileStream(CurrentSettings, FileMode.Open, FileAccess.ReadWrite, FileShare.None),
             _ => null,
         };
 
@@ -1164,6 +1184,98 @@ public sealed class PreviousSettingsImportTests : IDisposable
         }
 
         Assert.False(busy.Complete);
+        Assert.Equal(1, (await Import().ImportAsync(manager, settings)).ProfilesAdded);
+    }
+
+    /// <summary>
+    /// Round 4. The record check runs before the write, so another window can record the import
+    /// (a Dismiss there, say) in between. The write itself checks again under the lock: it adds
+    /// nothing, and it does not even rewrite the file.
+    /// </summary>
+    [Fact]
+    public async Task A_record_another_window_writes_during_the_import_is_respected()
+    {
+        WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
+        var longAgo = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var racing = new PreviousSettingsImport(Old, _log)
+        {
+            AtStep = reached =>
+            {
+                if (reached == PreviousSettingsImport.Step.ProfilesRead)
+                {
+                    Assert.True(Manager().RecordEarlierVersionImport());
+                    File.SetLastWriteTimeUtc(CurrentProfiles, longAgo);
+                }
+            },
+        };
+
+        var outcome = await racing.ImportAsync(Manager(), Settings());
+
+        // The time first: a new manager's startup load writes the file, as the app's does.
+        Assert.Equal(longAgo, File.GetLastWriteTimeUtc(CurrentProfiles));
+        Assert.Equal(0, outcome.ProfilesAdded);
+        Assert.True(outcome.Complete);
+        Assert.Empty(Manager().SubscribedProfiles);
+    }
+
+    /// <summary>
+    /// Round 4, the same race for the delimiter: another copy saves a choice after the settled
+    /// check. The locked write reads the file again and keeps it, and that part is finished.
+    /// </summary>
+    [Fact]
+    public async Task A_choice_another_copy_saves_during_the_import_is_kept()
+    {
+        WriteDelimiter(OldSettings, ";");
+        var racing = new PreviousSettingsImport(Old, _log)
+        {
+            AtStep = reached =>
+            {
+                if (reached == PreviousSettingsImport.Step.DelimiterRead)
+                {
+                    var otherCopy = Settings();
+                    otherCopy.CsvDelimiter = ";";
+                    otherCopy.CsvDelimiter = ",";
+                }
+            },
+        };
+
+        var outcome = await racing.ImportAsync(Manager(), Settings());
+
+        Assert.False(outcome.DelimiterCopied);
+        Assert.True(outcome.Complete);
+        Assert.Equal(",", Settings().CsvDelimiter);
+    }
+
+    /// <summary>
+    /// Round 3, P2, one file at a time, for the profiles. Only the old profiles file cannot be
+    /// read; the delimiter comes across. The profiles part must not pass for one with nothing to
+    /// copy: the import is not complete, and the next launch still offers it.
+    /// </summary>
+    [EnforcedReadOnlyDirectoryFact(NeedsEnforcedPermissions)]
+    public async Task An_old_profiles_file_that_cannot_be_read_is_not_taken_for_an_absent_one()
+    {
+        if (OperatingSystem.IsWindows()) { Assert.Fail(NeedsEnforcedPermissions); return; }
+        WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
+        WriteDelimiter(OldSettings, ";");
+        var manager = Manager();
+        var settings = Settings();
+
+        SettingsImportOutcome blocked;
+        bool offeredWhileBlocked;
+        File.SetUnixFileMode(OldProfiles, UnixFileMode.None);
+        try
+        {
+            blocked = await Import().ImportAsync(manager, settings);
+            offeredWhileBlocked = OfferedAtNextLaunch();
+        }
+        finally
+        {
+            File.SetUnixFileMode(OldProfiles, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+
+        Assert.True(blocked.DelimiterCopied);
+        Assert.False(blocked.Complete);
+        Assert.True(offeredWhileBlocked);
         Assert.Equal(1, (await Import().ImportAsync(manager, settings)).ProfilesAdded);
     }
 
