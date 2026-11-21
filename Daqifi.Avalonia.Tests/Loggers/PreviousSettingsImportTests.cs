@@ -585,6 +585,28 @@ public sealed class PreviousSettingsImportTests : IDisposable
     }
 
     /// <summary>
+    /// Review P2, the other side of one marker per part: a part that is done does not run again.
+    /// After a Dismiss nothing comes across, though the old folder still holds a profile and a
+    /// semicolon, and this user's delimiter is still the first-launch default.
+    /// </summary>
+    [Fact]
+    public async Task A_part_that_is_done_does_not_run_again()
+    {
+        WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
+        WriteDelimiter(OldSettings, ";");
+        Import().MarkDone();
+        var manager = Manager();
+        var settings = Settings();
+
+        var outcome = await Import().ImportAsync(manager, settings);
+
+        Assert.Equal(0, outcome.ProfilesAdded);
+        Assert.False(outcome.DelimiterCopied);
+        Assert.Empty(manager.SubscribedProfiles);
+        Assert.Equal(",", settings.CsvDelimiter);
+    }
+
+    /// <summary>
     /// Review P1, the offer: the bell offers Import for profiles or a delimiter this user lacks,
     /// and for nothing else. Each row is one reason to offer or not to.
     /// </summary>
