@@ -185,8 +185,9 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
 
     /// <summary>The session the Logged Data pane's flyouts show and rename.</summary>
     /// <remarks>
-    /// Written by reference: <see cref="LoggingSession.Equals"/> compares IDs, and a deleted
-    /// session's ID is reused, so an ID comparison would keep the deleted object selected (#519).
+    /// Written by reference. A deleted session's ID is reused, so an ID comparison would keep the
+    /// deleted object selected (#519). <see cref="LoggingSession"/> no longer compares IDs (#680);
+    /// the explicit comparer keeps this setter right if it ever does again.
     /// </remarks>
     public LoggingSession SelectedLoggingSession
     {

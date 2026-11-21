@@ -53,8 +53,8 @@ using DesktopApp = Daqifi.Desktop.App;
 //
 // Exit code 1 on any [FAIL]. Rows covered with a board: CONN-USB, DEV-INFO, DEV-TILE, CH-TILE,
 // DEV-RATE, CH-AI, STREAM-AI, STREAM-GAP, LOG-SESSION, GRAPH-LIVE, CH-DIO, CH-PWM, SD-LIST,
-// CONN-DISC, DEV-NAME. Rows covered by --scripted, which needs none: LOGGED-LIST, LOGGED-PLOT, EXPORT-FAIL
-// (their double is a seeded database) and SD-LIST, CONN-LOST, CONN-DISC, LOG-MODE, DEV-NAME
+// CONN-DISC, DEV-NAME. Rows covered by --scripted, which needs none: LOGGED-LIST, LOGGED-PLOT, EXPORT-FAIL,
+// LOGGED-NAME, LOGGED-DEL (their double is a seeded database) and SD-LIST, CONN-LOST, CONN-DISC, LOG-MODE, DEV-NAME
 // (their double is a ScriptedDevice).
 // Add a Step per matrix row; keep the shape.
 
@@ -1196,7 +1196,7 @@ internal static partial class HeadlessBench
     private static readonly string[] ScriptedStates =
         [StateSessions500, StateSession10H, StateExportReadonly, StateSdEmpty, StateDropMidStream,
          StateDisconnectMidStream, StateModeChangeMidSession, StateNameRefused, StatePlotIngest,
-         StateSessionNameBox];
+         StateSessionNameBox, StateSessionIdReuse];
 
     /// <summary>Serial number the two device states give their <see cref="ScriptedDevice"/>. It
     /// reaches the UI — the drop notification names the device by it — so the rows assert against
@@ -1312,6 +1312,10 @@ internal static partial class HeadlessBench
                 (sessions, samples) = SeedSessionNameBox(db, start);
                 break;
 
+            case StateSessionIdReuse:
+                (sessions, samples) = SeedSessionIdReuse(db, start);
+                break;
+
             default:
                 throw new ArgumentException($"unknown --scripted state '{_scripted}'");
         }
@@ -1376,6 +1380,7 @@ internal static partial class HeadlessBench
             case StateModeChangeMidSession: UiProbe = (1, "LOG-MODE"); RunModeChangeMidSessionRow(main, shell); break;
             case StatePlotIngest: UiProbe = (1, "GRAPH-INGEST"); RunPlotIngestRow(main, shell); break;
             case StateSessionNameBox: UiProbe = (1, "LOGGED-NAME"); RunSessionNameBoxRow(main, shell); break;
+            case StateSessionIdReuse: UiProbe = (1, "LOGGED-DEL"); RunSessionIdReuseRow(main, shell); break;
             default: throw new ArgumentException($"unknown --scripted state '{_scripted}'");
         }
     }

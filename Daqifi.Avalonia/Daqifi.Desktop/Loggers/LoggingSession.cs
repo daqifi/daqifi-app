@@ -277,16 +277,15 @@ public class LoggingSession : ObservableObject
     #endregion
 
     #region Object Overrides
-    // @port: Daqifi.Desktop.Logger.LoggingSession.Equals
-    public override bool Equals(object? obj)
-    {
-        return obj is LoggingSession sessionObj && sessionObj.ID == ID;
-    }
-
-    // @port: Daqifi.Desktop.Logger.LoggingSession.GetHashCode
-    public override int GetHashCode()
-    {
-        return ID.GetHashCode();
-    }
+    // Upstream overrides Equals and GetHashCode to compare only the ID. This port does not (#680):
+    // a session is equal only to itself. The next session gets the ID of a deleted session (the
+    // highest ID plus 1, and 0 after DELETE ALL), so two different sessions can have the same ID.
+    // With an ID comparison, the session list's ListBox gave the new session the row of the
+    // deleted one and did not update the row's bindings, so the row showed the deleted session,
+    // and its DELETE asked about the deleted session and then deleted the new one. #519 was the
+    // same defect in LoggingManager.Session. Code that must match a session to a database row
+    // compares the IDs itself.
+    // @port: Daqifi.Desktop.Logger.LoggingSession.Equals (deliberately not ported, see above)
+    // @port: Daqifi.Desktop.Logger.LoggingSession.GetHashCode (deliberately not ported, see above)
     #endregion
 }
