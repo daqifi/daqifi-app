@@ -363,6 +363,41 @@ public sealed class StorageExportWriterTests : IDisposable
         Assert.Empty(_logger.Errors);
     }
 
+    /// <summary>
+    /// Review of PR #685: a name that ends in a number written by the USER, in digits other than
+    /// ASCII — a take number typed as <c>(２)</c>, full width. <c>\d</c> matches any Unicode digit,
+    /// so the writer read it as its own " (n)" suffix, the invariant <c>int.Parse</c> then threw, and
+    /// the second export of that session wrote nothing. The writer only ever generates ASCII digits,
+    /// so anything else is the user's text and stays in the stem. Two shapes: a short name, and a
+    /// long one whose 255-byte cut lands exactly after the take number.
+    /// </summary>
+    [Theory]
+    [InlineData("Take (２)", "Take (２).csv", "Take (２) (2).csv")]
+    [InlineData("LONG (２) extra", "LONG (２).csv", "LONG ( (2).csv")]
+    public async Task Exporting_a_name_that_ends_in_a_non_ascii_number_again_gives_a_new_file(
+        string sessionName, string firstFile, string secondFile)
+    {
+        // "LONG" stands for 245 x, so that the cut name is exactly 251 bytes and ends in " (２)".
+        var longStem = new string('x', 245);
+        sessionName = sessionName.Replace("LONG", longStem, StringComparison.Ordinal);
+        firstFile = firstFile.Replace("LONG", longStem, StringComparison.Ordinal);
+        secondFile = secondFile.Replace("LONG", longStem, StringComparison.Ordinal);
+        var session = SeedSession(sessionName, "AI0", 1.25);
+        var directory = Path.Combine(_root, "picked");
+        Directory.CreateDirectory(directory);
+        var folder = new LocalDirectoryFolder(directory);
+        var writer = Writer();
+
+        var first = await writer.WriteNewAsync(folder, new ExportFileNamer().NextCsvName(session.Name, session.ID), ExportTo(session));
+        var second = await writer.WriteNewAsync(folder, new ExportFileNamer().NextCsvName(session.Name, session.ID), ExportTo(session));
+
+        Assert.Equal(firstFile, first);
+        Assert.Equal(secondFile, second);
+        Assert.All(new[] { first!, second! }, name => Assert.True(Encoding.UTF8.GetByteCount(name) <= 255, name));
+        Assert.Equal(ExportByPath(session), File.ReadAllBytes(Path.Combine(directory, second!)));
+        Assert.Empty(_logger.Errors);
+    }
+
     /// <summary>A folder (not a file) with the export's name is taken too.</summary>
     [Fact]
     public async Task Export_all_steps_around_a_subfolder_with_the_same_name()
