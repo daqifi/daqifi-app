@@ -25,6 +25,13 @@ namespace Daqifi.Avalonia.Tests.Exporter;
 /// </summary>
 public sealed class ExportFileNameLengthTests
 {
+    /// <summary>
+    /// The most a base name may hold: 255 bytes less the 4 of <c>.csv</c>. A literal and not the
+    /// namer's own constant, so the test states the limit by itself and also compiles against the
+    /// code before the fix.
+    /// </summary>
+    private const int MaxBaseNameBytes = 251;
+
     /// <summary>The two long names of the reported case A: 300 ASCII characters, and 90 Chinese
     /// characters (270 bytes of UTF-8).</summary>
     public static TheoryData<string> LongNames => new()
@@ -88,7 +95,7 @@ public sealed class ExportFileNameLengthTests
 
         var name = ExportFileNamer.SafeName(sessionName, 4);
 
-        Assert.True(Utf8(name) <= ExportFileNamer.MaxBaseNameBytes, $"{Utf8(name)} bytes");
+        Assert.True(Utf8(name) <= MaxBaseNameBytes, $"{Utf8(name)} bytes");
         Assert.Equal(0, name.Length % element.Length);
         Assert.Equal(string.Concat(Enumerable.Repeat(element, name.Length / element.Length)), name);
         Assert.Equal(name.Length / element.Length, new StringInfo(name).LengthInTextElements);
@@ -104,12 +111,12 @@ public sealed class ExportFileNameLengthTests
     public void A_name_that_grows_when_decomposed_is_cut_to_fit_its_decomposed_form()
     {
         var sessionName = new string('ΐ', 120);
-        Assert.True(Utf8(sessionName) < ExportFileNamer.MaxBaseNameBytes, "the precondition: a plain UTF-8 count passes it");
+        Assert.True(Utf8(sessionName) < MaxBaseNameBytes, "the precondition: a plain UTF-8 count passes it");
 
         var name = ExportFileNamer.SafeName(sessionName, 4);
         var decomposed = name.Normalize(NormalizationForm.FormD);
 
-        Assert.True(Utf8(decomposed) <= ExportFileNamer.MaxBaseNameBytes, $"{Utf8(decomposed)} bytes decomposed");
+        Assert.True(Utf8(decomposed) <= MaxBaseNameBytes, $"{Utf8(decomposed)} bytes decomposed");
         Assert.True(decomposed.Length + ".csv".Length <= 255, $"{decomposed.Length} UTF-16 units decomposed");
         Assert.StartsWith(name, sessionName, StringComparison.Ordinal);
     }
@@ -192,7 +199,7 @@ public sealed class ExportFileNameLengthTests
 
         var name = ExportFileNamer.SafeName(sessionName, 4);
 
-        Assert.True(Utf8(name) <= ExportFileNamer.MaxBaseNameBytes, $"{Utf8(name)} bytes");
+        Assert.True(Utf8(name) <= MaxBaseNameBytes, $"{Utf8(name)} bytes");
         Assert.StartsWith("\uD800", name, StringComparison.Ordinal);
     }
 

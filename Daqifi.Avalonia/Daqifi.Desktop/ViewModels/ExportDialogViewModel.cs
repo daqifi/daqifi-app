@@ -354,7 +354,9 @@ public partial class ExportDialogViewModel : ObservableObject, IDisposable
                 // Pre-flight: check every destination before writing anything, so a multi-session
                 // export can't leave half its files on disk before failing, and the user gets an
                 // actionable message naming the file that blocked it (issue #747). Inherently racy,
-                // so the catch below still handles a destination that goes bad after the check.
+                // and it probes only files that already exist, so the write loop's own catch still
+                // handles a destination that goes bad after the check, or a new file that cannot be
+                // written (a full disk, a path too long).
                 foreach (var (_, filepath) in live)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
