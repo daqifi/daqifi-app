@@ -34,6 +34,16 @@ public abstract partial class AbstractChannel : ObservableObject, IChannel
     // @port: Daqifi.Desktop.Channel.AbstractChannel.Name
     public abstract string Name { get; set; }
 
+    // Written on the UI thread when a session starts, read on the device reader thread by every
+    // sample, hence the volatile accesses.
+    private string? _recordedName;
+
+    /// <inheritdoc />
+    public string RecordedName => Volatile.Read(ref _recordedName) ?? Name;
+
+    /// <inheritdoc />
+    public void SetRecordedName(string recordedName) => Volatile.Write(ref _recordedName, recordedName);
+
     [ObservableProperty]
     private double _outputValue;
 
@@ -637,18 +647,51 @@ public abstract partial class AbstractChannel : ObservableObject, IChannel
     #endregion
 
     #region Object overrides
+    /// <summary>
+    /// Whether two channels stand for the same input: the same device, the same type and the same
+    /// index. Type and index are what the device and Core key their channels by.
+    /// </summary>
+    /// <remarks>
+    /// The name is not part of it. Upstream compares the name alone, and the user can edit the name
+    /// at any time and give two channels the same one. With two channels named <c>AI0</c>, a click on
+    /// the second tile found the first channel, so the board streamed the input nobody chose and the
+    /// session recorded nothing (#670).
+    /// </remarks>
+    // @port-divergence: upstream compares Name only.
+    public static bool IsSameInput(IChannel left, IChannel right) =>
+        ReferenceEquals(left, right)
+        || (left.Type == right.Type && left.Index == right.Index && IsSameDevice(left, right));
+
+    /// <summary>
+    /// Whether two channels belong to one device, by the rule <c>ConnectionManager</c> uses to tell
+    /// two boards apart: Core's <see cref="Daqifi.Core.Device.DeviceIdentity"/>, which compares the
+    /// serial number and, when either side has none, the MAC address. A board can report neither (Core
+    /// accepts a status with no serial, and a USB board has no MAC), and then nothing durable tells
+    /// it from another such board; only the same device wrapper is the same device. Comparing two
+    /// blank serials as equal made input 0 of a second such board the same channel as the first's,
+    /// so its readings were never recorded (PR #678 review).
+    /// </summary>
+    private static bool IsSameDevice(IChannel left, IChannel right)
+    {
+        var leftOwner = (left as AbstractChannel)?._owner;
+        var rightOwner = (right as AbstractChannel)?._owner;
+        if (leftOwner is not null && ReferenceEquals(leftOwner, rightOwner)) { return true; }
+
+        return Daqifi.Core.Device.DeviceIdentity.Create(left.DeviceSerialNo, leftOwner?.MacAddress)
+            .Matches(Daqifi.Core.Device.DeviceIdentity.Create(right.DeviceSerialNo, rightOwner?.MacAddress));
+    }
+
+    /// <summary>Same input of the same device; see <see cref="IsSameInput"/>.</summary>
     // @port: Daqifi.Desktop.Channel.AbstractChannel.Equals
-    public override bool Equals(object? obj)
-    {
-        if (obj is not AbstractChannel channel) { return false; }
+    public override bool Equals(object? obj) => obj is AbstractChannel channel && IsSameInput(this, channel);
 
-        return channel.Name == Name;
-    }
-
+    /// <summary>
+    /// Type and index only. The device takes part in <see cref="Equals(object?)"/> but not here,
+    /// because its serial number and MAC address arrive after the channel exists and a hash code must
+    /// not change while the channel is in a hashed collection. Equal channels still hash equally. The name hash
+    /// that this replaces moved a channel to another bucket on every rename.
+    /// </summary>
     // @port: Daqifi.Desktop.Channel.AbstractChannel.GetHashCode
-    public override int GetHashCode()
-    {
-        return Name?.GetHashCode() ?? 0;
-    }
+    public override int GetHashCode() => HashCode.Combine(Type, Index);
     #endregion
 }

@@ -10,13 +10,14 @@ namespace Daqifi.Avalonia.Tests.Loggers;
 /// <summary>
 /// #597: the phone records a stream through <see cref="LoggingManager"/>, and it reconnects to the
 /// same board with NEW channel instances. <see cref="LoggingManager.Subscribe"/> treats a channel as
-/// subscribed when any entry has its serial number and name, so the old connection's instance made
+/// subscribed when any entry is the same input (its serial number and name before #670; its serial
+/// number, type and index since), so the old connection's instance made
 /// it skip the new one, and a recording after a reconnect kept no samples.
 /// <see cref="LoggingManager.SubscribeReplacingStale"/> replaces such leftovers.
 /// </summary>
 /// <remarks>
-/// Every identity assertion uses <see cref="Assert.Same"/>: channel equality is name-only (see
-/// <c>LoggingManagerSubscribedChannelsTests</c>), so <c>Assert.Equal</c> would pass on either
+/// Every identity assertion uses <see cref="Assert.Same"/>: two instances of one input are equal
+/// (see <c>LoggingManagerSubscribedChannelsTests</c>), so <c>Assert.Equal</c> would pass on either
 /// instance.
 /// </remarks>
 public class LoggingManagerSubscribeReplacingStaleTests

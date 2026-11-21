@@ -119,9 +119,48 @@ public partial class ProfilesPaneViewModel : ObservableObject
     // Downstream-only: no upstream counterpart.
     public const string LoggingActiveNotice = "Stop logging to change the active profile.";
 
+    /// <summary>
+    /// What the pane says when a profile is turned off and a device that it turned on is no longer
+    /// connected. Nothing else is changed in that device's place (PR #678 review).
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    public const string ActivatedDeviceGoneNotice =
+        "The profile is off. A device that it turned on is not connected now, so the profile did not change any other device.";
+
     /// <summary>What the drawer says when a matched device has none of the channels the profile switches on for it.</summary>
     // Downstream-only: no upstream counterpart.
     public const string NoChannelsMatchedMessage = "A connected device has none of the channels this profile switches on.";
+
+    /// <summary>
+    /// Why an older profile (saved without input numbers) was refused: it names a channel by a name
+    /// that more than one channel of the device has, so it cannot say which input it means.
+    /// </summary>
+    internal static string AmbiguousChannelMessage(string channelName) =>
+        $"More than one channel is named \"{channelName}\", and this profile does not say which one. " +
+        "Give the channels different names, or capture the profile again from the current settings.";
+
+    /// <summary>
+    /// Why a profile was refused when the board it was saved from is not connected and another
+    /// board of that model is. The profile does not change the other board (PR #678 review).
+    /// </summary>
+    internal static string SavedDeviceNotConnectedMessage(ProfileDevice pd)
+    {
+        var identifier = string.IsNullOrWhiteSpace(pd.DeviceSerialNo)
+            ? $"MAC address {pd.MacAddress}"
+            : $"serial number {DeviceSerials.ToDisplay(pd.DeviceSerialNo)}";
+        var device = string.IsNullOrWhiteSpace(pd.DeviceName) ? identifier : $"\"{pd.DeviceName}\" ({identifier})";
+        return $"This profile is for the device {device}, which is not connected. " +
+               "The profile does not change a different device. Connect that device, or capture the profile again from the connected device.";
+    }
+
+    /// <summary>
+    /// Why a profile was refused when a board it was saved from has no serial number and no MAC
+    /// address, and the profile's devices and the connected devices of that model do not pair one
+    /// to one: two connected devices for one saved board, or two saved boards for one device.
+    /// </summary>
+    internal const string WhichDeviceMessage =
+        "This profile cannot tell which connected device to change. The devices it was saved from have no serial number or MAC address. " +
+        "A profile like this applies only when it has one device of a model and one device of that model is connected.";
 
     /// <summary>Live view of the saved profiles backed by <see cref="LoggingManager"/>.</summary>
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.Profiles
@@ -366,11 +405,11 @@ public partial class ProfilesPaneViewModel : ObservableObject
 
         var anyActive = Profiles.FirstOrDefault(p => p.IsProfileActive);
 
-        // Case 1: same tile clicked — toggle off. (If no matched devices remain,
-        // ApplyProfileToDevices still flips IsProfileActive so the UI stays consistent.)
+        // Case 1: same tile clicked — toggle off. (If none of its devices remain,
+        // DeactivateProfile still flips IsProfileActive so the UI stays consistent.)
         if (anyActive != null && anyActive.ProfileId == profile.ProfileId)
         {
-            ApplyProfileToDevices(profile, MatchProfileToConnected(profile), activate: false);
+            DeactivateProfile(profile);
             return;
         }
 
@@ -394,13 +433,12 @@ public partial class ProfilesPaneViewModel : ObservableObject
             newMatches = MatchProfileToConnected(profile);
             if (RefusedMatches(profile, newMatches)) return;
 
-            var oldMatches = MatchProfileToConnected(anyActive);
-            ApplyProfileToDevices(anyActive, oldMatches, activate: false);
+            DeactivateProfile(anyActive);
         }
 
         // Case 2 (post-confirm) and Case 3 (no profile active): activate the new one.
         DrawerError = string.Empty;
-        ApplyProfileToDevices(profile, newMatches, activate: true);
+        ApplyProfileToDevices(profile, newMatches);
     }
 
     /// <summary>
@@ -421,14 +459,21 @@ public partial class ProfilesPaneViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Refuse, with the reason in the drawer, when no device matches, or when a matched device
-    /// the profile switches channels on has none of them. That device would be cleared and given
+    /// Refuse, with the reason in the drawer, when the profile cannot find a board it was saved
+    /// from (<see cref="UnresolvedDevice"/>), when no device matches, or when a matched device the
+    /// profile switches channels on has none of them. That device would be cleared and given
     /// nothing while the tile said ACTIVE. A device saved with every channel off is not refused:
     /// clearing it is what the profile asks for.
     /// </summary>
     // Downstream-only: no upstream counterpart.
     private bool RefusedMatches(Profile profile, Dictionary<ProfileDevice, IStreamingDevice> matches)
     {
+        if (UnresolvedDevice(profile, matches) is { } unresolved)
+        {
+            ShowError(profile, unresolved);
+            return true;
+        }
+
         if (matches.Count == 0)
         {
             ShowError(profile, "No connected devices match this profile.");
@@ -441,14 +486,31 @@ public partial class ProfilesPaneViewModel : ObservableObject
             return true;
         }
 
+        if (matches.Select(m => AmbiguousOlderEntry(m.Key, m.Value)).FirstOrDefault(n => n != null) is { } ambiguous)
+        {
+            ShowError(profile, AmbiguousChannelMessage(ambiguous));
+            return true;
+        }
+
         return false;
     }
 
     /// <summary>
-    /// Two-pass match: prefer exact serial-number match, fall back to model
-    /// (part-number) match for each <see cref="ProfileDevice"/> in the profile.
-    /// Each connected device is claimed at most once.
+    /// Two-pass match: first the board each <see cref="ProfileDevice"/> was saved from
+    /// (<see cref="IsSavedDevice"/>), then, for an entry that holds no serial number and no MAC
+    /// address, a device of the same model (part number) when the two pair one to one. Each
+    /// connected device is claimed at most once.
     /// </summary>
+    /// <remarks>
+    /// Upstream lets every entry fall back to the first unclaimed device of its model. That guess
+    /// turned on or cleared a board the user did not choose (PR #678 review): an input number finds
+    /// an input on any board of the model, an entry with no channel on clears whatever board it gets,
+    /// and default channel names are the same on every board. So an entry that holds a serial number
+    /// or a MAC address applies only to that board. An entry with neither has nothing to find its
+    /// board by, so it takes a device only when it is the one such entry of its model and that
+    /// device is the one device of the model left. <see cref="UnresolvedDevice"/> says why when an
+    /// entry gets no device.
+    /// </remarks>
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.MatchProfileToConnected
     private static Dictionary<ProfileDevice, IStreamingDevice> MatchProfileToConnected(Profile profile)
     {
@@ -459,39 +521,79 @@ public partial class ProfilesPaneViewModel : ObservableObject
         var result = new Dictionary<ProfileDevice, IStreamingDevice>();
         var connected = ConnectionManager.Instance.ConnectedDevices.ToList();
 
-        foreach (var pd in profile.Devices)
+        void Claim(ProfileDevice pd, IStreamingDevice device)
         {
-            var exact = connected.FirstOrDefault(cd =>
-                !string.IsNullOrEmpty(pd.DeviceSerialNo) &&
-                DeviceSerials.SameDevice(cd.DeviceSerialNo, pd.DeviceSerialNo) &&
-                !claimed.Contains(cd));
-            if (exact != null)
-            {
-                result[pd] = exact;
-                claimed.Add(exact);
-            }
+            result[pd] = device;
+            claimed.Add(device);
         }
 
         foreach (var pd in profile.Devices)
         {
-            if (result.ContainsKey(pd)) continue;
-            var modelMatch = connected.FirstOrDefault(cd =>
-                cd.DevicePartNumber == pd.DevicePartName && !claimed.Contains(cd));
-            if (modelMatch != null)
-            {
-                result[pd] = modelMatch;
-                claimed.Add(modelMatch);
-            }
+            var exact = connected.FirstOrDefault(cd => IsSavedDevice(pd, cd) && !claimed.Contains(cd));
+            if (exact != null) Claim(pd, exact);
+        }
+
+        var unidentified = profile.Devices
+            .Where(pd => !result.ContainsKey(pd) && !HasDeviceIdentity(pd))
+            .GroupBy(pd => pd.DevicePartName);
+        foreach (var entries in unidentified)
+        {
+            var candidates = connected
+                .Where(cd => cd.DevicePartNumber == entries.Key && !claimed.Contains(cd))
+                .ToList();
+            if (entries.Count() == 1 && candidates.Count == 1) Claim(entries.Single(), candidates[0]);
         }
 
         return result;
     }
 
     /// <summary>
-    /// Apply the channel + frequency intent of a profile to its matched devices.
-    /// Both directions first clear the device with <see cref="ClearDevice"/>. Activating then sets
-    /// the streaming frequency, adds the profile's active channels and subscribes them.
-    /// Flips <see cref="Profile.IsProfileActive"/> last.
+    /// Whether a connected device is the board a profile entry was saved from: the same serial
+    /// number or, when the entry holds no serial, the same MAC address.
+    /// </summary>
+    /// <remarks>
+    /// The MAC address is compared by Core's <see cref="Daqifi.Core.Device.DeviceIdentity"/>, the
+    /// rule <c>ConnectionManager</c> and <see cref="AbstractChannel.IsSameInput"/> use to tell two
+    /// boards with no serial apart, so the separator spelling does not matter. The serial stays on
+    /// <see cref="DeviceSerials.SameDevice"/>, which never reads a stored serial as hex (#553).
+    /// </remarks>
+    // Downstream-only: upstream matches the serial number only.
+    private static bool IsSavedDevice(ProfileDevice pd, IStreamingDevice device) =>
+        !string.IsNullOrWhiteSpace(pd.DeviceSerialNo)
+            ? DeviceSerials.SameDevice(device.DeviceSerialNo, pd.DeviceSerialNo)
+            : Daqifi.Core.Device.DeviceIdentity.Create(null, pd.MacAddress)
+                .Matches(Daqifi.Core.Device.DeviceIdentity.Create(null, device.MacAddress));
+
+    /// <summary>Whether a profile entry holds a serial number or a MAC address to find its board by.</summary>
+    // Downstream-only: no upstream counterpart.
+    private static bool HasDeviceIdentity(ProfileDevice pd) =>
+        !Daqifi.Core.Device.DeviceIdentity.Create(pd.DeviceSerialNo, pd.MacAddress).IsEmpty;
+
+    /// <summary>
+    /// Why activation must stop at a board the profile cannot find, or <see langword="null"/>. It
+    /// stops when an entry has no matched device while a device of that entry's model is left over:
+    /// the upstream fall back would have guessed that device, which
+    /// <see cref="MatchProfileToConnected"/> no longer does. When no device of the model is left
+    /// over, the entry's board is only away, and the profile's other devices still apply (#530).
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    private static string? UnresolvedDevice(Profile profile, Dictionary<ProfileDevice, IStreamingDevice> matches)
+    {
+        var leftOver = ConnectionManager.Instance.ConnectedDevices
+            .Where(cd => !matches.Values.Any(m => ReferenceEquals(m, cd)))
+            .ToList();
+        var unresolved = profile.Devices.FirstOrDefault(pd =>
+            !matches.ContainsKey(pd) && leftOver.Any(cd => cd.DevicePartNumber == pd.DevicePartName));
+        if (unresolved == null) return null;
+
+        return HasDeviceIdentity(unresolved) ? SavedDeviceNotConnectedMessage(unresolved) : WhichDeviceMessage;
+    }
+
+    /// <summary>
+    /// Apply the channel + frequency intent of a profile to its matched devices: clear each device
+    /// with <see cref="ClearDevice"/>, then set the streaming frequency, add the profile's active
+    /// channels and subscribe them. Records the devices in <see cref="Profile.ActivatedDevices"/>
+    /// and flips <see cref="Profile.IsProfileActive"/> last.
     /// </summary>
     /// <remarks>
     /// Activation clears first because a profile is the device's whole channel set, not an
@@ -501,26 +603,62 @@ public partial class ProfilesPaneViewModel : ObservableObject
     /// on before stayed active and subscribed in the app.
     /// </remarks>
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.ApplyProfileToDevices
-    private void ApplyProfileToDevices(
-        Profile profile,
-        Dictionary<ProfileDevice, IStreamingDevice> matches,
-        bool activate)
+    private void ApplyProfileToDevices(Profile profile, Dictionary<ProfileDevice, IStreamingDevice> matches)
     {
         foreach (var (pd, device) in matches)
         {
             ClearDevice(device);
-            if (!activate) continue;
-
             var channels = ResolveChannels(pd, device);
             device.StreamingFrequency = pd.SamplingFrequency;
             device.AddChannels(channels);
             foreach (var ch in channels) LoggingManager.Instance.Subscribe(ch);
         }
 
-        profile.IsProfileActive = activate;
-        _logger.AddBreadcrumb("profile",
-            $"Profile {(activate ? "activated" : "deactivated")}: {profile.Name}");
+        profile.ActivatedDevices.Clear();
+        profile.ActivatedDevices.AddRange(matches.Values);
+        profile.IsProfileActive = true;
+        _logger.AddBreadcrumb("profile", $"Profile activated: {profile.Name}");
     }
+
+    /// <summary>
+    /// Switch a profile off: clear, with <see cref="ClearDevice"/>, each connected device that its
+    /// activation configured (<see cref="IsSameBoard"/>), then flip
+    /// <see cref="Profile.IsProfileActive"/>. When a device it configured is no longer connected,
+    /// the status line says so, because no other device changes in its place.
+    /// </summary>
+    /// <remarks>
+    /// This used to match the profile to the connected devices again. A board with no serial number
+    /// and no MAC address cannot be found that way once a second such board is connected (the
+    /// profile went off and left its inputs on), or once it is replaced (the profile went off and
+    /// cleared the replacement) (PR #678 review).
+    /// </remarks>
+    // Downstream-only: split from ApplyProfileToDevices, which upstream also uses to deactivate.
+    private void DeactivateProfile(Profile profile)
+    {
+        var connected = ConnectionManager.Instance.ConnectedDevices.ToList();
+        var anyGone = profile.ActivatedDevices.Any(activated => !connected.Any(cd => IsSameBoard(activated, cd)));
+        foreach (var device in connected.Where(cd => profile.ActivatedDevices.Any(activated => IsSameBoard(activated, cd))))
+        {
+            ClearDevice(device);
+        }
+
+        profile.ActivatedDevices.Clear();
+        profile.IsProfileActive = false;
+        if (anyGone) Notice = ActivatedDeviceGoneNotice;
+        _logger.AddBreadcrumb("profile", $"Profile deactivated: {profile.Name}");
+    }
+
+    /// <summary>
+    /// Whether a connected device is a device the profile's activation configured: the same device
+    /// object, or the same board connected again, by the rule <c>ConnectionManager</c> uses to tell
+    /// boards apart (Core's <see cref="Daqifi.Core.Device.DeviceIdentity"/>). A board with no
+    /// serial number and no MAC address is only ever the same device object.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    private static bool IsSameBoard(IStreamingDevice activated, IStreamingDevice device) =>
+        ReferenceEquals(activated, device)
+        || Daqifi.Core.Device.DeviceIdentity.Create(activated.DeviceSerialNo, activated.MacAddress)
+            .Matches(Daqifi.Core.Device.DeviceIdentity.Create(device.DeviceSerialNo, device.MacAddress));
 
     /// <summary>
     /// Switch every channel on the device off, in the app and on the board. Every active channel,
@@ -540,15 +678,42 @@ public partial class ProfilesPaneViewModel : ObservableObject
     }
 
     /// <summary>The connected device's channels that a profile entry switches on.</summary>
+    /// <remarks>
+    /// An entry that holds the input number it captured resolves by type and input number: the name
+    /// is a label, and two channels can share one, so by name a profile that captured only the
+    /// second of two channels named Temp turned on the first (PR #678 review). An entry from a file
+    /// saved before the number was stored resolves by name and type, as before. Each entry claims a
+    /// channel no earlier entry claimed, so two such entries of one name turn on two inputs (#670);
+    /// <see cref="AmbiguousOlderEntry"/> refuses the case where a name alone cannot say which.
+    /// </remarks>
     // Downstream-only: extracted from ApplyProfileToDevices so activation can check it first.
-    private static List<IChannel> ResolveChannels(ProfileDevice pd, IStreamingDevice device) =>
+    private static List<IChannel> ResolveChannels(ProfileDevice pd, IStreamingDevice device)
+    {
+        var resolved = new List<IChannel>();
+        foreach (var entry in pd.Channels.Where(c => c.IsChannelActive))
+        {
+            var channel = device.DataChannels.FirstOrDefault(x =>
+                x.TypeString == entry.Type.Trim()
+                && (entry.Index is int index ? x.Index == index : x.Name == entry.Name.Trim())
+                && !resolved.Contains(x));
+            if (channel != null) resolved.Add(channel);
+        }
+
+        return resolved;
+    }
+
+    /// <summary>
+    /// The name of an older entry (one with no input number) that more channels of the device carry
+    /// than the profile has entries for, or <see langword="null"/> when there is none. Such an entry
+    /// cannot say which input it means, so activation refuses it rather than turn on the first.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    private static string? AmbiguousOlderEntry(ProfileDevice pd, IStreamingDevice device) =>
         pd.Channels
-            .Where(c => c.IsChannelActive)
-            .Select(c => device.DataChannels.FirstOrDefault(x =>
-                x.Name == c.Name.Trim() && x.TypeString == c.Type.Trim()))
-            .Where(c => c != null)
-            .Cast<IChannel>()
-            .ToList();
+            .Where(c => c.IsChannelActive && c.Index is null)
+            .GroupBy(c => (Name: c.Name.Trim(), Type: c.Type.Trim()))
+            .FirstOrDefault(g => device.DataChannels.Count(x => x.Name == g.Key.Name && x.TypeString == g.Key.Type) > g.Count())
+            ?.Key.Name;
 
     /// <summary>Whether a profile entry switches on any channel at all.</summary>
     // Downstream-only: no upstream counterpart.
@@ -631,6 +796,7 @@ public partial class ProfilesPaneViewModel : ObservableObject
                 {
                     Name = channelItem.Channel.Name,
                     Type = channelItem.Channel.TypeString,
+                    Index = channelItem.Channel.Index,
                     IsChannelActive = true,
                     SerialNo = channelItem.Channel.DeviceSerialNo,
                 });
@@ -691,6 +857,7 @@ public partial class ProfilesPaneViewModel : ObservableObject
                     {
                         Name = c.Name,
                         Type = c.TypeString,
+                        Index = c.Index,
                         IsChannelActive = true,
                         SerialNo = c.DeviceSerialNo,
                     })

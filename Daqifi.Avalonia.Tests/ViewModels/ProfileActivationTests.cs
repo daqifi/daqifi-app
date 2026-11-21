@@ -86,14 +86,15 @@ public sealed class ProfileActivationTests : IDisposable
             Sent.Last(s => s.StartsWith("ENAble:VOLTage:DC ", StringComparison.Ordinal))["ENAble:VOLTage:DC ".Length..];
     }
 
-    private BenchDevice Connect(string serial, string channelPrefix = "AI", int channelCount = 4)
+    private BenchDevice Connect(
+        string serial, int channelCount = 4, string macAddress = "", string? name = null, string partNumber = "Nq1")
     {
-        var device = new BenchDevice { Name = serial, DeviceSerialNo = serial };
+        var device = new BenchDevice { Name = name ?? serial, DeviceSerialNo = serial, MacAddress = macAddress };
         device.Metadata.Capabilities = new DeviceCapabilities { MaxSamplingRate = 1000 };
-        device.Metadata.PartNumber = "Nq1";
+        device.Metadata.PartNumber = partNumber;
         for (var i = 0; i < channelCount; i++)
         {
-            device.DataChannels.Add(new AnalogChannel(device, new CoreAnalogChannel(i)) { Name = $"{channelPrefix}{i}" });
+            device.DataChannels.Add(new AnalogChannel(device, new CoreAnalogChannel(i)) { Name = $"AI{i}" });
         }
         ConnectionManager.Instance.RegisterConnectedDevice(device);
         _registered.Add(device);
@@ -197,6 +198,477 @@ public sealed class ProfileActivationTests : IDisposable
     }
 
     /// <summary>
+    /// #670 through a profile: two channels the user gave one name, both switched on and captured.
+    /// Activating the profile must switch on both inputs, not the first of them twice.
+    /// </summary>
+    [Fact]
+    public async Task A_profile_with_two_channels_of_one_name_switches_on_both_inputs()
+    {
+        var device = Connect("PROFILE-DUP-1");
+        var temps = device.DataChannels.Skip(2).ToList();   // AI2 and AI3
+        foreach (var channel in temps)
+        {
+            channel.Name = "Temp";
+            device.AddChannel(channel);
+            LoggingManager.Instance.Subscribe(channel);
+        }
+        var profile = CaptureCurrentSettings("Two of one name");
+        foreach (var channel in temps)
+        {
+            LoggingManager.Instance.Unsubscribe(channel);
+            device.RemoveChannel(channel);
+        }
+
+        await Activate(profile);
+
+        Assert.True(profile.IsProfileActive);
+        Assert.Equal("12", device.LastAdcMask()); // AI2 | AI3
+        Assert.All(temps, channel => Assert.True(channel.IsActive));
+        Assert.Equal(2, LoggingManager.Instance.SubscribedChannels.Count(c => temps.Any(t => ReferenceEquals(t, c))));
+    }
+
+    /// <summary>
+    /// PR #678 review: AI0 and AI1 both named Temp, only AI1 on when the profile is captured. The
+    /// profile must turn on AI1, the input it captured, and not the first channel with that name.
+    /// </summary>
+    [Fact]
+    public async Task A_profile_with_one_of_two_same_named_channels_turns_on_the_input_it_captured()
+    {
+        var device = Connect("PROFILE-DUP-2");
+        device.DataChannels[0].Name = "Temp";
+        device.DataChannels[1].Name = "Temp";
+        device.AddChannel(device.DataChannels[1]);
+        LoggingManager.Instance.Subscribe(device.DataChannels[1]);
+        var profile = CaptureCurrentSettings("One of two of one name");
+        LoggingManager.Instance.Unsubscribe(device.DataChannels[1]);
+        device.RemoveChannel(device.DataChannels[1]);
+
+        await Activate(profile);
+
+        Assert.True(profile.IsProfileActive);
+        Assert.Equal("2", device.LastAdcMask()); // AI1, as captured
+        Assert.False(device.DataChannels[0].IsActive);
+        Assert.True(device.DataChannels[1].IsActive);
+    }
+
+    /// <summary>The same through the profiles file: the input survives the save and the load.</summary>
+    [Fact]
+    public async Task A_profile_read_back_from_the_file_turns_on_the_input_it_captured()
+    {
+        var device = Connect("PROFILE-DUP-3");
+        device.DataChannels[0].Name = "Temp";
+        device.DataChannels[1].Name = "Temp";
+        device.AddChannel(device.DataChannels[1]);
+        LoggingManager.Instance.Subscribe(device.DataChannels[1]);
+        var saved = CaptureCurrentSettings("One of two of one name, from the file");
+        LoggingManager.Instance.Unsubscribe(device.DataChannels[1]);
+        device.RemoveChannel(device.DataChannels[1]);
+
+        LoggingManager.Instance.LoadProfilesFromXml();
+        var reloaded = LoggingManager.Instance.SubscribedProfiles.Single(p => p.ProfileId == saved.ProfileId);
+        Assert.NotSame(saved, reloaded);
+        await Activate(reloaded);
+
+        Assert.Equal("2", device.LastAdcMask());
+        Assert.True(device.DataChannels[1].IsActive);
+        Assert.False(device.DataChannels[0].IsActive);
+    }
+
+    /// <summary>
+    /// A profile saved before input numbers were stored names a channel only by its name. When two
+    /// channels now have that name, the app cannot tell which input the profile means. It must say
+    /// so and change nothing, not turn on the first of them.
+    /// </summary>
+    [Fact]
+    public async Task An_older_profile_that_names_one_of_two_same_named_channels_is_refused_with_the_reason()
+    {
+        var device = Connect("PROFILE-OLD-1");
+        device.DataChannels[0].Name = "Temp";
+        device.DataChannels[1].Name = "Temp";
+        var profile = OlderProfile("Older, ambiguous", device, "Temp");
+
+        await Activate(profile);
+
+        Assert.False(profile.IsProfileActive);
+        Assert.Contains("Temp", _pane.DrawerError, StringComparison.Ordinal);
+        Assert.DoesNotContain(device.DataChannels, c => c.IsActive);
+    }
+
+    /// <summary>
+    /// The new-profile drawer is the other way to make a profile. With two channels named Temp and
+    /// only the second chosen, the profile must turn on the second.
+    /// </summary>
+    [Fact]
+    public async Task A_new_profile_with_one_of_two_same_named_channels_turns_on_the_input_chosen()
+    {
+        var device = Connect("PROFILE-DUP-NEW");
+        device.DataChannels[0].Name = "Temp";
+        device.DataChannels[1].Name = "Temp";
+        var profile = SaveNewProfile("New, one of two of one name", device, device.DataChannels[1]);
+
+        await Activate(profile);
+
+        Assert.Equal("2", device.LastAdcMask());
+        Assert.False(device.DataChannels[0].IsActive);
+        Assert.True(device.DataChannels[1].IsActive);
+    }
+
+    /// <summary>
+    /// The new-profile drawer: choose one connected device and some of its channels, and save.
+    /// Every other device stays unchosen.
+    /// </summary>
+    private Profile SaveNewProfile(string name, IStreamingDevice device, params IChannel[] channels)
+    {
+        _pane.OpenNewDrawerCommand.Execute(null);
+        var item = _pane.NewDeviceItems.Single(d => ReferenceEquals(d.Device, device));
+        item.IsSelected = true;
+        foreach (var channelItem in item.ChannelItems)
+        {
+            channelItem.IsSelected = channels.Any(c => ReferenceEquals(c, channelItem.Channel));
+        }
+        _pane.NewProfileName = name;
+        var before = LoggingManager.Instance.SubscribedProfiles.ToList();
+        _pane.SaveNewProfileCommand.Execute(null);
+        return LoggingManager.Instance.SubscribedProfiles.Except(before).Single();
+    }
+
+    /// <summary>
+    /// PR #678 review, round 2: two boards of one model, AI1 named differently on each. The
+    /// new-profile drawer saves only the second board's AI1, and the profile is read back from the
+    /// file. Activation must turn on AI1 of the board the profile was saved from, and leave the
+    /// first board as it was. Boards with no serial number are told apart by the MAC address the
+    /// profile stores. Without that, activation fell back to the first board of the model, where
+    /// the input number alone found an AI1.
+    /// </summary>
+    [Theory]
+    [InlineData("", "AA-BB-CC-00-00-01", "", "AA-BB-CC-00-00-02")]  // no serial: the reviewer's case
+    [InlineData("PROFILE-TWO-1", "", "PROFILE-TWO-2", "")]          // serial numbers
+    public async Task A_new_profile_from_the_second_of_two_boards_turns_on_that_board(
+        string firstSerial, string firstMac, string secondSerial, string secondMac)
+    {
+        var first = Connect(firstSerial, macAddress: firstMac, name: "Nq1 left");
+        var second = Connect(secondSerial, macAddress: secondMac, name: "Nq1 right");
+        first.DataChannels[1].Name = "Left";
+        second.DataChannels[1].Name = "Right";
+        var saved = SaveNewProfile("Second board, AI1", second, second.DataChannels[1]);
+
+        LoggingManager.Instance.LoadProfilesFromXml();
+        var profile = LoggingManager.Instance.SubscribedProfiles.Single(p => p.ProfileId == saved.ProfileId);
+        Assert.NotSame(saved, profile);
+        Assert.Equal(secondMac, profile.Devices.Single().MacAddress);
+        await Activate(profile);
+
+        Assert.DoesNotContain(first.DataChannels, c => c.IsActive);
+        Assert.DoesNotContain(first.Sent, s => s.StartsWith("ENAble:VOLTage:DC ", StringComparison.Ordinal));
+        Assert.True(profile.IsProfileActive);
+        Assert.Equal("2", second.LastAdcMask()); // AI1 of the board the profile was saved from
+        Assert.True(second.DataChannels[1].IsActive);
+    }
+
+    /// <summary>
+    /// The board a profile was saved from is not connected, and another board of its model is. The
+    /// profile must not guess that board: activation is refused with the reason, which names the
+    /// board, and the other board stays as it was. Once for a board found by serial number, once
+    /// for a board with no serial, found by MAC address.
+    /// </summary>
+    [Theory]
+    [InlineData("PROFILE-AWAY-1", "", "PROFILE-AWAY-2", "", "PROFILE-AWAY-1")]
+    [InlineData("", "AA-BB-CC-00-00-11", "", "AA-BB-CC-00-00-12", "AA-BB-CC-00-00-11")]
+    public async Task A_profile_whose_board_is_not_connected_does_not_change_another_board(
+        string savedSerial, string savedMac, string otherSerial, string otherMac, string named)
+    {
+        var saved = Connect(savedSerial, macAddress: savedMac, name: "Nq1 saved");
+        var other = Connect(otherSerial, macAddress: otherMac, name: "Nq1 other");
+        var profile = SaveNewProfile("Board away", saved, saved.DataChannels[1]);
+        Disconnect(saved);
+        Enable(other, "AI3");
+
+        await Activate(profile);
+
+        Assert.Equal(["AI3"], ActiveNames(other));
+        Assert.Equal(["AI3"], SubscribedNames(other));
+        Assert.False(profile.IsProfileActive);
+        Assert.Contains("is not connected", _pane.DrawerError, StringComparison.Ordinal);
+        Assert.Contains(named, _pane.DrawerError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A board that reports no serial number and no MAC address leaves a profile nothing to find it
+    /// by. With one such board connected, it is the board: a reconnect (a new device object) still
+    /// gets the profile. With two of them, the profile cannot say which, so it is refused and
+    /// neither board changes.
+    /// </summary>
+    [Fact]
+    public async Task A_profile_from_a_board_with_no_identifier_applies_to_the_only_board_and_refuses_two()
+    {
+        var board = Connect(string.Empty, name: "Nq1 bare");
+        var profile = SaveNewProfile("Bare board", board, board.DataChannels[1]);
+        Disconnect(board);
+        var again = Connect(string.Empty, name: "Nq1 bare");
+
+        await Activate(profile);
+
+        Assert.True(profile.IsProfileActive);
+        Assert.Equal("2", again.LastAdcMask());
+        await Activate(profile); // toggle off
+
+        var another = Connect(string.Empty, name: "Nq1 bare");
+        Enable(again, "AI0");
+        Enable(another, "AI3");
+        await Activate(profile);
+
+        Assert.Equal(["AI0"], ActiveNames(again));
+        Assert.Equal(["AI3"], ActiveNames(another));
+        Assert.False(profile.IsProfileActive);
+        Assert.Contains("cannot tell which", _pane.DrawerError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// PR #678 review, round 3: a profile captured with every input off on one board holds no
+    /// channels, so nothing in it can check a board by name. With that board away and another board
+    /// of the model connected, activation must not clear the other board. Captured, read back from
+    /// the file, then activated.
+    /// </summary>
+    [Fact]
+    public async Task A_profile_captured_all_off_does_not_clear_another_board()
+    {
+        var saved = Connect("PROFILE-ALLOFF-1");
+        var captured = CaptureCurrentSettings("All off");
+        Disconnect(saved);
+        var other = Connect("PROFILE-ALLOFF-2");
+        Enable(other, "AI3");
+
+        LoggingManager.Instance.LoadProfilesFromXml();
+        var profile = LoggingManager.Instance.SubscribedProfiles.Single(p => p.ProfileId == captured.ProfileId);
+        Assert.Empty(profile.Devices.Single().Channels);
+        await Activate(profile);
+
+        Assert.Equal(["AI3"], ActiveNames(other));
+        Assert.Equal(["AI3"], SubscribedNames(other));
+        Assert.False(profile.IsProfileActive);
+        Assert.Contains("PROFILE-ALLOFF-1", _pane.DrawerError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// An older profile (names only) holds the serial number of its board too, and applies only to
+    /// that board. Default channel names are the same on every board, so a name does not tell boards
+    /// apart. With the board away and another board of the model connected, activation is refused
+    /// and the other board stays as it was: once with AI1 on, once with every channel switched off
+    /// in the editor.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task An_older_profile_whose_board_is_not_connected_does_not_change_another_board(bool everyChannelOff)
+    {
+        var saved = Connect("PROFILE-OLDAWAY-1");
+        var profile = OlderProfile("Older, board away", saved, "AI1");
+        profile.Devices[0].Channels[0].IsChannelActive = !everyChannelOff;
+        Disconnect(saved);
+        var other = Connect("PROFILE-OLDAWAY-2");
+        Enable(other, "AI3");
+
+        await Activate(profile);
+
+        Assert.Equal(["AI3"], ActiveNames(other));
+        Assert.False(profile.IsProfileActive);
+        Assert.Contains("PROFILE-OLDAWAY-1", _pane.DrawerError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// PR #678 review, round 3: two boards with no serial number and no MAC address, AI1 on the
+    /// first and AI3 on the second, captured together. With the first board away, one board is left
+    /// and two saved entries could each own it. The profile cannot tell which, so activation is
+    /// refused and the board keeps AI3. Profile order used to decide, and AI1 replaced AI3.
+    /// </summary>
+    [Fact]
+    public async Task Two_saved_boards_with_no_identifier_do_not_compete_for_the_one_left()
+    {
+        var first = Connect(string.Empty, name: "Nq1 bare");
+        var second = Connect(string.Empty, name: "Nq1 bare");
+        Enable(first, "AI1");
+        Enable(second, "AI3");
+        var profile = CaptureCurrentSettings("Two bare boards");
+        Disable(first, "AI1");
+        Disconnect(first);
+
+        await Activate(profile);
+
+        Assert.Equal(["AI3"], ActiveNames(second));
+        Assert.Equal(["AI3"], SubscribedNames(second));
+        Assert.False(profile.IsProfileActive);
+        Assert.Contains("cannot tell which", _pane.DrawerError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// PR #678 review, round 4: a profile is on for a board with no serial number and no MAC
+    /// address, and then a second such board is connected. Turning the profile off, or switching to
+    /// another profile, must still turn off the board the profile turned on. Matching again cannot
+    /// say which of the two boards that was, and the old code left AI1 on while the tile said off.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Turning_a_profile_off_turns_off_the_board_it_turned_on_after_a_second_board_connects(bool bySwitching)
+    {
+        var board = Connect(string.Empty, name: "Nq1 bare");
+        var other = Connect("PROFILE-OFF2-S", partNumber: "Nq3");
+        var profile = SaveNewProfile("Bare board on", board, board.DataChannels[1]);
+        var otherProfile = SaveNewProfile("Other model", other, other.DataChannels[2]);
+        await Activate(profile);
+        Assert.Equal(["AI1"], ActiveNames(board));
+
+        Connect(string.Empty, name: "Nq1 bare");
+        if (bySwitching)
+        {
+            var switching = Activate(otherProfile);
+            _pane.ConfirmOverlay.AffirmativeCommand.Execute(null);
+            await switching;
+            Assert.True(otherProfile.IsProfileActive);
+        }
+        else
+        {
+            await Activate(profile); // the same tile again: toggle off
+        }
+
+        Assert.False(profile.IsProfileActive);
+        Assert.Empty(ActiveNames(board));
+        Assert.Empty(SubscribedNames(board));
+        Assert.False(_pane.HasNotice);
+    }
+
+    /// <summary>
+    /// The other half: the board the profile turned on is replaced by another board with no
+    /// identifier, which the user gives AI3. Turning the profile off must not clear the replacement,
+    /// which the profile never turned on, and the status line says why nothing changed.
+    /// </summary>
+    [Fact]
+    public async Task Turning_a_profile_off_does_not_clear_a_board_that_replaced_the_one_it_turned_on()
+    {
+        var board = Connect(string.Empty, name: "Nq1 bare");
+        var profile = SaveNewProfile("Bare board on", board, board.DataChannels[1]);
+        await Activate(profile);
+        Disable(board, "AI1");
+        Disconnect(board);
+        var replacement = Connect(string.Empty, name: "Nq1 bare");
+        Enable(replacement, "AI3");
+
+        await Activate(profile); // the same tile again: toggle off
+
+        Assert.Equal(["AI3"], ActiveNames(replacement));
+        Assert.Equal(["AI3"], SubscribedNames(replacement));
+        Assert.False(profile.IsProfileActive);
+        Assert.Equal(ProfilesPaneViewModel.ActivatedDeviceGoneNotice, _pane.Notice);
+    }
+
+    /// <summary>
+    /// A board with a serial number that disconnects and connects again is a new device object but
+    /// the same board, so turning the profile off still clears it, as it clears every channel on
+    /// the profile's board (#529 audit).
+    /// </summary>
+    [Fact]
+    public async Task Turning_a_profile_off_still_clears_its_board_after_a_reconnect()
+    {
+        var first = Connect("PROFILE-RECON-1");
+        var profile = SaveNewProfile("Reconnect", first, first.DataChannels[1]);
+        await Activate(profile);
+        Disable(first, "AI1");
+        Disconnect(first);
+        var again = Connect("PROFILE-RECON-1");
+        Enable(again, "AI3");
+
+        await Activate(profile); // the same tile again: toggle off
+
+        Assert.False(profile.IsProfileActive);
+        Assert.Empty(ActiveNames(again));
+        Assert.Empty(SubscribedNames(again));
+        Assert.False(_pane.HasNotice);
+    }
+
+    /// <summary>
+    /// An older profile (no input numbers) from a board with no serial also looks for its board by
+    /// MAC address first, so its channel names are checked on the right board.
+    /// </summary>
+    [Fact]
+    public async Task An_older_profile_from_a_board_with_no_serial_finds_its_board_by_MAC_address()
+    {
+        var first = Connect(string.Empty, macAddress: "AA-BB-CC-00-00-21", name: "Nq1 left");
+        var second = Connect(string.Empty, macAddress: "AA-BB-CC-00-00-22", name: "Nq1 right");
+        var profile = OlderProfile("Older, second board", second, "AI1");
+
+        await Activate(profile);
+
+        Assert.DoesNotContain(first.DataChannels, c => c.IsActive);
+        Assert.True(profile.IsProfileActive);
+        Assert.Equal("2", second.LastAdcMask());
+    }
+
+    /// <summary>
+    /// An older profile with as many entries of one name as the device has channels of that name is
+    /// not ambiguous: each entry claims one, and both inputs are turned on (#670).
+    /// </summary>
+    [Fact]
+    public async Task An_older_profile_with_two_entries_for_two_same_named_channels_turns_on_both()
+    {
+        var device = Connect("PROFILE-OLD-3");
+        device.DataChannels[2].Name = "Temp";
+        device.DataChannels[3].Name = "Temp";
+        var profile = OlderProfile("Older, two of one name", device, "Temp", "Temp");
+
+        await Activate(profile);
+
+        Assert.True(profile.IsProfileActive);
+        Assert.Equal("12", device.LastAdcMask()); // AI2 | AI3
+    }
+
+    /// <summary>An older profile whose names are unique on the device still applies by name.</summary>
+    [Fact]
+    public async Task An_older_profile_with_unique_names_still_applies_by_name()
+    {
+        var device = Connect("PROFILE-OLD-2");
+        var profile = OlderProfile("Older, unique", device, "AI2");
+
+        await Activate(profile);
+
+        Assert.True(profile.IsProfileActive);
+        Assert.Equal("4", device.LastAdcMask()); // AI2
+    }
+
+    /// <summary>
+    /// A profile in the shape files had before input numbers were stored: each channel entry holds
+    /// only a name and a type.
+    /// </summary>
+    private static Profile OlderProfile(string name, IStreamingDevice device, params string[] channelNames)
+    {
+        var profile = new Profile
+        {
+            Name = name,
+            ProfileId = Guid.NewGuid(),
+            CreatedOn = DateTime.Now,
+            Devices =
+            [
+                new ProfileDevice
+                {
+                    DeviceName = device.Name,
+                    DevicePartName = device.DevicePartNumber,
+                    DeviceSerialNo = device.DeviceSerialNo,
+                    MacAddress = device.MacAddress,
+                    SamplingFrequency = 100,
+                    Channels = [.. channelNames.Select(n => new ProfileChannel
+                    {
+                        Name = n,
+                        Type = "Analog Input",
+                        IsChannelActive = true,
+                        SerialNo = device.DeviceSerialNo,
+                    })],
+                },
+            ],
+        };
+        Assert.True(LoggingManager.Instance.SubscribeProfile(profile));
+        return profile;
+    }
+
+    /// <summary>
     /// The same round trip through the file: the profile activated is the one read back from the
     /// profiles XML, which is what a profile saved in an earlier session is. Passes on the unfixed
     /// code too; it pins that the save and the load agree, which the issue asked to be checked.
@@ -260,21 +732,24 @@ public sealed class ProfileActivationTests : IDisposable
     [Fact]
     public async Task A_profile_whose_channels_match_nothing_is_refused_with_the_reason()
     {
-        var original = Connect("PROFILE-MISS-1");
-        Enable(original, "AI0");
+        var original = Connect(string.Empty, name: "Nq1 bare");
+        Enable(original, "AI3");
         var profile = CaptureCurrentSettings("Bench other model");
-        Disable(original, "AI0");
+        Disable(original, "AI3");
         Disconnect(original);
 
-        // Same part number, so the model fallback matches it; different channel names.
-        var other = Connect("PROFILE-MISS-2", channelPrefix: "CH");
-        Enable(other, "CH1");
+        // No serial and no MAC on either board, and one device of the model, so the model fallback
+        // pairs it with the profile; it has no input 3. (Since PR #678 an entry that holds a serial
+        // number or a MAC address applies only to that board, so this is the one way left to reach
+        // the fallback.)
+        var other = Connect(string.Empty, channelCount: 2, name: "Nq1 bare");
+        Enable(other, "AI1");
 
         await Activate(profile);
 
         Assert.False(profile.IsProfileActive);
-        Assert.Equal(["CH1"], ActiveNames(other));
-        Assert.Equal(["CH1"], SubscribedNames(other));
+        Assert.Equal(["AI1"], ActiveNames(other));
+        Assert.Equal(["AI1"], SubscribedNames(other));
         Assert.Equal(ProfilesPaneViewModel.NoChannelsMatchedMessage, _pane.DrawerError);
     }
 
@@ -295,16 +770,17 @@ public sealed class ProfileActivationTests : IDisposable
         Disable(y, "AI1");
         Disconnect(y);
 
-        // Same serial, so it matches Y's entry, but its channels are named differently.
-        var renamed = Connect("PROFILE-PER-Y", channelPrefix: "CH");
-        Enable(renamed, "CH2");
+        // Same serial, so it matches Y's entry, but it has no input 1. (This used to give it other
+        // channel names; see the note in the test above.)
+        var renamed = Connect("PROFILE-PER-Y", channelCount: 1);
+        Enable(renamed, "AI0");
         Enable(x, "AI3");
 
         await Activate(profile);
 
         Assert.False(profile.IsProfileActive);
         Assert.Equal(["AI3"], ActiveNames(x));
-        Assert.Equal(["CH2"], ActiveNames(renamed));
+        Assert.Equal(["AI0"], ActiveNames(renamed));
         Assert.Equal(ProfilesPaneViewModel.NoChannelsMatchedMessage, _pane.DrawerError);
     }
 
@@ -329,6 +805,32 @@ public sealed class ProfileActivationTests : IDisposable
         Assert.Empty(ActiveNames(y));
         Assert.Empty(SubscribedNames(y));
         Assert.Equal(string.Empty, _pane.DrawerError);
+    }
+
+    /// <summary>
+    /// The same while a device of a different model is connected too. Only a device of the away
+    /// board's own model could be a guess for it, so the profile still applies (PR #678 review), and
+    /// the other model's device stays as it was.
+    /// </summary>
+    [Fact]
+    public async Task A_device_of_another_model_does_not_stop_a_profile_whose_other_board_is_away()
+    {
+        var x = Connect("PROFILE-MODEL-X");
+        var y = Connect("PROFILE-MODEL-Y");
+        Enable(x, "AI0");
+        var profile = CaptureCurrentSettings("Other model connected");
+        Disable(x, "AI0");
+        Disconnect(x);
+        var otherModel = Connect("PROFILE-MODEL-Z", partNumber: "Nq3");
+        Enable(otherModel, "AI2");
+        Enable(y, "AI2");
+
+        await Activate(profile);
+
+        Assert.Equal(string.Empty, _pane.DrawerError);
+        Assert.True(profile.IsProfileActive);
+        Assert.Empty(ActiveNames(y));
+        Assert.Equal(["AI2"], ActiveNames(otherModel));
     }
 
     /// <summary>

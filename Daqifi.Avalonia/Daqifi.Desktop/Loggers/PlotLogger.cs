@@ -615,7 +615,7 @@ public partial class PlotLogger : ObservableObject, ILogger
         if (LoggingManager.Instance != null)
         {
             var subscribedChannel = LoggingManager.Instance.SubscribedChannels
-                .FirstOrDefault(ch => ch.DeviceSerialNo == DeviceSerialNo && ch.Name == channelName);
+                .FirstOrDefault(ch => ch.DeviceSerialNo == DeviceSerialNo && ch.RecordedName == channelName);
 
             if (subscribedChannel != null)
             {
@@ -687,7 +687,9 @@ public partial class PlotLogger : ObservableObject, ILogger
             {
                 foreach (var channel in LoggingManager.Instance.SubscribedChannels)
                 {
-                    var key = (channel.DeviceSerialNo, channel.Name);
+                    // The series is keyed by the name the samples carry, which is not the channel's
+                    // current name after a rename during the session (#668).
+                    var key = (channel.DeviceSerialNo, channel.RecordedName);
                     if (LoggedChannels.TryGetValue(key, out LineSeries series))
                     {
                         if (series.IsVisible != channel.IsVisible)

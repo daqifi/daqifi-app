@@ -7,6 +7,7 @@ using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Device;
 using Daqifi.Desktop.Models;
 using Daqifi.Desktop.Common.Loggers;
+using System.Globalization;
 using System.IO;
 using System.Xml.Linq;
 using System.Collections.ObjectModel;
@@ -14,6 +15,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Avalonia.Threading;
+using ChannelType = Daqifi.Core.Channel.ChannelType;
 
 namespace Daqifi.Desktop.Logger;
 
@@ -189,6 +191,10 @@ public partial class LoggingManager : ObservableObject
                 return;
             }
 
+            // Before the channels are wired back up below, so no sample of this session can carry
+            // another name.
+            FixRecordedNames(SubscribedChannels);
+
             _hasActiveApplicationSession = TryCreateApplicationSession();
             _hasActiveApplicationSamples = false;
 
@@ -198,6 +204,61 @@ public partial class LoggingManager : ObservableObject
             foreach (var channel in SubscribedChannels.ToList())
             {
                 channel.OnChannelUpdated += HandleChannelUpdate;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Fixes the name that each channel's samples carry for the session that is starting.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The live plot, the database, the CSV export and Logged Data all group a session's samples by
+    /// <see cref="DataSample.ChannelName"/>, and a sample used to take it from the channel's name at
+    /// the moment it arrived. The NAME box writes on every keystroke, so a rename during logging gave
+    /// one input one column per keystroke, Logged Data stopped the trace at the rename, and an
+    /// intermediate name equal to another channel's name put this input's readings into that
+    /// channel's column (#668). The name is therefore fixed here, once per session: a rename during
+    /// the session changes the label on the screen, and the next session records the new name.
+    /// </para>
+    /// <para>
+    /// The fixed name is also unique among the channels that share its stored serial number, which is
+    /// the key the database, Logged Data and the live plot use with the name. The database stores no
+    /// channel index, so two channels that the user gave one name would share one column and could
+    /// not be separated again (#670). Grouping by the stored serial, not by device identity, also
+    /// keeps apart two boards that reported no serial number: they share the blank serial. The first of them, in input order, keeps the name, and each other one gets its input's
+    /// label after the name, for example <c>Temp (AI3)</c>. A channel with no name records under its
+    /// input's label.
+    /// </para>
+    /// <para>
+    /// The names stay fixed after the session stops, until the next session fixes them again, so the
+    /// live plot of the session that ended still finds its series when the user hides or shows a
+    /// channel. Nothing else reads them outside a session.
+    /// </para>
+    /// </remarks>
+    internal static void FixRecordedNames(IEnumerable<IChannel> channels)
+    {
+        foreach (var device in channels.GroupBy(c => c.DeviceSerialNo ?? string.Empty, StringComparer.OrdinalIgnoreCase))
+        {
+            var taken = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var channel in device.OrderBy(c => c.Type).ThenBy(c => c.Index))
+            {
+                var label = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{(channel.Type == ChannelType.Digital ? "DIO" : "AI")}{channel.Index}");
+                var name = string.IsNullOrWhiteSpace(channel.Name) ? label : channel.Name;
+                var unique = name;
+                if (!taken.Add(unique))
+                {
+                    // The counter only matters if the user typed that very suffix into another name.
+                    unique = $"{name} ({label})";
+                    for (var n = 2; !taken.Add(unique); n++)
+                    {
+                        unique = string.Create(CultureInfo.InvariantCulture, $"{name} ({label} {n})");
+                    }
+                }
+
+                channel.SetRecordedName(unique);
             }
         }
     }
@@ -715,7 +776,9 @@ public partial class LoggingManager : ObservableObject
                         select new XElement("Channel",
                             new XElement("Name", channel.Name),
                             new XElement("Type", channel.Type),
-                            new XElement("IsActive", channel.IsChannelActive)
+                            new XElement("IsActive", channel.IsChannelActive),
+                            // Left out when unknown, so a file stays in the shape older readers know.
+                            channel.Index is int index ? new XElement("Index", index) : null
                         )
                     ),
                     new XElement("SamplingFrequency", device.SamplingFrequency)
@@ -742,7 +805,9 @@ public partial class LoggingManager : ObservableObject
         {
             var current = _subscribedChannels;
 
-            if (current.Any(x => x.DeviceSerialNo == channel.DeviceSerialNo && x.Name == channel.Name))
+            // By input, not by name: two channels of one device can share a name, and the second one
+            // was skipped here, so nothing it sent was recorded (#670).
+            if (current.Any(x => AbstractChannel.IsSameInput(x, channel)))
             {
                 return;
             }
@@ -769,11 +834,11 @@ public partial class LoggingManager : ObservableObject
 
     /// <summary>
     /// Subscribes <paramref name="channel"/>, first dropping any subscription to a DIFFERENT
-    /// instance of the same device channel (same serial number and name).
+    /// instance of the same input (<see cref="AbstractChannel.IsSameInput"/>).
     /// </summary>
     /// <remarks>
     /// Downstream-only (mobile, #597). <see cref="Subscribe"/> treats a channel as subscribed when
-    /// any entry has its serial number and name, so an instance left over from an earlier
+    /// any entry is the same input, so an instance left over from an earlier
     /// connection to the same board makes it a no-op: the new instance is never wired, and a
     /// recording of it keeps no samples. The desktop clears those leftovers when a device leaves
     /// (<c>DaqifiViewModel.UpdateUi</c>, "ConnectedDevices"); the mobile shell has no such hook,
@@ -787,9 +852,7 @@ public partial class LoggingManager : ObservableObject
         {
             var current = _subscribedChannels;
             var stale = current
-                .Where(x => !ReferenceEquals(x, channel)
-                            && x.DeviceSerialNo == channel.DeviceSerialNo
-                            && x.Name == channel.Name)
+                .Where(x => !ReferenceEquals(x, channel) && AbstractChannel.IsSameInput(x, channel))
                 .ToList();
             if (stale.Count > 0)
             {
@@ -821,7 +884,7 @@ public partial class LoggingManager : ObservableObject
             var current = _subscribedChannels;
 
             var subscribedChannel = current.FirstOrDefault(
-                x => x.DeviceSerialNo == channel.DeviceSerialNo && x.Name == channel.Name && x.IsActive);
+                x => AbstractChannel.IsSameInput(x, channel) && x.IsActive);
 
             if (subscribedChannel == null)
             {
@@ -838,9 +901,10 @@ public partial class LoggingManager : ObservableObject
             //
             // Remove by reference, not by value. The lookup above already resolved the exact
             // instance to drop, and List.Remove would re-match it with the default comparer --
-            // which lands on AbstractChannel.Equals, and that compares Name only. Two devices
-            // both expose "AI0", so a value-based removal drops whichever same-named channel
-            // sits earliest in the list rather than the one that was just deactivated.
+            // which lands on AbstractChannel.Equals. That compared Name only when this was
+            // written, so a value-based removal dropped whichever same-named channel of another
+            // device sat earliest in the list. It compares the input now, but a leftover instance
+            // of the same input can still sit earlier in the list.
             var updated = new List<IChannel>(current);
             updated.RemoveAll(x => ReferenceEquals(x, subscribedChannel));
             Volatile.Write(ref _subscribedChannels, updated.AsReadOnly());

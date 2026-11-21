@@ -21,6 +21,16 @@ public partial class Profile : ObservableObject
     private bool isProfileActive;
     [ObservableProperty]
     private ObservableCollection<ProfileDevice> devices;
+
+    /// <summary>
+    /// The connected devices that the last activation configured, or empty while the profile is
+    /// off. Not saved. Turning the profile off clears these devices, not the devices it would match
+    /// now: a board with no serial number and no MAC address cannot be found again by matching once
+    /// a second such board is connected or the first is replaced (PR #678 review). It is kept here,
+    /// not in the pane, because the phone makes a new pane each time its Profiles view opens.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    internal List<Daqifi.Desktop.Device.IStreamingDevice> ActivatedDevices { get; } = [];
 }
 
 // @port: Daqifi.Desktop.Models.ProfileDevice
@@ -112,4 +122,13 @@ public partial class ProfileChannel : ObservableObject
     private string type;
     [ObservableProperty]
     private bool isChannelActive;
+
+    /// <summary>
+    /// The input number of the channel the profile captured, or <see langword="null"/> in a profile
+    /// saved before it was stored. With it, activation turns on the input that was captured; by name
+    /// alone it cannot tell two channels of one name apart (PR #678 review).
+    /// </summary>
+    // Downstream-only: upstream profiles hold only the name and the type.
+    [ObservableProperty]
+    private int? index;
 }

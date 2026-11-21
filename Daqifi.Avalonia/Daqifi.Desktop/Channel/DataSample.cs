@@ -119,7 +119,9 @@ public class DataSample : Daqifi.Core.Channel.IDataSample
     {
         DeviceName = streamingDevice.Name;
         DeviceSerialNo=channel.DeviceSerialNo;
-        ChannelName = channel.Name;
+        // Not channel.Name: that changes on every keystroke in the NAME box, and each change split the
+        // session's data into another column (#668). RecordedName is fixed for the session.
+        ChannelName = channel.RecordedName;
         Type = channel.Type;
         // WPF Brush.ToString(culture) yields "#AARRGGBB"; Avalonia IBrush has no culture
         // overload — read the color off the solid brush to keep the same persisted format.

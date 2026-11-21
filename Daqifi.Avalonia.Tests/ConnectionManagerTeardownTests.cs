@@ -73,7 +73,7 @@ public class ConnectionManagerTeardownTests
         var device = new DroppableTestDevice(serial);
         for (var i = 0; i < channelCount; i++)
         {
-            var channel = new FakeChannel($"AI{i}", serial);
+            var channel = new FakeChannel($"AI{i}", serial, index: i);
             device.DataChannels.Add(channel);
             subscriptions.Subscribe(channel);
         }
@@ -229,9 +229,9 @@ public class ConnectionManagerTeardownTests
 
         device.ReportCoreStatus(ConnectionStatus.Lost);
 
-        // By name and by instance: the channels released must be this device's own objects, not
-        // equal-by-name ones — AbstractChannel.Equals compares Name alone, and two boards both
-        // expose AI0.
+        // By instance: the channels released must be this device's own objects, not merely equal
+        // ones — AbstractChannel.Equals compares the input, and an earlier connection's instance of
+        // the same input is equal to this one.
         Assert.Equal(3, subs.Released.Count);
         Assert.All(expected, channel => Assert.Contains(subs.Released, r => ReferenceEquals(r, channel)));
     }
