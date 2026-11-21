@@ -670,10 +670,10 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// <summary>
     /// Connects to the device using the shared Core connect/wire/initialize skeleton:
     /// tear down any previous connection, create the transport-specific Core device
-    /// (<see cref="CreateCoreDevice"/>), subscribe Core events, initialize desktop state, run
-    /// Core's async initialization, then run the optional transport-specific post-initialize
-    /// step (<see cref="OnCoreDeviceInitialized"/>). On any failure the attempt is logged
-    /// (<see cref="LogConnectFailure"/>) and fully cleaned up (<see cref="CleanupConnection"/>).
+    /// (<see cref="CreateCoreDevice"/>), subscribe Core events, initialize desktop state, then
+    /// run Core's async initialization, which also waits for the device's first status message.
+    /// On any failure the attempt is logged (<see cref="LogConnectFailure"/>) and fully cleaned
+    /// up (<see cref="CleanupConnection"/>).
     /// </summary>
     /// <remarks>
     /// Synchronous by contract: <see cref="ConnectionManager"/> invokes <c>Connect()</c> from
@@ -711,8 +711,6 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
             // Blocking on Core's async initialization is safe because Connect() is invoked
             // from Task.Run by ConnectionManager (see remarks).
             coreDevice.InitializeAsync().GetAwaiter().GetResult();
-
-            OnCoreDeviceInitialized();
 
             // Re-read Core's metadata now that initialization is complete. The only other hydrate
             // runs from ChannelsPopulated, which Core raises while waiting for the device's first
@@ -811,16 +809,6 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// </summary>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.CreateCoreDevice
     protected virtual CoreStreamingDevice? CreateCoreDevice() => null;
-
-    /// <summary>
-    /// Called by <see cref="Connect"/> after Core's <c>InitializeAsync()</c> completes.
-    /// Default does nothing; serial overrides to block until the device reports its
-    /// initial status message.
-    /// </summary>
-    // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.OnCoreDeviceInitialized
-    protected virtual void OnCoreDeviceInitialized()
-    {
-    }
 
     /// <summary>
     /// Brings the device's enabled-channel set in line with the app's, which starts empty: a
@@ -2751,11 +2739,9 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// <summary>
     /// Handles the <see cref="DaqifiDevice.ChannelsPopulated"/> event from Core.
     /// Syncs metadata and channel wrappers from the already-populated Core device.
-    /// Virtual so transports can layer additional signaling (serial signals its
-    /// initial-status wait) before the shared sync runs.
     /// </summary>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.OnCoreChannelsPopulated
-    protected virtual void OnCoreChannelsPopulated(object? sender, ChannelsPopulatedEventArgs e)
+    private void OnCoreChannelsPopulated(object? sender, ChannelsPopulatedEventArgs e)
     {
         if (sender is not DaqifiDevice coreDevice)
         {
