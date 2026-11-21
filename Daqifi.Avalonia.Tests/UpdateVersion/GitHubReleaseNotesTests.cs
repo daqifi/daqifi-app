@@ -229,18 +229,63 @@ public class GitHubReleaseNotesTests
         Assert.Equal([PageUri(1), PageUri(2)], pages.Requested);
     }
 
-    /// <summary>A user a few versions behind finds the installed version on page one: one request, even with more pages.</summary>
+    /// <summary>
+    /// A user a few versions behind finds the installed release on page one: one request, even with
+    /// more pages and a backport on that page.
+    /// </summary>
     [Fact]
     public async Task A_page_that_reaches_the_installed_version_is_the_last_one_read()
     {
         var pages = new Pages(
-            Answer(("v3.4.0", false, "Four."), ("v3.3.0", false, "Three.")),
+            Answer(("v3.5.0", false, "Five."), ("v3.2.9", false, "Backport."), ("v3.4.0", false, "Four."), ("v3.3.0", false, "Three.")),
             Answer(("v3.2.0", false, "Two.")));
 
-        var notes = await GitHubReleaseNotes.LoadAsync(pages.Fetch, "3.3.0", "3.4.0", CancellationToken.None);
+        var notes = await GitHubReleaseNotes.LoadAsync(pages.Fetch, "3.3.0", "3.5.0", CancellationToken.None);
 
-        Assert.Equal(["3.4.0"], notes.Sections.Select(s => s.Version));
+        Assert.Equal(["3.5.0", "3.4.0"], notes.Sections.Select(s => s.Version));
         Assert.Equal([PageUri(1)], pages.Requested);
+    }
+
+    /// <summary>
+    /// PR #695 review, round 2: the API lists releases by when they were made, not by version. A
+    /// backport (3.2.9) made after 3.6.0 is on page one, before 3.5.0 and 3.4.0. An older version
+    /// number is no sign that the range is complete: the reading goes on until the page that lists
+    /// the installed release itself (page three), and stops there.
+    /// </summary>
+    [Fact]
+    public async Task A_backport_listed_before_newer_releases_does_not_stop_the_reading()
+    {
+        var pages = new Pages(
+            Answer(("v3.6.0", false, "Six."), ("v3.2.9", false, "Backport.")),
+            Answer(("v3.5.0", false, "Five."), ("v3.4.0", false, "Four.")),
+            Answer(("v3.3.0", false, "Three."), ("v3.2.0", false, "Two.")),
+            Answer(("v3.1.0", false, "One.")));
+
+        var notes = await GitHubReleaseNotes.LoadAsync(pages.Fetch, "3.3.0", "3.6.0", CancellationToken.None);
+
+        Assert.True(notes.HasPending);
+        Assert.Equal(["3.6.0", "3.5.0", "3.4.0"], notes.Sections.Select(s => s.Version));
+        Assert.Equal([PageUri(1), PageUri(2), PageUri(3)], pages.Requested);
+    }
+
+    /// <summary>
+    /// The installed release is not in the history (deleted, or never published). With no sign of
+    /// where the range ends, the reading goes to the end of the history: a backport on page one and
+    /// an older release on page two do not stop it early.
+    /// </summary>
+    [Fact]
+    public async Task A_history_without_the_installed_release_is_read_to_the_end()
+    {
+        var pages = new Pages(
+            Answer(("v3.6.0", false, "Six."), ("v3.2.9", false, "Backport.")),
+            Answer(("v3.5.0", false, "Five."), ("v3.2.0", false, "Two.")),
+            Answer(("v3.4.0", false, "Four."), ("v3.1.0", false, "One.")));
+
+        var notes = await GitHubReleaseNotes.LoadAsync(pages.Fetch, "3.3.0", "3.6.0", CancellationToken.None);
+
+        Assert.True(notes.HasPending);
+        Assert.Equal(["3.6.0", "3.5.0", "3.4.0"], notes.Sections.Select(s => s.Version));
+        Assert.Equal(3, pages.Requested.Count);
     }
 
     /// <summary>

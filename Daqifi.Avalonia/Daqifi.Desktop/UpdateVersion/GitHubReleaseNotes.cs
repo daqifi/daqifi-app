@@ -37,7 +37,7 @@ public sealed record ReleaseNotesResult(IReadOnlyList<ReleaseNotesSection> Secti
 /// <para>
 /// The releases API takes no token here, so GitHub allows few requests from one address. The
 /// UPDATES section fetches only when an update is on offer, once for each version, and reads pages
-/// of <see cref="PAGE_SIZE"/> releases only until one reaches the installed version
+/// of <see cref="PAGE_SIZE"/> releases only until one lists the installed release
 /// (<see cref="LoadAsync"/>), at most <see cref="MaxPages"/>.
 /// </para>
 /// </remarks>
@@ -108,11 +108,13 @@ public static class GitHubReleaseNotes
 
     /// <summary>
     /// Reads the releases from <see cref="FirstPage"/> on, and gives the notes for <paramref name="pending"/>.
-    /// The API lists releases newest first, prereleases included, so the range can go on past the
-    /// first page: the next page is read until a page reaches the installed version, the history
-    /// ends, or <see cref="MaxPages"/> pages are read. A user a few versions behind finds the
-    /// installed version on the first page, so one request is the usual case. When the cap stops
-    /// the reading first, the notes end with a section that says so (#695 review).
+    /// The API lists releases by when each release was made, newest first, prereleases included, so
+    /// the range can go on past the first page: the next page is read until a page lists the
+    /// installed release itself (<see cref="ReachesInstalled"/>), the history ends, or
+    /// <see cref="MaxPages"/> pages are read. The releases read are then filtered and sorted by
+    /// version (<see cref="Between"/>). A user a few versions behind finds the installed release on
+    /// the first page, so one request is the usual case. When the cap stops the reading first, the
+    /// notes end with a section that says so (#695 review).
     /// </summary>
     /// <exception cref="Exception">Whatever <paramref name="fetchPage"/> throws, for example with no network.</exception>
     public static async Task<ReleaseNotesResult> LoadAsync(
@@ -137,13 +139,23 @@ public static class GitHubReleaseNotes
     }
 
     /// <summary>
-    /// True when <paramref name="page"/> lists the installed version or an older one, so no later
-    /// page holds a release in the range. Without a version for this copy, only the pending release
-    /// is in the range, so the page that lists it is enough.
+    /// True when <paramref name="page"/> lists the installed version's own release, so no later page
+    /// holds a release in the range. Without a version for this copy, only the pending release is in
+    /// the range, so the page that lists it is enough.
     /// </summary>
+    /// <remarks>
+    /// Not "a version at or below the installed one" (#695 review, round 2). The API orders releases
+    /// by when each was made (its <c>created_at</c>: measured on this repository, the time the
+    /// release was created, minutes after its tag's commit), not by version. A backport such as
+    /// 3.2.9, made after 3.6.0, is listed before 3.5.0 and 3.4.0, so an older version number says
+    /// nothing about what is still to come. The installed release does: the release workflow makes
+    /// each release when its tag is built, so every release made after the installed one is listed
+    /// before it. When that release is not in the history (deleted, or never published), nothing
+    /// marks the end of the range, and the reading goes to the end of the history or the cap.
+    /// </remarks>
     private static bool ReachesInstalled(IEnumerable<PublishedRelease> page, string? installed, string pending) =>
-        ReleaseVersion.TryParse(installed, out var from)
-            ? page.Any(r => ReleaseVersion.TryParse(r.Version, out var v) && v.CompareTo(from) <= 0)
+        ReleaseVersion.TryParse(installed, out _)
+            ? page.Any(r => SameVersion(r.Version, installed!))
             : page.Any(r => SameVersion(r.Version, pending));
 
     /// <summary>The page of the release of <paramref name="version"/>.</summary>
