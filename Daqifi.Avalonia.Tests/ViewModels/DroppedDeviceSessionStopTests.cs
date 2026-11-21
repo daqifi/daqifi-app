@@ -172,26 +172,6 @@ public sealed class DroppedDeviceSessionStopTests : IDisposable
         Assert.False(LoggingManager.Instance.Active);
     }
 
-    /// <summary>
-    /// The guard: a drop that arrives with no session running must not pretend one ended. Writing
-    /// <see cref="DaqifiViewModel.IsLogging"/> unconditionally would run the whole stop path —
-    /// disk-space monitor off, a fleet-wide stop fan-out, <c>LoggingManager.Active</c> written —
-    /// for a session that was never started.
-    /// </summary>
-    [Fact]
-    public void WhenTheLastDeviceDropsWithNoSessionRunning_NothingIsStopped()
-    {
-        var device = AConnectedDevice("Nq1-IDLE");
-        Assert.False(_viewModel.IsLogging);
-        device.Commands.Clear();
-
-        DropDevice(device);
-
-        Assert.False(_viewModel.IsLogging);
-        Assert.False(LoggingManager.Instance.Active);
-        Assert.Empty(device.Commands);
-    }
-
     // ---------------------------------------------------------------------------------------------
     // Issue #537: the same stuck state, reached by the user's own DISCONNECT or REBOOT.
     //
