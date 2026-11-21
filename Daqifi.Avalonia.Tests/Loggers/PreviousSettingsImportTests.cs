@@ -839,6 +839,73 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.Empty(manager.SubscribedProfiles);
     }
 
+    // ---- Review round 3 (2026-11-21, 01:37Z). Each test follows the reviewer's reproduction. ----
+
+    /// <summary>
+    /// Round 3, P1, the reviewer's state. A run of the round-2 design stopped after it wrote a
+    /// part's marker file and before it saved that part. A fresh start must still offer and
+    /// import the part: completion must not be a separate record that can exist without the work.
+    /// </summary>
+    [Theory]
+    [InlineData(".previous-settings-import-profiles-done")]
+    [InlineData(".previous-settings-import-delimiter-done")]
+    public async Task A_record_left_by_a_run_that_stopped_before_its_save_does_not_stop_the_import(string leftOver)
+    {
+        WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
+        WriteDelimiter(OldSettings, ";");
+        File.WriteAllText(Path.Combine(Current, leftOver), string.Empty);
+        var manager = Manager();
+        var settings = Settings();
+
+        Assert.True(Import().HasSettingsToImport(CurrentProfiles, settings));
+        var outcome = await Import().ImportAsync(manager, settings);
+
+        Assert.Equal(1, outcome.ProfilesAdded);
+        Assert.True(outcome.DelimiterCopied);
+        Assert.Equal("Bench rig", Assert.Single(Manager().SubscribedProfiles).Name);
+        Assert.Equal(";", Settings().CsvDelimiter);
+    }
+
+    private const string NeedsEnforcedPermissions =
+        "Needs a folder the current user truly cannot read: not on Windows, and not as root.";
+
+    /// <summary>
+    /// Round 3, P2. The old folder was readable when the offer was shown, and then access went
+    /// away. A file the process cannot open is not an absent file: the Import copies nothing,
+    /// says it is not complete, and keeps the offer. When access comes back, both parts come
+    /// across.
+    /// </summary>
+    [EnforcedReadOnlyDirectoryFact(NeedsEnforcedPermissions)]
+    public async Task An_old_folder_that_cannot_be_read_is_not_taken_for_an_empty_one()
+    {
+        if (OperatingSystem.IsWindows()) { Assert.Fail(NeedsEnforcedPermissions); return; }
+        WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
+        WriteDelimiter(OldSettings, ";");
+        var manager = Manager();
+        var settings = Settings();
+        Assert.True(Import().HasSettingsToImport(CurrentProfiles, settings));
+
+        SettingsImportOutcome blocked;
+        File.SetUnixFileMode(Old, UnixFileMode.None);
+        try
+        {
+            blocked = await Import().ImportAsync(manager, settings);
+        }
+        finally
+        {
+            File.SetUnixFileMode(Old, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        Assert.False(blocked.Complete);
+        Assert.Equal(0, blocked.ProfilesAdded);
+        Assert.False(blocked.DelimiterCopied);
+        Assert.True(Import().HasSettingsToImport(CurrentProfiles, settings));
+
+        var later = await Import().ImportAsync(manager, settings);
+        Assert.Equal(1, later.ProfilesAdded);
+        Assert.True(later.DelimiterCopied);
+    }
+
     /// <summary>
     /// Review P2, the conservative rule. A settings file that an earlier build wrote does not say
     /// whether its comma was chosen, so the import keeps it rather than guess.
