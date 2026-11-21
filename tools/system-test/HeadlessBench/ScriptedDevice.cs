@@ -191,8 +191,6 @@ internal sealed class ScriptedDevice : IStreamingDevice
 
     public string DevicePartNumber => "Nq1";
 
-    public uint TimestampFrequency => 42_000_000;
-
     public NetworkConfiguration NetworkConfiguration { get; } = new();
 
     public string MacAddress { get; set; } = string.Empty;
@@ -306,4 +304,8 @@ internal sealed class ScriptedDevice : IStreamingDevice
 
     public Task DeleteSdCardFileAsync(string fileName, CancellationToken ct = default)
         => throw new NotSupportedException();
+
+    /// <summary>No scripted state imports an SD log (<see cref="DownloadSdCardFileAsync"/> is not
+    /// supported), and there is no Core device to build a configuration from.</summary>
+    public SdCardDeviceConfiguration? GetSdCardParseConfiguration() => null;
 }

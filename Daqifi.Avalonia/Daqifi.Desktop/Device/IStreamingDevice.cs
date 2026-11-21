@@ -66,12 +66,11 @@ public interface IStreamingDevice : IDevice
     // @port: Daqifi.Desktop.Device.IStreamingDevice.DevicePartNumber
     string DevicePartNumber { get; }
 
-    /// <summary>
-    /// Gets the device's hardware timestamp clock frequency in Hz.
-    /// Used as a fallback when parsing SD card files that lack this field.
-    /// </summary>
-    // @port: Daqifi.Desktop.Device.IStreamingDevice.TimestampFrequency
-    uint TimestampFrequency { get; }
+    // Through this interface, TimestampFrequency had one reader: the SD importer's copy of the
+    // parse configuration. GetSdCardParseConfiguration now carries the clock, from Core (#671).
+    // AbstractStreamingDevice keeps the property.
+    // @port: Daqifi.Desktop.Device.IStreamingDevice.TimestampFrequency (removed)
+
     // @port: Daqifi.Desktop.Device.IStreamingDevice.NetworkConfiguration
     NetworkConfiguration NetworkConfiguration { get; }
     // @port: Daqifi.Desktop.Device.IStreamingDevice.MacAddress
@@ -278,4 +277,13 @@ public interface IStreamingDevice : IDevice
     /// </summary>
     // @port: Daqifi.Desktop.Device.IStreamingDevice.DeleteSdCardFileAsync
     Task DeleteSdCardFileAsync(string fileName, CancellationToken ct = default);
+
+    /// <summary>
+    /// Gets the device configuration that the SD card parser needs to read a log from this device:
+    /// the channel counts, the timestamp clock, the identity, and the calibration, resolution, port
+    /// range and internal scale of each analog channel. Returns <c>null</c> when no Core device is
+    /// connected, or when the device reports no analog channels.
+    /// </summary>
+    // @port: Daqifi.Desktop.Device.IStreamingDevice.GetSdCardParseConfiguration
+    SdCardDeviceConfiguration? GetSdCardParseConfiguration();
 }

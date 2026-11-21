@@ -610,8 +610,8 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// <summary>
     /// Gets the device's hardware timestamp clock frequency in Hz.
     /// Sourced from the underlying Core device, which populates it from the
-    /// <c>TimestampFreq</c> field in received status messages.
-    /// Used as a fallback when parsing SD card files that lack this field.
+    /// <c>TimestampFreq</c> field in received status messages. The SD card parser gets the
+    /// same clock through <see cref="GetSdCardParseConfiguration"/>.
     /// </summary>
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.TimestampFrequency
     public uint TimestampFrequency => (CoreDeviceForSd ?? CoreDeviceForStreaming)?.TimestampFrequency ?? 0;
@@ -1954,6 +1954,20 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         _sdCardFiles = files;
         OnPropertyChanged(nameof(SdCardFiles));
     }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Core's <see cref="SdCardDeviceConfiguration.FromDevice"/> builds it from the Core device. It
+    /// reads the channels from one snapshot, so a status message that arrives during the read
+    /// cannot change the list under it, and it reads the identity from Core's metadata, which
+    /// <see cref="Metadata"/> copies. The importer used to keep its own copy of that method, and
+    /// the copy drifted from Core two times (#464, #671).
+    /// </remarks>
+    // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.GetSdCardParseConfiguration
+    // @port-divergence: upstream returns null when the device is not on USB. SD works over WiFi
+    // here too (#1), so only a missing Core device returns null.
+    public SdCardDeviceConfiguration? GetSdCardParseConfiguration() =>
+        CoreDeviceForSd is { } coreDevice ? SdCardDeviceConfiguration.FromDevice(coreDevice) : null;
 
     /// <summary>
     /// The core device for an operation that requires a live connection, or

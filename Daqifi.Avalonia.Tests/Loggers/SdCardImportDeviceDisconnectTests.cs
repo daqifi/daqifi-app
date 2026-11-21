@@ -7,8 +7,6 @@ using Daqifi.Desktop.Loggers;
 using Google.Protobuf;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
-using CoreAnalogChannel = Daqifi.Core.Channel.AnalogChannel;
-using CoreDigitalChannel = Daqifi.Core.Channel.DigitalChannel;
 
 namespace Daqifi.Avalonia.Tests.Loggers;
 
@@ -16,7 +14,7 @@ namespace Daqifi.Avalonia.Tests.Loggers;
 /// Issue #548: a DISCONNECT while an SD card file downloads saved a corrupt session as Complete.
 ///
 /// <para>
-/// <c>AbstractStreamingDevice.Disconnect</c> clears <c>DataChannels</c> at once, but Core lets a
+/// <c>AbstractStreamingDevice.Disconnect</c> tears the device down at once, but Core lets a
 /// download that holds its operation lock finish first. The importer read the device's channels
 /// only AFTER the download, so it found none, handed the parser no configuration, and the parser
 /// fell back to raw ADC counts, no digital channels and a guessed 50 MHz clock. On the bench the
@@ -25,9 +23,11 @@ namespace Daqifi.Avalonia.Tests.Loggers;
 ///
 /// <para>
 /// The device fake here does what the disconnect does, at the same point: its download writes a
-/// complete log and then empties <c>DataChannels</c> before it returns. The log itself states no
-/// clock, no port counts and no calibration — like the bench board's firmware 3.8.0 log — so the
-/// device's configuration is the only source of all three.
+/// complete log and then drops the device's configuration before it returns. The log itself states
+/// no clock, no port counts and no calibration — like the bench board's firmware 3.8.0 log — so the
+/// device's configuration is the only source of all three. How a real device builds that
+/// configuration is Core's <c>SdCardDeviceConfiguration.FromDevice</c> (#671), pinned by
+/// <c>SdCardParseConfigurationTests</c>.
 /// </para>
 /// </summary>
 public sealed class SdCardImportDeviceDisconnectTests : IDisposable
@@ -81,8 +81,9 @@ public sealed class SdCardImportDeviceDisconnectTests : IDisposable
         {
             var result = WriteLog(name);
 
-            // What AbstractStreamingDevice.Disconnect does while Core finishes the download.
-            device.DataChannels.Clear();
+            // What AbstractStreamingDevice.Disconnect does while Core finishes the download: the
+            // device has no Core device left, so it has no configuration to give.
+            device.SdCardConfiguration = null;
             device.IsConnected = false;
             return Task.FromResult(result);
         };
@@ -136,15 +137,16 @@ public sealed class SdCardImportDeviceDisconnectTests : IDisposable
     #region A device with no configuration at the start
 
     /// <summary>
-    /// A device with no analog channels when the import starts has no configuration to give: it
-    /// is disconnecting, or its channels were never read. A file parsed without one keeps raw
-    /// counts and loses its digital channels, so the import must stop and say so — before it
-    /// downloads anything, and without writing a session that claims to be complete.
+    /// A device with no configuration when the import starts — it is not connected or is
+    /// disconnecting, or it reported no analog channels — has nothing to give the parser. A file
+    /// parsed without one keeps raw counts and loses its digital channels, so the import must stop
+    /// and say so — before it downloads anything, and without writing a session that claims to be
+    /// complete.
     /// </summary>
     [Fact]
     public async Task A_device_with_no_channels_at_the_start_is_refused_before_the_download()
     {
-        var device = new RecordingStreamingDevice { TimestampFrequency = DeviceClockHz };
+        var device = new RecordingStreamingDevice();
         var downloads = 0;
         device.OnDownload = (name, _) =>
         {
@@ -166,31 +168,22 @@ public sealed class SdCardImportDeviceDisconnectTests : IDisposable
 
     /// <summary>
     /// A device configured like the bench Nyquist in the issue: two analog inputs and sixteen
-    /// digital lines.
+    /// digital lines, unit calibration on a 10 V port, and the 42 MHz clock.
     /// </summary>
-    private static RecordingStreamingDevice Nyquist()
+    private static RecordingStreamingDevice Nyquist() => new("SN-548")
     {
-        var device = new RecordingStreamingDevice("SN-548") { TimestampFrequency = DeviceClockHz };
-
-        for (var i = 0; i < AnalogCount; i++)
-        {
-            device.DataChannels.Add(new AnalogChannel(device, new CoreAnalogChannel(i, Resolution))
-            {
-                Name = $"AI{i}",
-                PortRange = PortRange,
-                CalibrationMValue = 1.0,
-                CalibrationBValue = 0.0,
-                InternalScaleMValue = 1.0
-            });
-        }
-
-        for (var i = 0; i < DigitalCount; i++)
-        {
-            device.DataChannels.Add(new DigitalChannel(device, new CoreDigitalChannel(i)) { Name = $"DI{i}" });
-        }
-
-        return device;
-    }
+        SdCardConfiguration = new SdCardDeviceConfiguration(
+            AnalogPortCount: AnalogCount,
+            DigitalPortCount: DigitalCount,
+            TimestampFrequency: DeviceClockHz,
+            DeviceSerialNumber: "SN-548",
+            DevicePartNumber: "Nq1",
+            FirmwareRevision: "3.8.0",
+            CalibrationValues: Enumerable.Repeat((1.0, 0.0), AnalogCount).ToArray(),
+            Resolution: Resolution,
+            PortRange: Enumerable.Repeat(PortRange, AnalogCount).ToArray(),
+            InternalScaleM: Enumerable.Repeat(1.0, AnalogCount).ToArray())
+    };
 
     /// <summary>
     /// Writes a protobuf SD log to the temp directory, where the importer requires a download to

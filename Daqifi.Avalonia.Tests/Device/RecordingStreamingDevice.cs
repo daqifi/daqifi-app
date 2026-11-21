@@ -151,13 +151,6 @@ internal sealed class RecordingStreamingDevice : IStreamingDevice
 
     public string DevicePartNumber => string.Empty;
 
-    /// <summary>
-    /// The device's timestamp clock, as a live device reports it. Settable because #464 turns on
-    /// whether this value reaches the SD parser: it stays 0 (the "device reported none" case)
-    /// unless a test says otherwise.
-    /// </summary>
-    public uint TimestampFrequency { get; set; }
-
     public NetworkConfiguration NetworkConfiguration { get; } = new();
 
     public string MacAddress { get; set; } = string.Empty;
@@ -271,5 +264,14 @@ internal sealed class RecordingStreamingDevice : IStreamingDevice
 
     public Task DeleteSdCardFileAsync(string fileName, CancellationToken ct = default)
         => throw new NotSupportedException();
+
+    /// <summary>
+    /// What <see cref="GetSdCardParseConfiguration"/> returns. Null by default: a device with no
+    /// configuration to give. How a real device builds one is Core's
+    /// <c>SdCardDeviceConfiguration.FromDevice</c>, pinned by <c>SdCardParseConfigurationTests</c>.
+    /// </summary>
+    internal SdCardDeviceConfiguration? SdCardConfiguration { get; set; }
+
+    public SdCardDeviceConfiguration? GetSdCardParseConfiguration() => SdCardConfiguration;
     #endregion
 }
