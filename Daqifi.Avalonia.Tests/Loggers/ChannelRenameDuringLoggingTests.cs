@@ -143,13 +143,15 @@ public sealed class ChannelRenameDuringLoggingTests : IDisposable
             Frames(10);
         });
 
+        // The corruption first: whatever else is wrong, AI0's column holds only AI0's readings.
         var csv = Export(session);
-        Assert.Equal(["AI0", "AI1"], csv.Channels);
-        Assert.All(csv.Rows, row => Assert.Equal(Ai0Reading, row[0]));
-        Assert.All(csv.Rows, row => Assert.Equal(Ai1Reading, row[1]));
-
+        var ai0Column = csv.Channels.ToList().IndexOf("AI0");
+        Assert.All(csv.Rows, row => Assert.Equal(Ai0Reading, row[ai0Column]));
         _plot.DrainPendingSamples();
         Assert.All(_plot.LoggedPoints[(Serial, "AI0")], point => Assert.Equal(Ai0Reading, point.Y));
+
+        Assert.Equal(["AI0", "AI1"], csv.Channels);
+        Assert.All(csv.Rows, row => Assert.Equal(Ai1Reading, row[1]));
     }
 
     /// <summary>
@@ -261,13 +263,16 @@ public sealed class ChannelRenameDuringLoggingTests : IDisposable
         Assert.True(new OptimizedLoggingSessionExporter(_contexts).ExportLoggingSession(
             session, path, exportRelativeTime: false, new Progress<int>(), CancellationToken.None, 0, 1));
 
+        // No name used here contains a comma or a quote, so a split is a full parse once a field the
+        // writer quoted (a name with a trailing space, for example) is unquoted.
         var lines = File.ReadAllLines(path).Where(line => line.Length > 0).ToList();
         var prefix = $"{DeviceName}:{Serial}:";
         var channels = lines[0].Split(',').Skip(1)
             .Select(column =>
             {
-                Assert.StartsWith(prefix, column, StringComparison.Ordinal);
-                return column[prefix.Length..];
+                var unquoted = column.Length >= 2 && column[0] == '"' && column[^1] == '"' ? column[1..^1] : column;
+                Assert.StartsWith(prefix, unquoted, StringComparison.Ordinal);
+                return unquoted[prefix.Length..];
             })
             .ToList();
         var rows = lines.Skip(1)
