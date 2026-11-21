@@ -23,8 +23,16 @@ namespace Daqifi.Desktop.ViewModels;
 // @port: Daqifi.Desktop.ViewModels.FirmwareDialogViewModel
 public partial class FirmwareDialogViewModel : ObservableObject
 {
+    /// <summary>
+    /// The error line's text for a failure that Core did not describe: no firmware to flash, a failed
+    /// download, or an exception that is not a <see cref="FirmwareUpdateException"/>. A Core failure
+    /// shows Core's recovery guidance instead (issue #672).
+    /// </summary>
+    internal const string GenericFailureMessage = "Sorry, something went wrong uploading the firmware.  :(";
+
     private readonly IFirmwareUpdateService _firmwareUpdateService;
     private readonly IFirmwareDownloadService _firmwareDownloadService;
+    private readonly IAppLogger _appLogger;
     private readonly Daqifi.Core.Device.IStreamingDevice _coreDevice;
 
     /// <summary>
@@ -80,8 +88,29 @@ public partial class FirmwareDialogViewModel : ObservableObject
     [ObservableProperty]
     private bool _isUploadComplete;
 
+    /// <summary>
+    /// The text of the error line, or null while the dialog shows no error. For a Core failure it is
+    /// the text <see cref="FirmwareFailureClassifier.Report"/> gives, which ends with Core's recovery
+    /// guidance: what the failed flash left on the board, and what to do next (issue #672).
+    /// </summary>
     [ObservableProperty]
-    private bool _hasErrorOccured;
+    [NotifyPropertyChangedFor(nameof(HasErrorOccured))]
+    private string? _errorMessage;
+
+    /// <summary>True while the error line shows <see cref="ErrorMessage"/>.</summary>
+    public bool HasErrorOccured => ErrorMessage != null;
+
+    /// <summary>
+    /// A line under "Upload Complete", or null for none. Set when the firmware is installed and
+    /// verified but the device did not return to normal mode: the run is a success, and the user must
+    /// power-cycle the device to finish it (issue #672, the same rule as the device drawer's update).
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasUploadCompleteNotice))]
+    private string? _uploadCompleteNotice;
+
+    /// <summary>True while the completed panel shows <see cref="UploadCompleteNotice"/>.</summary>
+    public bool HasUploadCompleteNotice => UploadCompleteNotice != null;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(UploadFirmwareProgressText))]
@@ -98,12 +127,16 @@ public partial class FirmwareDialogViewModel : ObservableObject
     /// <param name="targetDevicePath">OS HID device path of the bootloader to flash; null falls back to first-match.</param>
     /// <param name="firmwareDownloadService">Optional override (the capture harness passes an offline stub); otherwise resolved from DI.</param>
     /// <param name="firmwareUpdateService">Optional override (unit tests pass a flash that never completes); otherwise resolved from DI.</param>
+    /// <param name="appLogger">Optional override (unit tests record the log levels); otherwise <see cref="AppLogger.Instance"/>.</param>
     public FirmwareDialogViewModel(
         string? hidDeviceName,
         string? targetDevicePath = null,
         IFirmwareDownloadService? firmwareDownloadService = null,
-        IFirmwareUpdateService? firmwareUpdateService = null)
+        IFirmwareUpdateService? firmwareUpdateService = null,
+        IAppLogger? appLogger = null)
     {
+        _appLogger = appLogger ?? AppLogger.Instance;
+
         // Resolve from DI rather than newing up services/HttpClient here. Both are registered in
         // App.ConfigureServices and the provider is always present at runtime; the throw is a
         // fail-fast for a misconfigured container.
@@ -166,7 +199,7 @@ public partial class FirmwareDialogViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            AppLogger.Instance.Warning($"Failed to load latest firmware for bootloader dialog: {ex.Message}");
+            _appLogger.Warning($"Failed to load latest firmware for bootloader dialog: {ex.Message}");
         }
     }
 
@@ -226,7 +259,7 @@ public partial class FirmwareDialogViewModel : ObservableObject
         var isManualUpload = !string.IsNullOrWhiteSpace(FirmwareFilePath);
         if (!isManualUpload && SelectedFirmware == null)
         {
-            HasErrorOccured = true;
+            ErrorMessage = GenericFailureMessage;
             return;
         }
 
@@ -239,12 +272,13 @@ public partial class FirmwareDialogViewModel : ObservableObject
 
         try
         {
-            HasErrorOccured = false;
+            ErrorMessage = null;
+            UploadCompleteNotice = null;
             IsUploadComplete = false;
             CloseRefusedDuringUpload = false;
             UploadFirmwareProgress = 0;
             IsFirmwareUploading = true;
-            AppLogger.Instance.AddBreadcrumb("firmware", "Firmware update started");
+            _appLogger.AddBreadcrumb("firmware", "Firmware update started");
 
             if (!isManualUpload)
             {
@@ -256,7 +290,7 @@ public partial class FirmwareDialogViewModel : ObservableObject
 
             if (string.IsNullOrWhiteSpace(FirmwareFilePath) || !File.Exists(FirmwareFilePath))
             {
-                HasErrorOccured = true;
+                ErrorMessage = GenericFailureMessage;
                 return;
             }
 
@@ -297,24 +331,37 @@ public partial class FirmwareDialogViewModel : ObservableObject
             }
 
             IsUploadComplete = true;
-            AppLogger.Instance.AddBreadcrumb("firmware", "Firmware update completed");
+            _appLogger.AddBreadcrumb("firmware", "Firmware update completed");
         }
         catch (OperationCanceledException)
         {
-            AppLogger.Instance.Warning("Manual firmware upload canceled by user.");
-            AppLogger.Instance.AddBreadcrumb("firmware", "Firmware update cancelled", Common.Loggers.BreadcrumbLevel.Warning);
+            _appLogger.Warning("Manual firmware upload canceled by user.");
+            _appLogger.AddBreadcrumb("firmware", "Firmware update cancelled", Common.Loggers.BreadcrumbLevel.Warning);
         }
         catch (FirmwareUpdateException ex)
         {
-            HasErrorOccured = true;
-            AppLogger.Instance.Error(ex, $"Firmware upload failed in state {ex.FailedState}: {ex.Operation}");
-            AppLogger.Instance.AddBreadcrumb("firmware", $"Firmware update failed: {ex.FailedState}", Common.Loggers.BreadcrumbLevel.Error);
+            // The same mapping as the device drawer's update (issue #672). Core's recovery guidance
+            // says what the failed flash left on the board: not changed, a clean bootloader that is
+            // safe to re-flash, or possibly half-flashed. A user is in this dialog because a board is
+            // already in trouble, so after a second failure that guidance is the next step.
+            var report = FirmwareFailureClassifier.Report(ex, _appLogger);
+            if (report.FirmwareInstalled)
+            {
+                // Installed and verified; only the return to normal mode is unconfirmed. That is a
+                // success that needs a power-cycle, not a failure to re-flash.
+                UploadCompleteNotice = report.Message;
+                IsUploadComplete = true;
+            }
+            else
+            {
+                ErrorMessage = report.Message;
+            }
         }
         catch (Exception ex)
         {
-            HasErrorOccured = true;
-            AppLogger.Instance.Error(ex, "Problem Uploading Firmware");
-            AppLogger.Instance.AddBreadcrumb("firmware", "Firmware update failed", Common.Loggers.BreadcrumbLevel.Error);
+            ErrorMessage = GenericFailureMessage;
+            _appLogger.Error(ex, "Problem Uploading Firmware");
+            _appLogger.AddBreadcrumb("firmware", "Firmware update failed", Common.Loggers.BreadcrumbLevel.Error);
         }
         finally
         {
@@ -329,7 +376,7 @@ public partial class FirmwareDialogViewModel : ObservableObject
                 }
                 catch (Exception ex)
                 {
-                    AppLogger.Instance.Warning(ex, "Error releasing the bootloader flash lease back to the watcher.");
+                    _appLogger.Warning(ex, "Error releasing the bootloader flash lease back to the watcher.");
                 }
             }
 
