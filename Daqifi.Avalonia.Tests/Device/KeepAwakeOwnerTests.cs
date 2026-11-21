@@ -33,11 +33,7 @@ public sealed class KeepAwakeOwnerTests : IDisposable
 
     public KeepAwakeOwnerTests()
     {
-        _owner = new KeepAwakeOwner(keepAwake =>
-        {
-            _applied.Add((keepAwake, Environment.CurrentManagedThreadId));
-            return true;
-        });
+        _owner = new KeepAwakeOwner(keepAwake => _applied.Add((keepAwake, Environment.CurrentManagedThreadId)));
     }
 
     public void Dispose() => _owner.Dispose();

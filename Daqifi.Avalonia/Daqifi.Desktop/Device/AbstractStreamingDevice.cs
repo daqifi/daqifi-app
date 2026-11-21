@@ -15,7 +15,6 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.IO;
 using ScpiMessageProducer = Daqifi.Core.Communication.Producers.ScpiMessageProducer;
-using System.Runtime.InteropServices; // Added for P/Invoke
 using CommunityToolkit.Mvvm.ComponentModel; // Added using
 using Daqifi.Core.Device; // Added for DeviceType, DeviceTypeDetector, DeviceMetadata, DeviceCapabilities, DeviceState
 using Daqifi.Core.Device.Protocol; // Added for ProtobufProtocolHandler
@@ -27,18 +26,6 @@ using CoreSdCardFileInfo = Daqifi.Core.Device.SdCard.SdCardFileInfo;
 using Avalonia.Threading; // Added for marshalling IsConnected notifications to the UI thread (issue #3)
 
 namespace Daqifi.Desktop.Device;
-
-// Added NativeMethods class for P/Invoke
-internal static partial class NativeMethods // Marked as partial
-{
-    // Prevents the system from entering sleep or hibernation.
-    public const uint EsSystemRequired = 0x00000001;
-    // Informs the system that the state should remain in effect until another call resets it.
-    public const uint EsContinuous = 0x80000000;
-
-    [LibraryImport("kernel32.dll", SetLastError = true)] // Changed to LibraryImport
-    public static partial uint SetThreadExecutionState(uint esFlags); // Marked as partial
-}
 
 // Changed base class and added partial keyword
 // @port: Daqifi.Desktop.Device.AbstractStreamingDevice
@@ -573,8 +560,35 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// <summary>
     /// Keeps the computer awake while this device streams. Tests replace it with a recording fake.
     /// </summary>
-    // Downstream-only: upstream calls SetThreadExecutionState inline.
+    // Downstream-only: upstream calls SetThreadExecutionState inline, on the caller's thread.
     internal IKeepAwake KeepAwake { get; set; } = KeepAwakeOwner.ForThisProcess;
+
+    /// <summary>
+    /// 1 while this device holds a <see cref="KeepAwake"/> request, otherwise 0.
+    /// </summary>
+    /// <remarks>
+    /// Several paths end a stream, and they overlap: a drop releases on Core's transport thread,
+    /// and then the teardown <see cref="Disconnect"/> releases again on the UI thread. The
+    /// exchange makes sure that only the first of them releases. A second release would end the
+    /// request of a different device that still streams (issue #696).
+    /// </remarks>
+    private int _holdsKeepAwake;
+
+    private void AcquireKeepAwake()
+    {
+        if (Interlocked.Exchange(ref _holdsKeepAwake, 1) == 0)
+        {
+            KeepAwake.Acquire();
+        }
+    }
+
+    private void ReleaseKeepAwake()
+    {
+        if (Interlocked.Exchange(ref _holdsKeepAwake, 0) == 1)
+        {
+            KeepAwake.Release();
+        }
+    }
 
     /// <summary>
     /// Gets or sets whether a newer firmware release exists for this device. Observable because
@@ -950,6 +964,9 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.CleanupConnection
     protected virtual void CleanupConnection()
     {
+        // A stream does not outlive the Core device it runs on (#696).
+        ReleaseKeepAwake();
+
         var coreDevice = CoreDevice;
         if (coreDevice == null)
         {
@@ -1232,6 +1249,10 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     /// </remarks>
     private void OnConnectionLost()
     {
+        // The stream is over, so the computer can sleep again (#696). This runs on Core's
+        // transport thread; KeepAwake only queues the release, so it never blocks Core.
+        ReleaseKeepAwake();
+
         if (!IsStreaming) { return; }
 
         IsStreaming = false;
@@ -2163,15 +2184,13 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         IsStreaming = coreStreamingDevice.IsStreaming;
         AppLogger.AddBreadcrumb("streaming", $"Streaming started at {StreamingFrequency} Hz");
 
-        // Prevent computer sleep once streaming has started, not before: StopStreaming clears the
-        // requirement only for a device that is streaming, so a start refused above (wrong mode,
-        // or a busy device, #547) must not set it. The P/Invoke targets kernel32.dll — a
-        // DllNotFoundException on mobile — so it is Windows-guarded; other heads skip the block
-        // entirely and log nothing. Mobile sleep-prevention (a wake lock) is a future divergence,
-        // not required to stream.
+        // Keep the computer awake once streaming has started, not before: a start refused above
+        // (wrong mode, or a busy device, #547) holds nothing. Every path that ends the stream
+        // releases it — StopStreaming, OnConnectionLost and CleanupConnection (#696). On the
+        // heads other than Windows, KeepAwake does nothing.
         if (IsStreaming)
         {
-            KeepAwake.Acquire();
+            AcquireKeepAwake();
         }
     }
 
@@ -2358,7 +2377,9 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     {
         if (!IsStreaming) return;
 
-        KeepAwake.Release();
+        // Allow computer sleep again. A drop does not get here, because it has already set
+        // IsStreaming to false; OnConnectionLost releases for it (#696).
+        ReleaseKeepAwake();
 
         var coreStreamingDevice = GetConnectedCoreDevice(CoreDeviceForStreaming);
         coreStreamingDevice.StopStreaming();
