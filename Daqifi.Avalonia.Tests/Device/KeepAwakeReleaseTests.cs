@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using Daqifi.Core.Device;
 using Daqifi.Desktop.Device;
 using Xunit;
@@ -143,6 +145,138 @@ public sealed class KeepAwakeReleaseTests : IDisposable
 
         Assert.Equal(2, _keepAwake.Acquired);
         Assert.Equal(1, _keepAwake.Released);
+    }
+
+    /// <summary>
+    /// Review on PR #697. A drop occurs while the start is between its decision to hold a request
+    /// and the request itself. The drop must not release first, or the owner ignores that release
+    /// (nothing is held yet) and then keeps the late request for good.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The owner is the real <see cref="KeepAwakeOwner"/>, with a recording function in place of
+    /// the Win32 call. <see cref="PausingKeepAwake"/> stops the start at the moment it asks the
+    /// owner, which is after the device recorded that it holds a request.
+    /// </para>
+    /// <para>
+    /// The drop runs on a second thread, as Core's transport thread does. Without serialization it
+    /// runs to its end while the start is stopped. With serialization it waits for the start, so
+    /// the test gives it <see cref="DropHeadStart"/> to get to that wait, and then lets the start
+    /// go on. Either order must end with the state cleared.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void A_drop_while_the_start_asks_for_its_request_still_lets_the_computer_sleep()
+    {
+        var applied = new BlockingCollection<bool>();
+        using var owner = new KeepAwakeOwner(applied.Add);
+        using var pausing = new PausingKeepAwake(owner);
+        _harness.Device.KeepAwake = pausing;
+
+        var starter = StartThread(_harness.Device.InitializeStreaming, out var startFailure);
+        Assert.True(pausing.Paused.Wait(Timeout), "The start did not get to its keep-awake request.");
+
+        var dropper = StartThread(_harness.Transport.Disconnect, out var dropFailure);
+        dropper.Join(DropHeadStart);
+
+        pausing.Resume.Set();
+        Assert.True(starter.Join(Timeout), "The start did not finish.");
+        Assert.True(dropper.Join(Timeout), "The drop did not finish.");
+        Assert.Null(startFailure.Value);
+        Assert.Null(dropFailure.Value);
+
+        // The premise: the drop was real, and the device saw it.
+        Assert.Equal(ConnectionStatus.Lost, _harness.Core.Status);
+        Assert.False(_harness.Device.IsStreaming);
+
+        // What ConnectionManager does next.
+        _harness.Device.Disconnect();
+
+        Assert.Equal([true, false], AppliedUntilCleared(applied));
+
+        // And the owner holds nothing: a new stream sets the state again.
+        owner.Acquire();
+        Assert.True(applied.TryTake(out var next, Timeout), "A new stream did not set the state.");
+        Assert.True(next);
+    }
+
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>How long the drop gets to run, or to get to its wait, before the start goes on.</summary>
+    private static readonly TimeSpan DropHeadStart = TimeSpan.FromSeconds(1);
+
+    /// <summary>Runs <paramref name="body"/> on a new thread, and keeps what it throws.</summary>
+    private static Thread StartThread(Action body, out StrongBox<Exception?> failure)
+    {
+        var box = new StrongBox<Exception?>();
+        failure = box;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                body();
+            }
+            catch (Exception ex)
+            {
+                box.Value = ex;
+            }
+        });
+        thread.Start();
+        return thread;
+    }
+
+    /// <summary>
+    /// The states the owner applied, up to and including the first that clears it. The owner
+    /// applies them on its own thread, so this waits for them.
+    /// </summary>
+    private static List<bool> AppliedUntilCleared(BlockingCollection<bool> applied)
+    {
+        var states = new List<bool>();
+        while (true)
+        {
+            Assert.True(
+                applied.TryTake(out var state, Timeout),
+                $"The owner did not clear the state within {Timeout.TotalSeconds} s. " +
+                $"Applied so far: [{string.Join(", ", states)}]");
+            states.Add(state);
+
+            if (!state)
+            {
+                return states;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Stops the first <see cref="Acquire"/> until <see cref="Resume"/> is set, then passes every
+    /// call on to the real owner.
+    /// </summary>
+    private sealed class PausingKeepAwake(IKeepAwake inner) : IKeepAwake, IDisposable
+    {
+        private int _acquires;
+
+        public ManualResetEventSlim Paused { get; } = new();
+
+        public ManualResetEventSlim Resume { get; } = new();
+
+        public void Acquire()
+        {
+            if (Interlocked.Increment(ref _acquires) == 1)
+            {
+                Paused.Set();
+                Resume.Wait(Timeout);
+            }
+
+            inner.Acquire();
+        }
+
+        public void Release() => inner.Release();
+
+        public void Dispose()
+        {
+            Paused.Dispose();
+            Resume.Dispose();
+        }
     }
 
     /// <summary>Counts the calls. Thread-safe, because Core reports a drop on its own thread.</summary>

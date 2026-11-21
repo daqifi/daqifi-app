@@ -564,28 +564,55 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     internal IKeepAwake KeepAwake { get; set; } = KeepAwakeOwner.ForThisProcess;
 
     /// <summary>
-    /// 1 while this device holds a <see cref="KeepAwake"/> request, otherwise 0.
+    /// Whether this device holds a <see cref="KeepAwake"/> request. Read and written only under
+    /// <see cref="_keepAwakeGate"/>.
     /// </summary>
     /// <remarks>
     /// Several paths end a stream, and they overlap: a drop releases on Core's transport thread,
-    /// and then the teardown <see cref="Disconnect"/> releases again on the UI thread. The
-    /// exchange makes sure that only the first of them releases. A second release would end the
-    /// request of a different device that still streams (issue #696).
+    /// and then the teardown <see cref="Disconnect"/> releases again on the UI thread. Only the
+    /// first of them releases. A second release would end the request of a different device that
+    /// still streams (issue #696).
     /// </remarks>
-    private int _holdsKeepAwake;
+    private bool _holdsKeepAwake;
+
+    /// <summary>
+    /// Makes each change of <see cref="_holdsKeepAwake"/> and its request to
+    /// <see cref="KeepAwake"/> one step, so the owner gets the requests in the order the flag
+    /// changed.
+    /// </summary>
+    /// <remarks>
+    /// Without it, a drop could occur after a start set the flag and before the start sent its
+    /// request. The drop then sent its release first, the owner ignored it because nothing was
+    /// held yet, and the late request stayed held for good (review on PR #697). Only the flag and
+    /// the request run under the gate: the request only queues work for the owner's thread, so
+    /// Core's transport thread never waits long here.
+    /// </remarks>
+    private readonly Lock _keepAwakeGate = new();
 
     private void AcquireKeepAwake()
     {
-        if (Interlocked.Exchange(ref _holdsKeepAwake, 1) == 0)
+        lock (_keepAwakeGate)
         {
+            if (_holdsKeepAwake)
+            {
+                return;
+            }
+
+            _holdsKeepAwake = true;
             KeepAwake.Acquire();
         }
     }
 
     private void ReleaseKeepAwake()
     {
-        if (Interlocked.Exchange(ref _holdsKeepAwake, 0) == 1)
+        lock (_keepAwakeGate)
         {
+            if (!_holdsKeepAwake)
+            {
+                return;
+            }
+
+            _holdsKeepAwake = false;
             KeepAwake.Release();
         }
     }
