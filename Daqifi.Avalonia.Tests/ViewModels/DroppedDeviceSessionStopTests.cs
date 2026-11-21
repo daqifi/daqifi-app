@@ -152,6 +152,37 @@ public sealed class DroppedDeviceSessionStopTests : IDisposable
     }
 
     /// <summary>
+    /// Issue #690 (M11): "is anything left?" is asked of the manager's list, not of this view
+    /// model's copy. The copy is rebuilt by clearing it and then filling it again, so a drop that
+    /// is handled between the two finds it empty. Here the surviving device is still connected —
+    /// the manager holds it — but the copy is caught empty. The session must keep running.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="DropDevice"/> removes a device from the two lists together, so the other tests
+    /// cannot tell them apart. This one removes the survivor from the copy only, which is the
+    /// state the rebuild's clear leaves.
+    /// </remarks>
+    [Fact]
+    public void WhenADropFindsTheViewModelListClearedWithADeviceStillConnected_TheSessionKeepsRunning()
+    {
+        var dropping = AConnectedDevice("Nq1-M11-DROPS");
+        var surviving = AConnectedDevice("Nq1-M11-STAYS");
+
+        _viewModel.IsLogging = true;
+        Assert.True(_viewModel.IsLogging);
+
+        // The rebuild's clear, before it fills the copy again.
+        _viewModel.ConnectedDevices.Remove(surviving);
+
+        DropDevice(dropping);
+
+        Assert.Contains(surviving, ConnectionManager.Instance.ConnectedDevices);
+        Assert.Empty(_viewModel.ConnectedDevices);
+        Assert.True(_viewModel.IsLogging);
+        Assert.True(LoggingManager.Instance.Active);
+    }
+
+    /// <summary>
     /// And the fleet draining to empty one device at a time still closes the run. The condition is
     /// "nothing is left connected", not "this was the only device there ever was".
     /// </summary>
