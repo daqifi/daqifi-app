@@ -3,8 +3,11 @@
 // DO NOT manually delete the `// @port:` markers — they link symbols back to
 // the correspondence map.
 
+using System.ComponentModel;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Daqifi.Desktop.Common.Loggers;
 using Daqifi.Desktop.Logger;
@@ -21,6 +24,10 @@ public partial class LoggedDataPanePrototype : UserControl
     private readonly AppLogger _logger = AppLogger.Instance;
     private CancellationTokenSource? _renameSessionCts;
 
+    /// <summary>The view model whose selected session the NAME box shows. Null while the pane is
+    /// not loaded, so an unloaded pane holds no subscription on it.</summary>
+    private DaqifiViewModel? _nameBoxHost;
+
     public LoggedDataPanePrototype()
     {
         InitializeComponent();
@@ -30,8 +37,18 @@ public partial class LoggedDataPanePrototype : UserControl
         // Avalonia's headless automation drives the ItemsControl directly, so no analog is needed;
         // production virtualization behavior is unchanged.
 
+        Loaded += (_, _) => FollowNameBoxHost(DataContext as DaqifiViewModel);
+        DataContextChanged += (_, _) =>
+        {
+            if (IsLoaded)
+            {
+                FollowNameBoxHost(DataContext as DaqifiViewModel);
+            }
+        };
+
         Unloaded += (_, _) =>
         {
+            FollowNameBoxHost(null);
             _renameSessionCts?.Cancel();
             _renameSessionCts?.Dispose();
             _renameSessionCts = null;
@@ -70,7 +87,19 @@ public partial class LoggedDataPanePrototype : UserControl
         // (which renders whitespace as "Session {ID}") stay consistent on reload. Empty, not null:
         // Sessions.Name is NOT NULL, so a null read the same in memory but could never be saved
         // (#427), which left the pane showing the default and the next launch showing the old name.
+        // The box itself keeps what the user typed, even when that is nothing: it shows the getter's
+        // "Session {ID}" only when the edit ends (ShowSessionName), never while the user types (#681).
         var newName = textBox.Text?.Trim() ?? string.Empty;
+
+        // The box already shows the session's name, so there is nothing to rename. This is how the
+        // pane's own write (ShowSessionName) is told from typing: TextChanged arrives later, through
+        // the dispatcher, so a flag set around that write is already clear when this runs. Without
+        // it, an edit that ended on an empty box saved "Session {ID}" as text over the empty name.
+        if (newName == session.Name)
+        {
+            return;
+        }
+
         session.Name = newName;
 
         _renameSessionCts?.Cancel();
@@ -105,4 +134,71 @@ public partial class LoggedDataPanePrototype : UserControl
             renameCts.Dispose();
         }
     }
+
+    /// <summary>Leaving the NAME box ends the edit: an emptied box now shows "Session {ID}".</summary>
+    private void OnSessionNameLostFocus(object? sender, RoutedEventArgs e)
+    {
+        // The box's own Cut/Copy/Paste menu takes the focus too, and the user is still editing while
+        // it is open. TextBox.OnLostFocus makes the same exception before it clears the selection.
+        if (SessionNameTextBox.ContextFlyout?.IsOpen == true || SessionNameTextBox.ContextMenu?.IsOpen == true)
+        {
+            return;
+        }
+
+        ShowSessionName();
+    }
+
+    /// <summary>Enter ends the edit the same way, and selects the name it shows, so a name typed
+    /// next replaces it instead of going in front of it.</summary>
+    private void OnSessionNameKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter)
+        {
+            return;
+        }
+
+        ShowSessionName();
+        SessionNameTextBox.SelectAll();
+        e.Handled = true;
+    }
+
+    private void FollowNameBoxHost(DaqifiViewModel? host)
+    {
+        if (_nameBoxHost is not null)
+        {
+            _nameBoxHost.PropertyChanged -= OnNameBoxHostPropertyChanged;
+        }
+
+        _nameBoxHost = host;
+        if (host is not null)
+        {
+            host.PropertyChanged += OnNameBoxHostPropertyChanged;
+        }
+
+        ShowSessionName();
+    }
+
+    private void OnNameBoxHostPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        // Another session, or the drawer opening or closing, ends the edit too. Closing has to be
+        // here: a click on the scrim takes no focus, so the box gets no LostFocus from it.
+        if (e.PropertyName is nameof(DaqifiViewModel.SelectedLoggingSession)
+                           or nameof(DaqifiViewModel.IsLoggingSessionSettingsOpen))
+        {
+            ShowSessionName();
+        }
+    }
+
+    /// <summary>
+    /// Puts the selected session's name in the NAME box: "Session {ID}" for a session with no name.
+    /// </summary>
+    /// <remarks>
+    /// The box has no binding to <see cref="LoggingSession.Name"/> on purpose (#681). That getter
+    /// returns "Session {ID}" for an empty name, so a binding put the default back into the box the
+    /// moment the user emptied it, with the caret at the start, and the next name typed was saved as
+    /// "Pump testSession 2". The pane writes the box only here, when an edit ends or a different
+    /// session is shown, and never while the user types.
+    /// </remarks>
+    private void ShowSessionName() =>
+        SessionNameTextBox.Text = _nameBoxHost?.SelectedLoggingSession?.Name ?? string.Empty;
 }

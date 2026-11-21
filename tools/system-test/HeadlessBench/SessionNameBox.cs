@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Avalonia.Headless;
 using Avalonia.Input;
 using Avalonia.VisualTree;
 using Daqifi.Desktop.Logger;
@@ -123,7 +124,10 @@ internal static partial class HeadlessBench
                 continue;
             }
 
+            // The box shows the session it was opened for: the box has no binding, so this is the pane
+            // following the selected session, and an edit would otherwise start from a stale name.
             var before = box.Text;
+            var shownOnOpen = before == way.Session.Name;
             way.Empty(box);
             Pump();
             var atOnce = box.Text;
@@ -131,9 +135,9 @@ internal static partial class HeadlessBench
             var settled = box.Text;
             var focused = box.IsKeyboardFocusWithin;
             emptiedShot ??= Capture(main, "t1-namebox-emptied");
-            var emptied = atOnce == string.Empty && settled == string.Empty && focused;
+            var emptied = shownOnOpen && atOnce == string.Empty && settled == string.Empty && focused;
             emptyOk &= emptied;
-            emptyEvidence.Add($"{way.How} on '{before}': box '{atOnce}' at once, '{settled}' after " +
+            emptyEvidence.Add($"{way.How} on '{before}' (the session's own name={shownOnOpen}): box '{atOnce}' at once, '{settled}' after " +
                               $"{PastRenameDebounce.TotalMilliseconds:F0} ms (caret {box.CaretIndex}, " +
                               $"still in the box={focused})");
 
@@ -269,12 +273,19 @@ internal static partial class HeadlessBench
             Pump();
         }
 
-        // What the next launch sees: a fresh context, which renders a stored blank as the default.
+        // At the end, with every edit settled: the stored column, then what the next launch sees (a
+        // fresh context, whose getter renders a stored blank as the default). The getter alone cannot
+        // tell an empty name from "Session {ID}" saved as text, so the raw column is read as well.
+        PumpFor(PastRenameDebounce);
+        var raw = Enumerable.Range(1, NameBoxSeedNames.Length).ToDictionary(id => id, StoredSessionName);
+        var rawOk = raw[first.ID] == string.Empty && raw[second.ID] == "Kiln" && raw[third.ID] == string.Empty;
         var reloaded = ReloadedSessionNames();
         var reloadOk = reloaded.Count == 3 && reloaded[first.ID] == $"Session {first.ID}"
                        && reloaded[second.ID] == "Kiln" && reloaded[third.ID] == $"Session {third.ID}";
-        commitOk &= reloadOk;
-        commitEvidence.Add("a fresh database read gives " +
+        commitOk &= rawOk && reloadOk;
+        commitEvidence.Add("at the end the database stores " +
+                           string.Join(", ", raw.Select(p => $"{p.Key}='{p.Value}'")) +
+                           " and a fresh read gives " +
                            string.Join(", ", reloaded.OrderBy(p => p.Key).Select(p => $"{p.Key}='{p.Value}'")));
 
         Step(1, "LOGGED-NAME", "commit", commitOk, string.Join("; ", commitEvidence),
@@ -320,11 +331,17 @@ internal static partial class HeadlessBench
             .GetVisualDescendants().OfType<TextBlock>()
             .FirstOrDefault(t => t.Name == "SessionNameText")?.Text;
 
-    /// <summary>Waits for the session's stored name to read <paramref name="expected"/>, then returns
-    /// what is stored, which is the evidence either way.</summary>
+    /// <summary>Waits for the session's stored name to read <paramref name="expected"/>, then pumps
+    /// past the rename debounce once more and returns what is stored then, which is the evidence
+    /// either way.</summary>
+    /// <remarks>The second pump is not padding. <c>TextBox.TextChanged</c> arrives through the
+    /// dispatcher, after the text has changed, so a rename the box's own write sets off lands a
+    /// debounce LATER than the moment the expected value is first seen. Reading at that first moment
+    /// passed a build that saved "Session {ID}" as text over an empty name 250 ms afterwards.</remarks>
     private static string? WaitForStoredSessionName(int sessionId, string expected)
     {
         PumpUntil(() => StoredSessionName(sessionId) == expected, RenameStoreTimeout);
+        PumpFor(PastRenameDebounce);
         return StoredSessionName(sessionId);
     }
 
