@@ -97,6 +97,12 @@ byte-identical, and a Debug capture is self-consistent, so repeating it confirms
 difference instead of exposing it. The tell is that the differing pixels are a short hex
 string beside the version number (found from the wrong end in #262).
 
+`run.sh` also passes `-p:SourceRevisionId=capture`. Since #346 the settings drawer shows the
+version with its short commit in every configuration, so a capture built from git would move
+`desktop-6` and `desktop-min-6` at every commit. With the fixed value the row reads
+`3.3.0 (capture)`. A bare `dotnet run` of the harness shows the real commit there, and those two
+screens then differ from the baseline for that reason alone.
+
 Every mode fails non-zero on anything it cannot vouch for, including an **incomplete**
 capture. `AvaloniaCapture` declares the screens it is contracted to produce
 (`ExpectedScreens`) and fails the run if any is absent or if it wrote one that is not on
@@ -556,6 +562,15 @@ places that are checked against reality on every run. `./run.sh --check-baseline
 captures once and verifies against the one for the current host, failing on a changed
 screen, a missing one, and one the baseline does not list (`shasum -c` only checks the
 names it was given, so the extra-file direction is checked separately).
+
+`desktop-6-settings-drawer` and `desktop-min-6-settings-drawer` were re-recorded again
+2026-11-20 for the #346 review: the version row now shows the short commit in a Release build
+too, and `run.sh` builds the capture with `SourceRevisionId=capture` (see "Go through `run.sh`"
+above), so the row reads `3.3.0 (capture)`. Those two are the only screens that show the
+version. The other thirty-eight hashes did not move. The pre-change capture of this branch merged
+with `origin/main` (`6a2ee8f`, with #659's harness) reproduced the manifest on all forty, five
+`--determinism` runs agreed on all forty after the change with every drawer settled in 2 rounds,
+and the hashes are from determinism run 1.
 
 Four desktop screens were re-recorded 2026-11-20 (macOS 26.5, Apple silicon, .NET SDK 10.0.303)
 for #346. `desktop-6-settings-drawer` and `desktop-min-6-settings-drawer` show the new UPDATES
