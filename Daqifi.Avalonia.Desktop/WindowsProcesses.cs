@@ -42,7 +42,7 @@ internal static class WindowsProcesses
 
     /// <summary>
     /// Every process on the PC with its name and session, which Windows gives to any user for every
-    /// process, with no need to open it. For the start check of #509.
+    /// process, and its image path where this process may read it. For the start check of #509.
     /// </summary>
     public static IReadOnlyList<SessionProcess> Sessions()
     {
@@ -53,7 +53,7 @@ internal static class WindowsProcesses
             {
                 try
                 {
-                    result.Add(new SessionProcess(process.Id, process.ProcessName, process.SessionId));
+                    result.Add(new SessionProcess(process.Id, process.ProcessName, process.SessionId, ImagePath(process.Id)));
                 }
                 catch (InvalidOperationException)
                 {

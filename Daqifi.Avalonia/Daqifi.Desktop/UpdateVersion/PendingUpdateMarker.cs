@@ -4,11 +4,15 @@ using System.Text;
 
 namespace Daqifi.Desktop.UpdateVersion;
 
-/// <summary>A running process, as any user of the PC can see it: no path, and no access to the process itself.</summary>
+/// <summary>A running process, as a start check sees it.</summary>
 /// <param name="Id">The process ID.</param>
-/// <param name="Name">The process name without extension.</param>
-/// <param name="SessionId">The Windows session the process runs in.</param>
-public sealed record SessionProcess(int Id, string Name, int SessionId);
+/// <param name="Name">The process name without extension. Windows shows it for every process, to every user.</param>
+/// <param name="SessionId">The Windows session the process runs in. Windows shows it for every process, to every user.</param>
+/// <param name="ImagePath">
+/// The full path of its executable, or <c>null</c> when this process may not read it, as for another
+/// user's processes or an elevated one.
+/// </param>
+public sealed record SessionProcess(int Id, string Name, int SessionId, string? ImagePath = null);
 
 /// <summary>This copy of DAQiFi: who runs it, in which session, and as which process.</summary>
 /// <param name="User">The user, for example <c>DOMAIN\name</c>.</param>
@@ -16,6 +20,20 @@ public sealed record SessionProcess(int Id, string Name, int SessionId);
 /// <param name="ProcessId">This process.</param>
 /// <param name="ProcessName">This process's name without extension.</param>
 public sealed record AppCopy(string User, int SessionId, int ProcessId, string ProcessName);
+
+/// <summary>Why a copy of DAQiFi must not start now (#509).</summary>
+/// <param name="Version">The version an update of this install installs now, when that is known.</param>
+/// <param name="Problem">
+/// When it cannot be known: what could not be read. The start stops then too, because a note that
+/// cannot be read is no evidence that the update has finished.
+/// </param>
+public sealed record PendingUpdate(string? Version, string? Problem)
+{
+    /// <summary>What the user is told.</summary>
+    public string Message => Version is not null
+        ? $"DAQiFi {Version} is being installed on this PC. The update closes every copy of DAQiFi, so DAQiFi cannot start now. Try again in a few minutes."
+        : $"DAQiFi cannot tell if an update is being installed on this PC, so it does not start now. {Problem} Try again in a few minutes. If this message stays, an administrator can delete that file or correct the folder's permissions.";
+}
 
 /// <summary>
 /// A note, which every user of the PC can read, that an update for one installation is being
@@ -35,11 +53,17 @@ public sealed record AppCopy(string User, int SessionId, int ProcessId, string P
 /// leaves no sign of that which another user can read: its lock file is in the writer's own
 /// <c>%LocalAppData%</c>, and only the updater knows the ID of its elevated copy. What every user
 /// can read is the list of processes, with their names and sessions. So the note counts while the
-/// copy that wrote it still runs (it starts the updater, then exits), or while a process named
-/// <see cref="UPDATER_PROCESS_NAME"/> runs in the writer's session. Both the updater and its
-/// elevated copy have that name and run in that session, and the elevated copy can outlive the
-/// updater, which waits for it for 10 minutes only. Another program named <c>Update</c> in that
-/// session also keeps the note, until it ends or that user signs out. That errs on the safe side.
+/// copy that wrote it still runs (it starts the updater, then exits), or while this install's
+/// updater runs in the writer's session. Both the updater and its elevated copy run from
+/// <c>Update.exe</c> in the install folder, in that session, and the elevated copy can outlive the
+/// updater, which waits for it for 10 minutes only. When a process's path can be read, it must be
+/// that file. When it cannot be read (another user's process, or an elevated one), a process named
+/// <see cref="UPDATER_PROCESS_NAME"/> in that session counts. That errs on the safe side.
+/// </para>
+/// <para>
+/// A note or a notes folder that cannot be read stops the start too, and is never deleted: only a
+/// note that was read and no longer counts is removed. A start looks again a few times first, in case
+/// the failure was brief.
 /// </para>
 /// <para>
 /// Each user has a file of their own for each session. On Windows, a user can read a file that
@@ -60,10 +84,17 @@ public sealed class PendingUpdateMarker
     /// <summary>How often a restarted copy looks again while it waits.</summary>
     public static readonly TimeSpan RestartPoll = TimeSpan.FromMilliseconds(250);
 
+    /// <summary>How many more times a start looks when a note or the notes folder cannot be read.</summary>
+    public const int READ_RETRIES = 4;
+
+    /// <summary>The wait before each of those looks.</summary>
+    public static readonly TimeSpan ReadRetryDelay = TimeSpan.FromMilliseconds(250);
+
     private const string PREFIX = "pending-";
 
     private readonly string _directory;
     private readonly string _installKey;
+    private readonly string _updaterPath;
     private readonly AppCopy _self;
 
     /// <param name="directory">Where the notes are kept: a folder that every user of the PC can read and add files to.</param>
@@ -72,7 +103,9 @@ public sealed class PendingUpdateMarker
     public PendingUpdateMarker(string directory, string installRoot, AppCopy self)
     {
         _directory = directory;
-        _installKey = Key(NormalizedRoot(installRoot));
+        var root = NormalizedPath(installRoot) ?? installRoot.ToUpperInvariant();
+        _installKey = Key(root);
+        _updaterPath = Path.Combine(root, $"{UPDATER_PROCESS_NAME}.exe".ToUpperInvariant());
         _self = self;
     }
 
@@ -136,15 +169,14 @@ public sealed class PendingUpdateMarker
     }
 
     /// <summary>
-    /// For a copy that starts: the version that an update of this installation installs now, or
-    /// <c>null</c> when this copy can start. Also removes the notes that no longer count, where this
-    /// user can. Never throws.
+    /// For a copy that starts: why it must not start now, or <c>null</c> when it can start. Also
+    /// removes the notes that were read and no longer count, where this user can. Never throws.
     /// </summary>
     /// <param name="args">This copy's command line. The updater starts DAQiFi with hook arguments during an install; those runs are part of the update, so they are never stopped.</param>
     /// <param name="restartedByUpdater">True when the updater started this copy after an install, whether it worked or not.</param>
     /// <param name="processes">Every process on the PC, from all sessions.</param>
-    /// <param name="wait">Waits between looks while a restarted copy waits for its updater to exit; <see cref="Thread.Sleep(TimeSpan)"/> unless a test supplies one.</param>
-    public string? VersionBeingInstalled(
+    /// <param name="wait">Waits between looks; <see cref="Thread.Sleep(TimeSpan)"/> unless a test supplies one.</param>
+    public PendingUpdate? CheckAtStart(
         IReadOnlyList<string> args,
         bool restartedByUpdater,
         Func<IEnumerable<SessionProcess>> processes,
@@ -152,32 +184,54 @@ public sealed class PendingUpdateMarker
     {
         if (args.Any(IsInstallerHook)) { return null; }
 
+        wait ??= Thread.Sleep;
         var waited = TimeSpan.Zero;
+        var retries = 0;
         while (true)
         {
-            var installing = Installing(processes);
-            if (installing is null || !restartedByUpdater || waited >= RestartWait) { return installing; }
+            var found = Look(processes);
 
-            (wait ?? Thread.Sleep)(RestartPoll);
+            // A read can fail for a moment, for example while another copy reads the same note.
+            if (found?.Problem is not null && retries < READ_RETRIES)
+            {
+                retries++;
+                wait(ReadRetryDelay);
+                continue;
+            }
+
+            if (found?.Version is null || !restartedByUpdater || waited >= RestartWait) { return found; }
+
+            wait(RestartPoll);
             waited += RestartPoll;
         }
     }
 
-    private string? Installing(Func<IEnumerable<SessionProcess>> processes)
+    private PendingUpdate? Look(Func<IEnumerable<SessionProcess>> processes)
     {
         string[] files;
         try
         {
             files = Directory.GetFiles(_directory, $"{PREFIX}{_installKey}-*");
         }
-        catch (Exception)
+        catch (DirectoryNotFoundException)
         {
             return null; // no folder yet: no update was ever handed over on this PC
         }
+        catch (Exception ex)
+        {
+            return new PendingUpdate(null, $"The folder {_directory} could not be read ({ex.Message}).");
+        }
 
-        var notes = files.Select(file => (File: file, Note: Read(file))).ToList();
-        foreach (var unreadable in notes.Where(n => n.Note is null)) { TryDelete(unreadable.File); }
-        if (notes.All(n => n.Note is null)) { return null; }
+        var readable = new List<(string File, Note Note)>();
+        string? problem = null;
+        foreach (var file in files)
+        {
+            var (note, error) = Read(file);
+            if (note is not null) { readable.Add((file, note)); }
+            problem ??= error;
+        }
+
+        if (readable.Count == 0) { return problem is null ? null : new PendingUpdate(null, problem); }
 
         // Read after the notes: the copy that wrote a note runs until the updater runs.
         List<SessionProcess> running;
@@ -187,35 +241,38 @@ public sealed class PendingUpdateMarker
         }
         catch (Exception)
         {
-            // A note is there and nothing can tell whether its update still runs. Closing someone's
-            // work is worse than starting later.
-            return notes.First(n => n.Note is not null).Note!.Version;
+            // Nothing can tell whether the update still runs. Closing someone's work is worse than
+            // starting later.
+            return new PendingUpdate(readable[0].Note.Version, null);
         }
 
         string? installing = null;
-        foreach (var (file, note) in notes)
+        foreach (var (file, note) in readable)
         {
-            if (note is null) { continue; }
-
             if (UpdateRuns(note, running))
             {
                 installing ??= note.Version;
             }
             else
             {
-                TryDelete(file);
+                TryDelete(file); // read, and confirmed over
             }
         }
 
-        return installing;
+        if (installing is not null) { return new PendingUpdate(installing, null); }
+        return problem is null ? null : new PendingUpdate(null, problem);
     }
 
-    // The copy that wrote the note still runs, or an updater runs in its session. This copy is never
-    // the one: after a restart it can have the writer's old process ID.
+    // The copy that wrote the note still runs, or this install's updater runs in its session. This
+    // copy is never the one: after a restart it can have the writer's old process ID.
     private bool UpdateRuns(Note note, List<SessionProcess> running) =>
         running.Any(p => p.Id != _self.ProcessId
-                         && ((p.SessionId == note.SessionId && SameName(p.Name, UPDATER_PROCESS_NAME))
+                         && ((p.SessionId == note.SessionId && SameName(p.Name, UPDATER_PROCESS_NAME) && IsThisInstallsUpdater(p.ImagePath))
                              || (p.Id == note.ProcessId && SameName(p.Name, note.ProcessName))));
+
+    // A path that cannot be read (null), or not understood, could be this install's updater.
+    private bool IsThisInstallsUpdater(string? imagePath) =>
+        NormalizedPath(imagePath) is not { } path || path == _updaterPath;
 
     private static bool SameName(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
@@ -245,22 +302,25 @@ public sealed class PendingUpdateMarker
 
     private sealed record Note(string Version, int SessionId, int ProcessId, string ProcessName);
 
-    private static Note? Read(string file)
+    // The note, or why it could not be read. A note that is gone by the next look no longer counts.
+    private static (Note? Note, string? Error) Read(string file)
     {
+        string[] lines;
         try
         {
-            var lines = File.ReadAllLines(file);
-            var version = lines.ElementAtOrDefault(0)?.Trim();
-            return !string.IsNullOrEmpty(version)
-                   && int.TryParse(lines.ElementAtOrDefault(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out var session)
-                   && int.TryParse(lines.ElementAtOrDefault(2), NumberStyles.Integer, CultureInfo.InvariantCulture, out var processId)
-                ? new Note(version, session, processId, lines.ElementAtOrDefault(3)?.Trim() ?? "")
-                : null;
+            lines = File.ReadAllLines(file);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            return null;
+            return (null, $"The note {file} could not be read ({ex.Message}).");
         }
+
+        var version = lines.ElementAtOrDefault(0)?.Trim();
+        return !string.IsNullOrEmpty(version)
+               && int.TryParse(lines.ElementAtOrDefault(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out var session)
+               && int.TryParse(lines.ElementAtOrDefault(2), NumberStyles.Integer, CultureInfo.InvariantCulture, out var processId)
+            ? (new Note(version, session, processId, lines.ElementAtOrDefault(3)?.Trim() ?? ""), null)
+            : (null, $"The note {file} is not in a form that DAQiFi can read.");
     }
 
     private static void TryDelete(string file)
@@ -275,16 +335,17 @@ public sealed class PendingUpdateMarker
         }
     }
 
-    // Windows paths are case-insensitive, and the same folder may come with or without a final separator.
-    private static string NormalizedRoot(string installRoot)
+    // Windows paths are case-insensitive, and the same folder may come with or without a final
+    // separator. Null for a path that is missing or cannot be understood.
+    private static string? NormalizedPath(string? path)
     {
         try
         {
-            return Path.TrimEndingDirectorySeparator(Path.GetFullPath(installRoot)).ToUpperInvariant();
+            return Path.TrimEndingDirectorySeparator(Path.GetFullPath(path!)).ToUpperInvariant();
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
-            return installRoot.ToUpperInvariant();
+            return null;
         }
     }
 

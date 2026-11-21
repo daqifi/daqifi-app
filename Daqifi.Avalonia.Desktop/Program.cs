@@ -15,9 +15,9 @@ internal static class Program
         // An update of this install is under way, and the updater would close this copy with
         // whatever it does (#509), so it stops here, before any work starts. First, and apart from
         // any updater setup below, which can fail: the note is all it needs. Hook runs pass.
-        if (PendingUpdateCheck(args) is { } version)
+        if (PendingUpdateCheck(args) is { } pending)
         {
-            SayUpdateInProgress(version);
+            SayUpdateInProgress(pending.Message);
             return;
         }
 
@@ -71,18 +71,18 @@ internal static class Program
     }
 
     /// <summary>
-    /// The version an update of this install installs now, or <c>null</c> when this copy can start
-    /// (#509). Reads the note and the process list only. Velopack sets <c>VELOPACK_RESTART</c> when its
-    /// updater starts the app after an install, and its Run() clears it, so it is read here, first.
+    /// Why this copy must not start now, or <c>null</c> when it can start (#509). Reads the note and
+    /// the process list only. Velopack sets <c>VELOPACK_RESTART</c> when its updater starts the app
+    /// after an install, and its Run() clears it, so it is read here, first.
     /// </summary>
-    private static string? PendingUpdateCheck(string[] args)
+    private static PendingUpdate? PendingUpdateCheck(string[] args)
     {
         try
         {
             if (!OperatingSystem.IsWindows() || VelopackAppUpdateService.PendingUpdateNote() is not { } note) { return null; }
 
             var restartedByUpdater = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("VELOPACK_RESTART"));
-            return note.VersionBeingInstalled(args, restartedByUpdater, WindowsProcesses.Sessions);
+            return note.CheckAtStart(args, restartedByUpdater, WindowsProcesses.Sessions);
         }
         catch (Exception ex)
         {
@@ -93,10 +93,8 @@ internal static class Program
 
     // Before the app's own windows exist, so a plain Windows message box. Only Windows leaves the
     // note that leads here.
-    private static void SayUpdateInProgress(string version)
+    private static void SayUpdateInProgress(string message)
     {
-        var message = $"DAQiFi {version} is being installed on this PC. The update closes every copy of DAQiFi, " +
-                      "so DAQiFi cannot start now. Try again in a few minutes.";
         if (OperatingSystem.IsWindows())
         {
             _ = MessageBoxW(IntPtr.Zero, message, "DAQiFi", MB_OK | MB_ICONINFORMATION);

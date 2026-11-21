@@ -40,7 +40,17 @@ public sealed class PendingUpdateMarkerTests : IDisposable
 
     private static SessionProcess Process(AppCopy copy) => new(copy.ProcessId, copy.ProcessName, copy.SessionId);
 
+    /// <summary>An updater whose path this copy cannot read, as for another user's or an elevated process.</summary>
     private static SessionProcess Updater(int pid, int session) => new(pid, PendingUpdateMarker.UPDATER_PROCESS_NAME, session);
+
+    private static SessionProcess UpdaterAt(int pid, int session, string imagePath) =>
+        new(pid, PendingUpdateMarker.UPDATER_PROCESS_NAME, session, imagePath);
+
+    private const string PROBLEM = "problem: ";
+
+    /// <summary>The version that stops the start, <see cref="PROBLEM"/> and what could not be read, or null.</summary>
+    private static string? Describe(PendingUpdate? pending) =>
+        pending is null ? null : pending.Version ?? PROBLEM + pending.Problem;
 
     /// <summary>
     /// Alice hands an all-users update over: her copy runs while it writes the note, then the updater
@@ -58,8 +68,8 @@ public sealed class PendingUpdateMarkerTests : IDisposable
         _running.Add(Process(copy));
         try
         {
-            return For(copy).VersionBeingInstalled(args ?? NoArgs, restartedByUpdater, () => _running.ToList(),
-                wait ?? (_ => throw new InvalidOperationException("waited")));
+            return Describe(For(copy).CheckAtStart(args ?? NoArgs, restartedByUpdater, () => _running.ToList(),
+                wait ?? (_ => throw new InvalidOperationException("waited"))));
         }
         finally
         {
@@ -343,7 +353,7 @@ public sealed class PendingUpdateMarkerTests : IDisposable
         _running.Add(Process(Bob));
 
         var other = Path.Combine(Path.GetTempPath(), "daqifi-install-509", "DAQiFi-beta");
-        Assert.Null(For(Bob, other).VersionBeingInstalled(NoArgs, false, () => _running.ToList()));
+        Assert.Null(For(Bob, other).CheckAtStart(NoArgs, false, () => _running.ToList()));
     }
 
     /// <summary>Windows paths ignore case, and a folder can come with or without a final separator.</summary>
@@ -354,7 +364,7 @@ public sealed class PendingUpdateMarkerTests : IDisposable
         _running.Add(Process(Bob));
 
         var sameFolder = _install.ToLowerInvariant() + Path.DirectorySeparatorChar;
-        Assert.Equal(NEW, For(Bob, sameFolder).VersionBeingInstalled(NoArgs, false, () => _running.ToList()));
+        Assert.Equal(NEW, For(Bob, sameFolder).CheckAtStart(NoArgs, false, () => _running.ToList())?.Version);
     }
 
     /// <summary>
@@ -378,27 +388,8 @@ public sealed class PendingUpdateMarkerTests : IDisposable
     {
         var listed = 0;
 
-        Assert.Null(For(Bob).VersionBeingInstalled(NoArgs, false, () => { listed++; return []; }));
+        Assert.Null(For(Bob).CheckAtStart(NoArgs, false, () => { listed++; return []; }));
         Assert.Equal(0, listed);
-    }
-
-    /// <summary>A note that cannot be read never stops a start, since nothing could ever end it, and it is removed.</summary>
-    [Theory]
-    [InlineData("")]
-    [InlineData("3.4.0")]
-    [InlineData("\n1\n1001\nDAQiFi")]
-    [InlineData("3.4.0\nnot a session\n1001\nDAQiFi")]
-    [InlineData("3.4.0\n1\nnot a process\nDAQiFi")]
-    public void UnreadableNote_StopsNothing_AndIsRemoved(string content)
-    {
-        AliceHandsOver();
-        var note = Assert.Single(Directory.GetFiles(_notes));
-        File.WriteAllText(note, content);
-
-        // Any note that could be read would count here: session 0, process 0, and Alice's session all run something.
-        _running = [Updater(UPDATER_PID, ALICE_SESSION), Updater(UPDATER_PID + 1, 0), new SessionProcess(0, "DAQiFi", 0), new SessionProcess(1001, "DAQiFi", 0)];
-        Assert.Null(Start(Bob));
-        Assert.Empty(Directory.GetFiles(_notes));
     }
 
     /// <summary>When the process list cannot be read, a note counts: closing someone's work is worse than starting later.</summary>
@@ -407,16 +398,209 @@ public sealed class PendingUpdateMarkerTests : IDisposable
     {
         AliceHandsOver();
 
-        Assert.Equal(NEW, For(Bob).VersionBeingInstalled(NoArgs, false, () => throw new InvalidOperationException()));
+        Assert.Equal(NEW, For(Bob).CheckAtStart(NoArgs, false, () => throw new InvalidOperationException())?.Version);
+    }
+
+    // ---- Notes that cannot be read (review round 2, thread 1) ----------------------------------
+
+    /// <summary>Counts the waits, and fails a test that would wait forever.</summary>
+    private Action<TimeSpan> CountWaits(Action<int>? onWait = null) => _ =>
+    {
+        _waits++;
+        if (_waits > 1000) { throw new InvalidOperationException("waited forever"); }
+        onWait?.Invoke(_waits);
+    };
+
+    private int _waits;
+
+    /// <summary>
+    /// Round 2, thread 1: a valid note that another process holds open while the updater runs. A note
+    /// that cannot be read is no evidence that the update finished, so the start stops, says why, and
+    /// the note stays.
+    /// </summary>
+    [Fact]
+    public void NoteThatCannotBeOpened_StopsTheStart_AndIsKept()
+    {
+        AliceHandsOver();
+        var note = Assert.Single(Directory.GetFiles(_notes));
+
+        string? seen;
+        using (new FileStream(note, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            seen = Start(Bob, wait: CountWaits());
+        }
+
+        Assert.StartsWith(PROBLEM, seen);
+        Assert.Contains(note, seen);
+        Assert.Equal(PendingUpdateMarker.READ_RETRIES, _waits);
+        Assert.True(File.Exists(note));
+    }
+
+    /// <summary>A read that fails for a moment: the start looks again, and then decides from the note.</summary>
+    [Fact]
+    public void NoteThatCannotBeOpenedForAMoment_IsReadOnTheNextLook()
+    {
+        AliceHandsOver();
+        var note = Assert.Single(Directory.GetFiles(_notes));
+        var holder = new FileStream(note, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        try
+        {
+            Assert.Equal(NEW, Start(Bob, wait: CountWaits(n => { if (n == 2) { holder.Dispose(); } })));
+            Assert.Equal(2, _waits);
+        }
+        finally
+        {
+            holder.Dispose();
+        }
+    }
+
+    private const string FOLDER_NEEDS_ENFORCED_PERMISSIONS =
+        "Needs a folder that this user cannot list: Windows has no UnixFileMode, and a run as root ignores it.";
+
+    /// <summary>
+    /// Round 2, thread 1: a notes folder that is there but cannot be listed stops the start too.
+    /// Only a folder that is not there means that no update was ever handed over.
+    /// </summary>
+    [EnforcedReadOnlyDirectoryFact(FOLDER_NEEDS_ENFORCED_PERMISSIONS)]
+    public void NotesFolderThatCannotBeListed_StopsTheStart()
+    {
+        if (OperatingSystem.IsWindows()) { Assert.Fail(FOLDER_NEEDS_ENFORCED_PERMISSIONS); return; }
+        AliceHandsOver();
+        File.SetUnixFileMode(_notes, UnixFileMode.None);
+        try
+        {
+            var seen = Describe(For(Bob).CheckAtStart(NoArgs, false, () => _running.ToList(), CountWaits()));
+
+            Assert.StartsWith(PROBLEM, seen);
+            Assert.Contains(_notes, seen);
+            Assert.Equal(PendingUpdateMarker.READ_RETRIES, _waits);
+        }
+        finally
+        {
+            File.SetUnixFileMode(_notes, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    /// <summary>
+    /// A note whose content cannot be read stops the start and stays: nothing shows that its update
+    /// has finished. Deleting a file is for an administrator, whom the message tells.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("3.4.0")]
+    [InlineData("\n1\n1001\nDAQiFi")]
+    [InlineData("3.4.0\nnot a session\n1001\nDAQiFi")]
+    [InlineData("3.4.0\n1\nnot a process\nDAQiFi")]
+    public void NoteWithContentThatCannotBeRead_StopsTheStart_AndIsKept(string content)
+    {
+        AliceHandsOver();
+        var note = Assert.Single(Directory.GetFiles(_notes));
+        File.WriteAllText(note, content);
+
+        // Any note that could be read would count here: session 0, process 0, and Alice's session all run something.
+        _running = [Updater(UPDATER_PID, ALICE_SESSION), Updater(UPDATER_PID + 1, 0), new SessionProcess(0, "DAQiFi", 0), new SessionProcess(1001, "DAQiFi", 0)];
+        var seen = Start(Bob, wait: CountWaits());
+
+        Assert.StartsWith(PROBLEM, seen);
+        Assert.Contains(note, seen);
+        Assert.True(File.Exists(note));
+    }
+
+    /// <summary>A note that counts gives the clearer message, even when another note cannot be read.</summary>
+    [Fact]
+    public void NoteThatCounts_IsReported_BeforeANoteThatCannotBeRead()
+    {
+        AliceHandsOver();
+        File.WriteAllText(Path.Combine(_notes, Path.GetFileName(Assert.Single(Directory.GetFiles(_notes))) + "-other"), "garbage");
+
+        Assert.Equal(NEW, Start(Bob, wait: CountWaits()));
+    }
+
+    /// <summary>A note that was read and no longer counts is removed, even while another note cannot be read.</summary>
+    [Fact]
+    public void FinishedNote_IsRemoved_WhileANoteThatCannotBeReadStays()
+    {
+        AliceHandsOver();
+        var finished = Assert.Single(Directory.GetFiles(_notes));
+        var unreadable = finished + "-other";
+        File.WriteAllText(unreadable, "garbage");
+        _running = [];
+
+        Assert.StartsWith(PROBLEM, Start(Bob, wait: CountWaits()));
+        Assert.False(File.Exists(finished));
+        Assert.True(File.Exists(unreadable));
     }
 
     [Fact]
-    public void ProcessListThatFails_WithOnlyUnreadableNotes_StopsNothing()
+    public void ProcessListThatFails_WithOnlyUnreadableNotes_StopsTheStart()
     {
         AliceHandsOver();
         File.WriteAllText(Assert.Single(Directory.GetFiles(_notes)), "garbage");
 
-        Assert.Null(For(Bob).VersionBeingInstalled(NoArgs, false, () => throw new InvalidOperationException()));
+        var seen = Describe(For(Bob).CheckAtStart(NoArgs, false, () => throw new InvalidOperationException(), CountWaits()));
+
+        Assert.StartsWith(PROBLEM, seen);
+    }
+
+    [Fact]
+    public void Messages_SayWhatStopsTheStart()
+    {
+        Assert.Contains("DAQiFi 3.4.0 is being installed", new PendingUpdate(NEW, null).Message);
+
+        var unknown = new PendingUpdate(null, "The note X could not be read (locked).").Message;
+        Assert.Contains("cannot tell if an update is being installed", unknown);
+        Assert.Contains("The note X could not be read (locked).", unknown);
+    }
+
+    // ---- Which updater keeps a note (review round 2, thread 2) ---------------------------------
+
+    /// <summary>When its path can be read, an updater keeps the note only if it is this install's <c>Update.exe</c>.</summary>
+    [Fact]
+    public void ThisInstallsUpdater_WithAPathThatCanBeRead_KeepsTheNote()
+    {
+        AliceHandsOver();
+        _running = [UpdaterAt(UPDATER_PID, ALICE_SESSION, Path.Combine(_install.ToLowerInvariant(), "update.exe"))];
+
+        Assert.Equal(NEW, Start(Bob));
+    }
+
+    /// <summary>
+    /// Round 2, thread 2: DAQiFi's updater and another program's <c>Update.exe</c> run in Alice's
+    /// session. When DAQiFi's updater exits, the other one does not keep the note.
+    /// </summary>
+    [Fact]
+    public void AnotherInstallsUpdater_InTheWritersSession_DoesNotKeepTheNote()
+    {
+        AliceHandsOver();
+        var other = UpdaterAt(2009, ALICE_SESSION, Path.Combine(Path.GetTempPath(), "SomeOtherApp", "Update.exe"));
+        _running = [UpdaterAt(UPDATER_PID, ALICE_SESSION, Path.Combine(_install, "Update.exe")), other];
+        Assert.Equal(NEW, Start(Bob));
+
+        _running = [other];
+        Assert.Null(Start(Bob));
+    }
+
+    /// <summary>Round 2, thread 2: Alice's restart can read her own processes' paths, so another program's updater does not hold it.</summary>
+    [Fact]
+    public void RestartWhileAnotherProgramsUpdaterRuns_StartsAndEndsTheNote()
+    {
+        AliceHandsOver();
+        _running = [UpdaterAt(2009, ALICE_SESSION, Path.Combine(Path.GetTempPath(), "SomeOtherApp", "Update.exe"))];
+
+        Assert.Null(Start(Alice, restartedByUpdater: true, wait: CountWaits()));
+        Assert.Equal(0, _waits);
+        Assert.Empty(Directory.GetFiles(_notes));
+    }
+
+    /// <summary>A path that is there but cannot be understood could still be this install's updater.</summary>
+    [Fact]
+    public void UpdaterWithAPathThatCannotBeUnderstood_KeepsTheNote()
+    {
+        AliceHandsOver();
+        _running = [UpdaterAt(UPDATER_PID, ALICE_SESSION, "\0")];
+
+        Assert.Equal(NEW, Start(Bob));
     }
 
     // ---- The start check comes first (review thread 4) -----------------------------------------
@@ -436,7 +620,7 @@ public sealed class PendingUpdateMarkerTests : IDisposable
         var velopack = main.IndexOf("TryRunVelopack(args)", StringComparison.Ordinal);
         Assert.True(check >= 0 && velopack > check, $"Main: check at {check}, updater setup at {velopack}");
 
-        var checkBody = Between(program, "private static string? PendingUpdateCheck(", "private static void SayUpdateInProgress(");
+        var checkBody = Between(program, "private static PendingUpdate? PendingUpdateCheck(", "private static void SayUpdateInProgress(");
         Assert.DoesNotContain("VelopackApp.", checkBody);
         Assert.DoesNotContain("new VelopackAppUpdateService", checkBody);
         Assert.DoesNotContain("AppUpdates.Current", checkBody);
