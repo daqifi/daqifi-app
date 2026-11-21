@@ -13,7 +13,6 @@
 
 using Daqifi.Core.Communication.Messages;
 using Daqifi.Core.Communication.Transport;
-using ScpiMessageProducer = Daqifi.Core.Communication.Producers.ScpiMessageProducer;
 using CoreStreamingDevice = Daqifi.Core.Device.DaqifiStreamingDevice;
 
 namespace Daqifi.Desktop.Device.UsbDevice;
@@ -21,20 +20,16 @@ namespace Daqifi.Desktop.Device.UsbDevice;
 /// <summary>
 /// A USB streaming device whose transport is injected rather than owning a
 /// <c>SerialPort</c>. Mirrors <see cref="SerialDevice.SerialStreamingDevice"/> — including its
-/// initial-status-wait pattern and its <c>CoreDeviceForSd =&gt; CoreDevice</c> override that
-/// lights up the SD-card offload path — but stays platform-neutral by depending only on
-/// <see cref="IStreamTransport"/>. The concrete transport (Android CDC-ACM, a test double, etc.)
-/// is constructed by the host platform and passed to the constructor.
+/// <c>CoreDeviceForSd =&gt; CoreDevice</c> override that lights up the SD-card offload path — but
+/// stays platform-neutral by depending only on <see cref="IStreamTransport"/>. The concrete
+/// transport (Android CDC-ACM, a test double, etc.) is constructed by the host platform and passed
+/// to the constructor. Like the serial device, it has no wait of its own for the first status:
+/// Core's <c>InitializeAsync</c> owns that wait (#669).
 /// </summary>
 public class UsbStreamingDevice : AbstractStreamingDevice
 {
-    private static readonly TimeSpan InitialStatusTimeout = TimeSpan.FromSeconds(8);
-    private static readonly TimeSpan InitialStatusPollInterval = TimeSpan.FromMilliseconds(100);
-    private static readonly TimeSpan InitialStatusRequestInterval = TimeSpan.FromSeconds(1);
-
     #region Properties
     private readonly IStreamTransport _transport;
-    private TaskCompletionSource<bool>? _initialStatusReceivedSource;
 
     public override ConnectionType ConnectionType => ConnectionType.Usb;
 
@@ -86,9 +81,6 @@ public class UsbStreamingDevice : AbstractStreamingDevice
     /// </summary>
     protected override CoreStreamingDevice CreateCoreDevice()
     {
-        _initialStatusReceivedSource = new TaskCompletionSource<bool>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
         // The transport manages the actual USB connection internally; for CDC-ACM the DTR line
         // must be asserted by the transport or the device will not stream over USB.
         _transport.Connect();
@@ -96,60 +88,6 @@ public class UsbStreamingDevice : AbstractStreamingDevice
         CoreDevice = new CoreStreamingDevice(Name, _transport);
         CoreDevice.Connect();
         return CoreDevice;
-    }
-
-    /// <summary>
-    /// Signals the initial-status wait so <see cref="OnCoreDeviceInitialized"/> can return,
-    /// then runs the shared Core-to-desktop sync.
-    /// </summary>
-    protected override void OnCoreChannelsPopulated(object? sender, Daqifi.Core.Device.ChannelsPopulatedEventArgs e)
-    {
-        _initialStatusReceivedSource?.TrySetResult(true);
-        base.OnCoreChannelsPopulated(sender, e);
-    }
-
-    /// <summary>
-    /// Blocks until the device reports its initial status message, re-requesting device info
-    /// periodically. Gates <see cref="AbstractStreamingDevice.Connect"/> returning, matching the
-    /// serial device's post-initialize behavior.
-    /// </summary>
-    protected override void OnCoreDeviceInitialized()
-    {
-        var coreDevice = CoreDevice
-            ?? throw new InvalidOperationException("Core device was not initialized.");
-
-        var statusReceivedSource = _initialStatusReceivedSource
-            ?? throw new InvalidOperationException("Initial status wait source was not initialized.");
-
-        var deadline = DateTime.UtcNow + InitialStatusTimeout;
-        var nextDeviceInfoRequestAt = DateTime.UtcNow + InitialStatusRequestInterval;
-
-        while (DateTime.UtcNow < deadline)
-        {
-            if (statusReceivedSource.Task.Wait(InitialStatusPollInterval))
-            {
-                return;
-            }
-
-            if (DateTime.UtcNow < nextDeviceInfoRequestAt)
-            {
-                continue;
-            }
-
-            try
-            {
-                coreDevice.Send(ScpiMessageProducer.GetDeviceInfo);
-            }
-            catch (Exception ex)
-            {
-                AppLogger.Warning(ex, $"Failed to re-request device info on {Name}");
-            }
-
-            nextDeviceInfoRequestAt = DateTime.UtcNow + InitialStatusRequestInterval;
-        }
-
-        throw new TimeoutException(
-            $"USB device {Name} did not report status within {InitialStatusTimeout.TotalSeconds:F0} seconds of connect.");
     }
 
     /// <summary>
@@ -170,8 +108,6 @@ public class UsbStreamingDevice : AbstractStreamingDevice
     /// </remarks>
     protected override void CleanupConnection()
     {
-        _initialStatusReceivedSource = null;
-
         // Unsubscribe Core device events and dispose the Core device first.
         base.CleanupConnection();
 
