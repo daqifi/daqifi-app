@@ -312,6 +312,14 @@ internal static partial class HeadlessBench
         string Stored() => string.Join(", ", expected.Keys.Select(id => $"{id}='{StoredSessionName(id)}'"));
         bool StoredAsExpected() => expected.All(p => StoredSessionName(p.Key) == p.Value);
 
+        // The reviewer's order: the named session is the selected one, its drawer was open and is
+        // now closed. The session that is selected is the one an unload could write to, so with an
+        // already-empty session selected this check would pass on the broken build (measured).
+        shell.OpenLoggingSessionSettingsCommand.Execute(second);
+        PumpFor(TimeSpan.FromMilliseconds(400));
+        shell.CloseLoggedSessionSettingsCommand.Execute(null);
+        PumpFor(PastRenameDebounce);
+        var selected = ReferenceEquals(shell.SelectedLoggingSession, second);
         var before = Stored();
         var paneBefore = LoggedDataPaneShown(main);
 
@@ -340,8 +348,8 @@ internal static partial class HeadlessBench
         shell.CloseLoggedSessionSettingsCommand.Execute(null);
         Pump();
 
-        Step(1, "LOGGED-NAME", "leave", paneBefore && paneUnloaded && awayOk && backOk && reopenOk,
-             $"with the drawer closed, stored {before} (Logged Data pane shown={paneBefore}); " +
+        Step(1, "LOGGED-NAME", "leave", selected && paneBefore && paneUnloaded && awayOk && backOk && reopenOk,
+             $"session 2 selected={selected}, drawer closed, stored {before} (Logged Data pane shown={paneBefore}); " +
              $"on Live Graph after {2 * PastRenameDebounce.TotalMilliseconds:F0} ms: pane unloaded={paneUnloaded}, " +
              $"stored {away}, session 2 '{second.Name}'; back on Logged Data: stored {back}; " +
              $"drawer reopened on session 2: box '{shown}', stored {reopened}",
