@@ -569,6 +569,13 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
 
     // @port: Daqifi.Desktop.Device.AbstractStreamingDevice.IsStreaming
     public bool IsStreaming { get; set; }
+
+    /// <summary>
+    /// Keeps the computer awake while this device streams. Tests replace it with a recording fake.
+    /// </summary>
+    // Downstream-only: upstream calls SetThreadExecutionState inline.
+    internal IKeepAwake KeepAwake { get; set; } = KeepAwakeOwner.ForThisProcess;
+
     /// <summary>
     /// Gets or sets whether a newer firmware release exists for this device. Observable because
     /// the release check sets it after the device tile exists, and the tile's UPDATE badge only
@@ -2162,17 +2169,9 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
         // DllNotFoundException on mobile — so it is Windows-guarded; other heads skip the block
         // entirely and log nothing. Mobile sleep-prevention (a wake lock) is a future divergence,
         // not required to stream.
-        if (IsStreaming && OperatingSystem.IsWindows())
+        if (IsStreaming)
         {
-            var previousState = NativeMethods.SetThreadExecutionState(NativeMethods.EsContinuous | NativeMethods.EsSystemRequired);
-            if (previousState == 0) // Check for failure (returns 0 on failure)
-            {
-                AppLogger.Warning("Failed to set computer from sleeping while streaming.");
-            }
-            else
-            {
-                AppLogger.Information("Preventing computer sleep during streaming.");
-            }
+            KeepAwake.Acquire();
         }
     }
 
@@ -2359,20 +2358,7 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
     {
         if (!IsStreaming) return;
 
-        // Allow computer sleep again when stopping streaming (Windows-only
-        // P/Invoke — see InitializeStreaming).
-        if (OperatingSystem.IsWindows())
-        {
-            var previousState = NativeMethods.SetThreadExecutionState(NativeMethods.EsContinuous);
-            if (previousState == 0) // Check for failure
-            {
-                AppLogger.Warning("Failed to reset thread execution state to allow sleep.");
-            }
-            else
-            {
-                AppLogger.Information("Allowing computer sleep after streaming.");
-            }
-        }
+        KeepAwake.Release();
 
         var coreStreamingDevice = GetConnectedCoreDevice(CoreDeviceForStreaming);
         coreStreamingDevice.StopStreaming();
