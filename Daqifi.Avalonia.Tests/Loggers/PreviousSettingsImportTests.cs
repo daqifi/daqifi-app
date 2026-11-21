@@ -243,7 +243,7 @@ public sealed class PreviousSettingsImportTests : IDisposable
 
         var profilesDamaged = damagedFile == PreviousSettingsImport.ProfilesFileName;
         Assert.Equal(profilesDamaged ? 0 : 1, outcome.ProfilesAdded);
-        Assert.Equal(!profilesDamaged, outcome.DelimiterCopied);
+        Assert.Equal(profilesDamaged, outcome.DelimiterCopied);
         Assert.Equal(profilesDamaged ? ";" : ",", settings.CsvDelimiter);
         Assert.Contains(_log.Warnings, warning => warning.Contains(damaged));
         Assert.Empty(_log.Errors);
