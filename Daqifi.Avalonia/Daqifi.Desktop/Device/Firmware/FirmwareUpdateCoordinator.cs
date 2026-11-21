@@ -1451,52 +1451,21 @@ public class FirmwareUpdateCoordinator
         // failed. Mirrors the serial/WiFi connect classification (upstream issues #589 / #740) and stops
         // this from filing Sentry issues for a device that simply needs a power-cycle.
         //
-        // Verifying is deliberately NOT downgraded: since Core v1.4.0 it means only the PIC32 flash CRC
-        // check, a genuine failure that keeps its Error/Sentry path and its "CRC did not match"
-        // recovery guidance.
-        if (FirmwareFailureClassifier.IsPostFlashReconnectTimeout(exception))
-        {
-            _appLogger.AddBreadcrumb(
-                "firmware",
-                $"Firmware installed but device did not reconnect: {exception.FailedState}",
-                Common.Loggers.BreadcrumbLevel.Warning);
-            _appLogger.Warning(
-                exception,
-                $"Firmware was installed and verified ({exception.FailedState}), but the device did not " +
-                "automatically return to application mode after the flash. This is a " +
-                "device/environmental condition (power-cycle recovers it), not an app failure.");
-
-            _host.ShowFirmwareError(
-                FirmwareFailureClassifier.BuildInstalledButNotReconnectedMessage(exception.FailedState));
-            return;
-        }
+        // FirmwareFailureClassifier.Report holds that decision, the log levels and the text. The
+        // bootloader dialog (FirmwareDialogViewModel) calls the same method, so the two windows cannot
+        // drift apart (issue #672).
+        var report = FirmwareFailureClassifier.Report(exception, _appLogger);
 
         // Set only on the genuine-failure path. The flag is the host's "something went wrong"
         // state (UploadFirmwareAsync clears it at the start of every run), and raising it for an
         // outcome whose own dialog says the firmware installed successfully would contradict that
         // dialog the moment anything binds it.
-        _host.HasErrorOccured = true;
-
-        _appLogger.AddBreadcrumb(
-            "firmware",
-            $"Firmware update failed: {exception.FailedState}",
-            Common.Loggers.BreadcrumbLevel.Error);
-
-        var summary = $"Firmware update failed during '{exception.Operation}' ({exception.FailedState}).";
-        _appLogger.Error(exception, summary);
-
-        if (!string.IsNullOrWhiteSpace(exception.RecoveryGuidance))
+        if (!report.FirmwareInstalled)
         {
-            _appLogger.Warning($"Firmware recovery guidance: {exception.RecoveryGuidance}");
+            _host.HasErrorOccured = true;
         }
 
-        var dialogMessage = summary;
-        if (!string.IsNullOrWhiteSpace(exception.RecoveryGuidance))
-        {
-            dialogMessage += $"{Environment.NewLine}{Environment.NewLine}Suggested recovery: {exception.RecoveryGuidance}";
-        }
-
-        _host.ShowFirmwareError(dialogMessage);
+        _host.ShowFirmwareError(report.Message);
     }
 
     // @port: Daqifi.Desktop.Device.Firmware.FirmwareUpdateCoordinator.GetFirmwareDownloadDirectory

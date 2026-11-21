@@ -149,17 +149,22 @@ public class FirmwareDialogBindingTests
     }
 
     /// <summary>
-    /// Gap 4, last: the error line is shown when an error <b>has</b> occurred. Negating it compiles,
-    /// and leaves "something went wrong" on screen for every healthy dialog.
+    /// Gap 4, last: the error line is shown when an error <b>has</b> occurred, and it shows the error's
+    /// own text. Negating the gate compiles, and leaves an empty red line on every healthy dialog; and
+    /// since issue #672 the text is bound, so binding it to any other string member compiles too. The
+    /// line is found by its automation id rather than by its text, which is no longer a literal.
     /// </summary>
     [Fact]
     public void The_error_line_follows_the_error_flag()
     {
         var line = Root().Descendants()
-            .Single(element => element.Name.LocalName == "TextBlock"
-                               && (element.Attribute("Text")?.Value ?? "").StartsWith("Sorry, something went wrong", StringComparison.Ordinal));
+            .Single(element => element.Attributes()
+                .Any(attribute => attribute.Name.LocalName == "AutomationProperties.AutomationId"
+                                  && attribute.Value == "FirmwareUploadError"));
 
+        Assert.Equal("TextBlock", line.Name.LocalName);
         Assert.Equal($"{{Binding {nameof(FirmwareDialogViewModel.HasErrorOccured)}}}", line.Attribute("IsVisible")?.Value);
+        Assert.Equal($"{{Binding {nameof(FirmwareDialogViewModel.ErrorMessage)}}}", line.Attribute("Text")?.Value);
     }
 
     /// <summary>

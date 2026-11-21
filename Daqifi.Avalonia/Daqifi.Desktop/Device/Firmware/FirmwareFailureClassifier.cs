@@ -3,6 +3,7 @@
 // the convention every other file in this folder carries.
 
 using Daqifi.Core.Firmware;
+using Daqifi.Desktop.Common.Loggers;
 
 namespace Daqifi.Desktop.Device.Firmware;
 
@@ -118,5 +119,90 @@ public static class FirmwareFailureClassifier
             ? WIFI_INSTALLED_NO_RECONNECT_MESSAGE
             : PIC32_INSTALLED_NO_RECONNECT_MESSAGE;
     }
+
+    /// <summary>
+    /// Logs a firmware failure that Core reported, and returns what to tell the user. This is the one
+    /// mapping for both windows that flash the PIC32: the device drawer's update
+    /// (<see cref="FirmwareUpdateCoordinator"/>) and the bootloader dialog
+    /// (<c>FirmwareDialogViewModel</c>). Both call it, so their text and their log levels cannot
+    /// drift apart (issue #672: the bootloader dialog showed one fixed sentence for every failure).
+    /// <list type="bullet">
+    /// <item><description>
+    /// A post-flash reconnect timeout (<see cref="IsPostFlashReconnectTimeout"/>): the firmware is
+    /// installed and verified, and only the return to normal mode timed out. It is logged at Warning,
+    /// which sends no Sentry event, and the text is
+    /// <see cref="BuildInstalledButNotReconnectedMessage"/>: the firmware is installed, power-cycle.
+    /// </description></item>
+    /// <item><description>
+    /// Every other failure is logged at Error. The text is a summary, then Core's
+    /// <see cref="FirmwareUpdateException.RecoveryGuidance"/>. Core owns that guidance: since Core
+    /// 1.10.0 it says what the failed flash left on the board (<see cref="Pic32FlashCondition"/>: not
+    /// changed, a clean bootloader that is safe to re-flash, or possibly half-flashed), so the app
+    /// must not write its own.
+    /// </description></item>
+    /// </list>
+    /// <para>
+    /// <see cref="FirmwareUpdateState.Verifying"/> is deliberately NOT treated as installed: since
+    /// Core v1.4.0 it means only the PIC32 flash CRC check, a genuine failure that keeps its
+    /// Error/Sentry path and its "CRC did not match" recovery guidance.
+    /// </para>
+    /// </summary>
+    /// <param name="exception">The exception Core threw. Never null.</param>
+    /// <param name="logger">Where the failure is logged.</param>
+    /// <returns>Whether the firmware is installed, and the text to show the user.</returns>
+    public static FirmwareFailureReport Report(FirmwareUpdateException exception, IAppLogger logger)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        // A post-flash reconnect timeout is a device/environmental condition a power-cycle finishes,
+        // not an app bug, so it files no Sentry issue for a device that simply needs a power-cycle.
+        // Mirrors the serial/WiFi connect classification (upstream issues #589 / #740).
+        if (IsPostFlashReconnectTimeout(exception))
+        {
+            logger.AddBreadcrumb(
+                "firmware",
+                $"Firmware installed but device did not reconnect: {exception.FailedState}",
+                Common.Loggers.BreadcrumbLevel.Warning);
+            logger.Warning(
+                exception,
+                $"Firmware was installed and verified ({exception.FailedState}), but the device did not " +
+                "automatically return to application mode after the flash. This is a " +
+                "device/environmental condition (power-cycle recovers it), not an app failure.");
+
+            return new FirmwareFailureReport(
+                FirmwareInstalled: true,
+                BuildInstalledButNotReconnectedMessage(exception.FailedState));
+        }
+
+        logger.AddBreadcrumb(
+            "firmware",
+            $"Firmware update failed: {exception.FailedState}",
+            Common.Loggers.BreadcrumbLevel.Error);
+
+        var summary = $"Firmware update failed during '{exception.Operation}' ({exception.FailedState}).";
+        logger.Error(exception, summary);
+
+        if (string.IsNullOrWhiteSpace(exception.RecoveryGuidance))
+        {
+            return new FirmwareFailureReport(FirmwareInstalled: false, summary);
+        }
+
+        logger.Warning($"Firmware recovery guidance: {exception.RecoveryGuidance}");
+        return new FirmwareFailureReport(
+            FirmwareInstalled: false,
+            $"{summary}{Environment.NewLine}{Environment.NewLine}Suggested recovery: {exception.RecoveryGuidance}");
+    }
     #endregion
 }
+
+/// <summary>
+/// What a failed firmware operation means for the user. <see cref="FirmwareFailureClassifier.Report"/>
+/// makes it.
+/// </summary>
+/// <param name="FirmwareInstalled">
+/// True when the firmware is on the device and only its return to normal mode timed out, so the
+/// window reports the run as installed rather than failed.
+/// </param>
+/// <param name="Message">The text to show the user.</param>
+public sealed record FirmwareFailureReport(bool FirmwareInstalled, string Message);
