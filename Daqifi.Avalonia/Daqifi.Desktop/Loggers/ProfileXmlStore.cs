@@ -146,55 +146,30 @@ internal sealed class ProfileXmlStore
     }
 
     /// <summary>
-    /// How long a writer waits for another writer of the same file. A write is milliseconds.
-    /// </summary>
-    internal static readonly TimeSpan WriteLockWait = TimeSpan.FromSeconds(10);
-
-    /// <summary>The lock file that every writer of <see cref="FilePath"/> holds, empty and left in place.</summary>
-    internal string WriteLockPath => FilePath + ".lock";
-
-    /// <summary>
-    /// Reads the document, lets <paramref name="change"/> change it, and writes it back. The lock
-    /// that every writer of this file takes, in this copy of the app or another, is held for all
-    /// three steps.
+    /// Reads the document, lets <paramref name="change"/> change it, and writes it back, while it
+    /// holds the writers' lock (<see cref="AppDataFile.HoldWriteLock"/>) that every writer of this
+    /// file takes, in this copy of the app or another.
     /// </summary>
     /// <remarks>
     /// <see cref="Save"/> replaces the file atomically, which keeps the XML whole, but it cannot
     /// keep a second writer's change: two windows that each read the file and then write it back
     /// lose the save of the one that wrote first (#512 review). With the lock, the second writer
-    /// reads only after the first has written. A file rather than a named mutex, for the reasons in
-    /// <see cref="ImportLease"/>: the OS releases it when a process dies, and on macOS and Linux
-    /// .NET maps <see cref="FileShare.None"/> onto <c>flock</c>.
+    /// reads only after the first has written. The wait for the lock is short and bounded, because
+    /// the Profiles pane saves on the UI thread (#512 review round 2).
     /// </remarks>
     /// <param name="change">Changes the document; returns whether there is anything to write.</param>
     /// <exception cref="IOException">
-    /// The lock was still held after <see cref="WriteLockWait"/>, or the file could not be read or
-    /// written. Nothing was written.
+    /// Another writer held the lock for longer than <see cref="AppDataFile.WriteLockWait"/>, or the
+    /// file could not be read or written. Nothing was written, and the caller can try again.
     /// </exception>
     internal void Edit(Func<XDocument, bool> change)
     {
         EnsureDirectory();
-        using var held = HoldWriteLock();
+        using var held = AppDataFile.HoldWriteLock(FilePath);
         var document = Open();
         if (change(document))
         {
             Save(document);
-        }
-    }
-
-    private FileStream HoldWriteLock()
-    {
-        var deadline = DateTime.UtcNow + WriteLockWait;
-        while (true)
-        {
-            try
-            {
-                return new FileStream(WriteLockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-            }
-            catch (IOException) when (DateTime.UtcNow < deadline)
-            {
-                Thread.Sleep(20);
-            }
         }
     }
 

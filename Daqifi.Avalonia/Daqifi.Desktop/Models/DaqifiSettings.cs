@@ -106,9 +106,23 @@ public class DaqifiSettings
     public string CsvDelimiter
     {
         get => _csvDelimiter;
-        // A value set here is the user's choice from now on. When it cannot be saved it is still
-        // used for this session, as before.
-        set => SetCsvDelimiter(value, keepIfNotSaved: true);
+        set
+        {
+            var previous = _csvDelimiter;
+
+            // Validated on the way in as well as on the way out of the file, so what
+            // OptimizedLoggingSessionExporter reads from here is always a delimiter this app
+            // supports. The Settings UI only ever offers the two in CsvDelimiterOptions, so this
+            // changes nothing about how the app behaves; it makes the guarantee a property of the
+            // type rather than of who happens to be calling it.
+            _csvDelimiter = SupportedDelimiterOrDefault(value, "A caller");
+
+            // A value set here is the user's choice from now on. When it cannot be saved it is
+            // still used for this session, as before.
+            _csvDelimiterIsFirstLaunchDefault = false;
+            SaveSettings();
+            RaiseIfChanged(previous);
+        }
     }
 
     /// <summary>
@@ -125,39 +139,60 @@ public class DaqifiSettings
     /// </summary>
     internal bool CsvDelimiterIsFirstLaunchDefault => _csvDelimiterIsFirstLaunchDefault;
 
-    /// <summary>
-    /// Sets the delimiter as the import from an earlier version does, and says whether it reached
-    /// disk. When it did not, the previous delimiter is put back, so a later try writes it again
-    /// instead of finding it already set (#512 review).
-    /// </summary>
-    internal bool TrySetCsvDelimiter(string value) => SetCsvDelimiter(value, keepIfNotSaved: false);
+    /// <summary>What <see cref="ImportCsvDelimiter"/> did.</summary>
+    internal enum DelimiterImportResult
+    {
+        /// <summary>The delimiter was replaced and saved.</summary>
+        Copied,
 
-    private bool SetCsvDelimiter(string value, bool keepIfNotSaved)
+        /// <summary>The file says someone chose the delimiter, so it was kept.</summary>
+        KeptChosen,
+
+        /// <summary>The file could not be read, locked or written. Nothing changed; a later try can work.</summary>
+        NotSaved,
+    }
+
+    /// <summary>
+    /// Sets the delimiter as the import from an earlier version does. Under the writers' lock it
+    /// reads the file again and replaces the delimiter only while the file still says it is the
+    /// first-launch default, because another copy of the app may have saved the user's choice
+    /// since this one loaded it (#512 review round 2). Nothing changes in memory unless the new
+    /// delimiter reached disk, so a failed try leaves the next try something to write (#512 review).
+    /// </summary>
+    internal DelimiterImportResult ImportCsvDelimiter(string value)
     {
         var previous = _csvDelimiter;
-        var previousIsFirstLaunchDefault = _csvDelimiterIsFirstLaunchDefault;
-
-        // Validated on the way in as well as on the way out of the file, so what
-        // OptimizedLoggingSessionExporter reads from here is always a delimiter this app
-        // supports. The Settings UI only ever offers the two in CsvDelimiterOptions, so this
-        // changes nothing about how the app behaves; it makes the guarantee a property of the
-        // type rather than of who happens to be calling it.
-        _csvDelimiter = SupportedDelimiterOrDefault(value, "A caller");
-        _csvDelimiterIsFirstLaunchDefault = false;
-
-        var saved = SaveSettings();
-        if (!saved && !keepIfNotSaved)
+        try
         {
-            _csvDelimiter = previous;
-            _csvDelimiterIsFirstLaunchDefault = previousIsFirstLaunchDefault;
+            EnsureSettingsDirectory();
+            using var held = AppDataFile.HoldWriteLock(_settingsXmlPath);
+
+            if (ReadStoredDelimiter(_settingsXmlPath) is { } stored && stored.ChosenByUser != false)
+            {
+                return DelimiterImportResult.KeptChosen;
+            }
+
+            var delimiter = SupportedDelimiterOrDefault(value, "The import from an earlier version");
+            WriteSettingsFile(delimiter, chosenByUser: true);
+            _csvDelimiter = delimiter;
+            _csvDelimiterIsFirstLaunchDefault = false;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Instance.Warning(ex, "The CSV delimiter from an earlier DAQiFi version could not be saved");
+            return DelimiterImportResult.NotSaved;
         }
 
+        RaiseIfChanged(previous);
+        return DelimiterImportResult.Copied;
+    }
+
+    private void RaiseIfChanged(string previous)
+    {
         if (_csvDelimiter != previous)
         {
             CsvDelimiterChanged?.Invoke(this, EventArgs.Empty);
         }
-
-        return saved;
     }
     #endregion
 
@@ -420,15 +455,11 @@ public class DaqifiSettings
         {
             EnsureSettingsDirectory();
 
-            var xml = new XElement("DAQifiSettings");
-            xml.Add(new XElement("CsvDelimiter",
-                new XAttribute(ChosenByUserAttribute, !_csvDelimiterIsFirstLaunchDefault),
-                CsvDelimiter));
-
-            // Through a temporary file, because XElement.Save truncates its target first: a power
-            // cut, a full disk or a crash part-way through that write is exactly how the unreadable
-            // file in #193 comes about. AppDataFile.WriteAtomically holds the rule and the reasons.
-            AppDataFile.WriteAtomically(_settingsXmlPath, xml.Save);
+            // Under the writers' lock, so that a save never lands between the import's read and
+            // its write (#512 review round 2). The wait is short and bounded: the Settings pane
+            // saves on the UI thread.
+            using var held = AppDataFile.HoldWriteLock(_settingsXmlPath);
+            WriteSettingsFile(CsvDelimiter, chosenByUser: !_csvDelimiterIsFirstLaunchDefault);
             return true;
         }
         catch (Exception ex)
@@ -436,6 +467,18 @@ public class DaqifiSettings
             AppLogger.Instance.Error(ex, "Problem Saving DAQiFi Settings");
             return false;
         }
+    }
+
+    /// <summary>Writes the settings file. The caller holds the writers' lock.</summary>
+    private void WriteSettingsFile(string delimiter, bool chosenByUser)
+    {
+        var xml = new XElement("DAQifiSettings");
+        xml.Add(new XElement("CsvDelimiter", new XAttribute(ChosenByUserAttribute, chosenByUser), delimiter));
+
+        // Through a temporary file, because XElement.Save truncates its target first: a power
+        // cut, a full disk or a crash part-way through that write is exactly how the unreadable
+        // file in #193 comes about. AppDataFile.WriteAtomically holds the rule and the reasons.
+        AppDataFile.WriteAtomically(_settingsXmlPath, xml.Save);
     }
 
     /// <summary>

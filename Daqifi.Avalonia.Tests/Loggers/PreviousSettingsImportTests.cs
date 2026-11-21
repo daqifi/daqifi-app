@@ -489,8 +489,10 @@ public sealed class PreviousSettingsImportTests : IDisposable
     /// </summary>
     /// <remarks>
     /// The candidates are read inside the import's read-and-write, so a lazy sequence is where the
-    /// other window's save can overlap. With no lock the other save finishes at once. With a shared
-    /// lock it waits for the import, so the wait here gives up after a second and the import goes on.
+    /// other window's save can overlap. With no lock the other save finishes at once (a write of
+    /// this file takes a few milliseconds). With the shared lock it waits for the import, so the
+    /// wait here gives up after 50 ms, well inside the lock's own wait
+    /// (<c>AppDataFile.WriteLockWait</c>), and the import goes on and releases the lock in time.
     /// </remarks>
     [Fact]
     public async Task A_profile_another_window_saves_during_the_import_is_kept()
@@ -502,7 +504,7 @@ public sealed class PreviousSettingsImportTests : IDisposable
         IEnumerable<Profile> CandidatesThatOverlapAnotherSave()
         {
             otherSave = Task.Run(() => otherWindow.SubscribeProfile(UsersProfile(FieldId, "Saved in the other window")));
-            otherSave.Wait(TimeSpan.FromSeconds(1));
+            otherSave.Wait(TimeSpan.FromMilliseconds(50));
             yield return UsersProfile(BenchId, "Bench rig");
         }
 
@@ -689,7 +691,61 @@ public sealed class PreviousSettingsImportTests : IDisposable
         var outcome = await Import().ImportAsync(Manager(), first);
 
         Assert.False(outcome.DelimiterCopied);
+        Assert.True(outcome.Complete);
         Assert.Equal(",", Settings().CsvDelimiter);
+    }
+
+    /// <summary>
+    /// Round 2, P2, the import's side of the same lock: while another writer holds it, the import
+    /// does not write the settings file and does not count the delimiter as done. When the lock
+    /// is gone, a retry copies it.
+    /// </summary>
+    [Fact]
+    public async Task An_import_does_not_write_the_settings_while_another_writer_holds_the_lock()
+    {
+        WriteDelimiter(OldSettings, ";");
+        var settings = Settings();
+
+        SettingsImportOutcome first;
+        using (new FileStream(CurrentSettings + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            first = await Import().ImportAsync(Manager(), settings);
+        }
+
+        Assert.False(first.DelimiterCopied);
+        Assert.False(first.Complete);
+        Assert.Equal(",", Settings().CsvDelimiter);
+
+        Assert.True((await Import().ImportAsync(Manager(), settings)).DelimiterCopied);
+        Assert.Equal(";", Settings().CsvDelimiter);
+    }
+
+    /// <summary>
+    /// Round 2, P2. <see cref="DaqifiSettings.ImportCsvDelimiter"/> decides from what the file says
+    /// at that moment, whatever this copy loaded. Only "not chosen" (or no file) may be replaced; a
+    /// file with no flag, such as one an older copy of the app has just written, is kept.
+    /// </summary>
+    [Theory]
+    [InlineData("<DAQifiSettings><CsvDelimiter chosenByUser=\"false\">,</CsvDelimiter></DAQifiSettings>", true)]
+    [InlineData(null, true)]
+    [InlineData("<DAQifiSettings><CsvDelimiter chosenByUser=\"true\">,</CsvDelimiter></DAQifiSettings>", false)]
+    [InlineData("<DAQifiSettings><CsvDelimiter>,</CsvDelimiter></DAQifiSettings>", false)]
+    public void The_import_replaces_the_delimiter_only_while_the_file_says_it_is_the_default(string? fileNow, bool replaced)
+    {
+        var settings = Settings();
+        if (fileNow is null)
+        {
+            File.Delete(CurrentSettings);
+        }
+        else
+        {
+            File.WriteAllText(CurrentSettings, fileNow);
+        }
+
+        var result = settings.ImportCsvDelimiter(";");
+
+        Assert.Equal(replaced ? DaqifiSettings.DelimiterImportResult.Copied : DaqifiSettings.DelimiterImportResult.KeptChosen, result);
+        Assert.Equal(replaced ? ";" : ",", Settings().CsvDelimiter);
     }
 
     /// <summary>
@@ -715,25 +771,28 @@ public sealed class PreviousSettingsImportTests : IDisposable
     /// old profiles file. The busy file must not hide the delimiter from the offer. And when there
     /// are old profiles, a busy file means "cannot tell", so the Import is offered and can try.
     /// </summary>
+    /// <remarks>The last row: with nothing old to bring, a busy file must not cause an offer either.</remarks>
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void A_busy_profiles_file_here_does_not_hide_the_offer(bool oldProfilesToo)
+    [InlineData(false, true, true)]
+    [InlineData(true, false, true)]
+    [InlineData(false, false, false)]
+    public void A_busy_profiles_file_here_does_not_hide_the_offer(bool oldProfiles, bool oldSemicolon, bool offered)
     {
         var manager = Manager();
         var settings = Settings();
-        if (oldProfilesToo)
+        if (oldProfiles)
         {
             WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
         }
-        else
+
+        if (oldSemicolon)
         {
             WriteDelimiter(OldSettings, ";");
         }
 
         using var busy = new FileStream(CurrentProfiles, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
 
-        Assert.True(Import().HasSettingsToImport(CurrentProfiles, settings));
+        Assert.Equal(offered, Import().HasSettingsToImport(CurrentProfiles, settings));
     }
 
     /// <summary>

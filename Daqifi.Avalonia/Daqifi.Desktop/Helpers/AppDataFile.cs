@@ -136,4 +136,49 @@ internal static class AppDataFile
             throw;
         }
     }
+
+    /// <summary>
+    /// How long a writer waits for another writer of the same file. A write of these small files
+    /// takes a few milliseconds, so this is many writes long, and short enough that the window
+    /// does not stall on the UI thread where the panes save (#512 review round 2).
+    /// </summary>
+    internal static readonly TimeSpan WriteLockWait = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
+    /// Takes the lock that every writer of <paramref name="filePath"/> holds while it reads, changes
+    /// and writes the file, in this copy of the app or another. Dispose the result to release it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="WriteAtomically"/> keeps each write whole, but two writers that each read the file
+    /// and then write it back still lose the first one's change (#512 review). Holding this for
+    /// the read, the change and the write closes that. The lock is an empty file beside the target
+    /// (<c>&lt;name&gt;.lock</c>), opened with <see cref="FileShare.None"/>: a share-mode conflict on
+    /// Windows, <c>flock</c> on macOS and Linux, released by the OS if the process dies. It stays
+    /// in place, because deleting it while another writer waits on it would let two writers in.
+    /// </para>
+    /// <para>
+    /// <b>Bounded, and short.</b> The callers are the Profiles and Settings panes, on the UI thread.
+    /// After <see cref="WriteLockWait"/> this gives up with an <see cref="IOException"/>, which those
+    /// callers already report as a save that did not work and can be tried again. An unlimited or
+    /// long wait froze the whole window (#512 review round 2).
+    /// </para>
+    /// </remarks>
+    /// <exception cref="IOException">Another writer still held the lock after <see cref="WriteLockWait"/>.</exception>
+    internal static IDisposable HoldWriteLock(string filePath)
+    {
+        var lockPath = filePath + ".lock";
+        var deadline = DateTime.UtcNow + WriteLockWait;
+        while (true)
+        {
+            try
+            {
+                return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException) when (DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(10);
+            }
+        }
+    }
 }

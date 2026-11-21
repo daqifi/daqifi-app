@@ -176,7 +176,7 @@ public sealed class DaqifiSettingsTests : IDisposable
         File.WriteAllText(blocker, "not a directory");
         var settings = new DaqifiSettings(Path.Combine(blocker, "DAQifiConfiguration.xml"));
 
-        Assert.False(settings.TrySetCsvDelimiter(";"));
+        Assert.Equal(DaqifiSettings.DelimiterImportResult.NotSaved, settings.ImportCsvDelimiter(";"));
         Assert.Equal(",", settings.CsvDelimiter);
         Assert.True(settings.CsvDelimiterIsFirstLaunchDefault);
 
@@ -269,7 +269,12 @@ public sealed class DaqifiSettingsTests : IDisposable
 
         settings.CsvDelimiter = ";";
 
-        Assert.Equal(SettingsPath, Assert.Single(Directory.GetFiles(_directory)));
+        // The one other file is the empty writers' lock (#512 review round 2), which stays in
+        // place on purpose: deleting it while another window waits on it would let two writers in.
+        Assert.Equal(
+            new[] { SettingsPath, SettingsPath + ".lock" }.Order(StringComparer.Ordinal),
+            Directory.GetFiles(_directory).Order(StringComparer.Ordinal));
+        Assert.Equal(0, new FileInfo(SettingsPath + ".lock").Length);
         Assert.Equal(";", StoredDelimiter(SettingsPath));
         Assert.Equal(";", NewSettings().CsvDelimiter);
     }

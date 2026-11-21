@@ -27,13 +27,19 @@ namespace Daqifi.Desktop.Logger;
 /// not say whether it was set.
 /// </para>
 /// <para>
-/// <b>Once per part.</b> The profiles and the delimiter each have a marker, written when that part
-/// is done. Without one, a profile that the user deletes after the import would come back at the
-/// next Import, and a comma that the user chooses after it would be changed again. They are two
+/// <b>Once per part.</b> The profiles and the delimiter each have a marker. Without one, a profile
+/// that the user deletes after the import would come back at the next Import. They are two
 /// markers, so a retry after one part failed cannot undo what the user changed in the other (#512
-/// review). A part is not done when an old file could not be opened or this user's file could not
-/// be written, so the next Import tries it again. Rereading a damaged file gives the same result,
-/// so that part counts as done.
+/// review). A marker is written before its part does any work and taken away if the work fails,
+/// so no work is ever done without a record (#512 review round 2). A part fails when an old file
+/// could not be opened or this user's file could not be written, and the next Import tries it
+/// again. Rereading a damaged file gives the same result, so that part counts as done.
+/// </para>
+/// <para>
+/// <b>The delimiter is decided against the file, not memory.</b> Another running copy of the app
+/// may have saved the user's choice after this copy loaded its settings, so
+/// <see cref="DaqifiSettings.ImportCsvDelimiter"/> reads the file again under the settings
+/// writers' lock before it replaces anything (#512 review round 2).
 /// </para>
 /// </remarks>
 public sealed class PreviousSettingsImport
@@ -142,15 +148,8 @@ public sealed class PreviousSettingsImport
                 return outcome;
             }
 
-            if (!IsDone(ProfilesMarkerFileName))
-            {
-                Finish(ProfilesMarkerFileName, await ImportProfilesAsync(profiles, outcome), outcome);
-            }
-
-            if (!IsDone(DelimiterMarkerFileName))
-            {
-                Finish(DelimiterMarkerFileName, await ImportDelimiterAsync(settings, outcome), outcome);
-            }
+            await RunPartAsync(ProfilesMarkerFileName, () => ImportProfilesAsync(profiles, outcome), outcome);
+            await RunPartAsync(DelimiterMarkerFileName, () => ImportDelimiterAsync(settings, outcome), outcome);
 
             _appLogger.Information(
                 $"Import from an earlier DAQiFi version: {outcome.ProfilesAdded} profile(s) copied; " +
@@ -168,7 +167,8 @@ public sealed class PreviousSettingsImport
 
     /// <summary>
     /// Records that the import is finished with, both parts, so it is not offered again: what the
-    /// user's Dismiss means. Best effort.
+    /// user's Dismiss means. Best effort: a record that cannot be written means the offer comes
+    /// back at the next launch.
     /// </summary>
     public void MarkDone()
     {
@@ -220,16 +220,20 @@ public sealed class PreviousSettingsImport
             return true;
         }
 
-        // The save result, not the setter: a delimiter that is only in memory is lost at the next
-        // launch, so it is not done until it is on disk (#512 review).
-        if (!settings.TrySetCsvDelimiter(oldDelimiter!))
+        // Decided again under the settings writers' lock, from what the file says now, not from
+        // what this copy loaded at launch: another copy of the app may have saved the user's
+        // choice since (#512 review round 2). And not done until it is on disk (#512 review).
+        switch (settings.ImportCsvDelimiter(oldDelimiter!))
         {
-            _appLogger.Warning("The CSV delimiter from an earlier DAQiFi version could not be saved; the next Import tries again.");
-            return false;
+            case DaqifiSettings.DelimiterImportResult.Copied:
+                outcome.DelimiterCopied = true;
+                return true;
+            case DaqifiSettings.DelimiterImportResult.KeptChosen:
+                return true;
+            default:
+                _appLogger.Warning("The CSV delimiter from an earlier DAQiFi version could not be saved; the next Import tries again.");
+                return false;
         }
-
-        outcome.DelimiterCopied = true;
-        return true;
     }
 
     /// <summary>
@@ -259,7 +263,25 @@ public sealed class PreviousSettingsImport
             return !ProfileXmlStore.IsUnreadableContent(ex);
         }
 
-        var here = ProfileXmlStore.ReadWithoutRepair(currentProfilesPath).Select(p => p.ProfileId).ToHashSet();
+        // Nothing to compare, so this user's file is not read at all (#512 review round 2).
+        if (oldProfiles.Count == 0)
+        {
+            return false;
+        }
+
+        HashSet<Guid> here;
+        try
+        {
+            here = ProfileXmlStore.ReadWithoutRepair(currentProfilesPath).Select(p => p.ProfileId).ToHashSet();
+        }
+        catch
+        {
+            // This user's file is busy or unreadable, so this check cannot tell. Offer the Import:
+            // it can try, and it keeps a retry when it fails. A failure here must not hide the
+            // delimiter from the offer either (#512 review round 2).
+            return true;
+        }
+
         return oldProfiles.Any(p => !here.Contains(p.ProfileId));
     }
 
@@ -311,33 +333,67 @@ public sealed class PreviousSettingsImport
         }
     }
 
-    /// <summary>Writes a done part's marker, or records that the import is not complete.</summary>
-    private void Finish(string markerFileName, bool done, SettingsImportOutcome outcome)
+    /// <summary>
+    /// Runs one part, unless its marker says it is done.
+    /// </summary>
+    /// <remarks>
+    /// The marker is written <b>first</b>. A part whose work is done but not recorded could run
+    /// again at a later Import and undo what the user changed since, such as a profile they
+    /// deleted (#512 review round 2). So a marker that cannot be written stops the part, and the
+    /// import is not complete. When the work then fails, the marker is taken away again, and the
+    /// next Import tries the part again.
+    /// </remarks>
+    private async Task RunPartAsync(string markerFileName, Func<Task<bool>> work, SettingsImportOutcome outcome)
     {
-        if (done)
+        if (IsDone(markerFileName))
         {
-            MarkDone(markerFileName);
+            return;
         }
-        else
+
+        if (!MarkDone(markerFileName))
         {
             outcome.Complete = false;
+            return;
+        }
+
+        if (!await work())
+        {
+            outcome.Complete = false;
+            Unmark(markerFileName);
         }
     }
 
     private bool IsDone(string markerFileName) => File.Exists(Path.Combine(_markerDirectory, markerFileName));
 
-    /// <summary>Records that one part is done, so it does not run again. Best effort.</summary>
-    private void MarkDone(string markerFileName)
+    /// <summary>Records that one part is done, so it does not run again.</summary>
+    /// <returns>Whether the record was written.</returns>
+    private bool MarkDone(string markerFileName)
     {
         try
         {
             Directory.CreateDirectory(_markerDirectory);
             File.WriteAllText(Path.Combine(_markerDirectory, markerFileName), string.Empty);
+            return true;
         }
         catch (Exception ex)
         {
-            // Runs again at the next Import. Harmless: what is already here is skipped.
-            _appLogger.Warning(ex, "Could not record that part of the settings import from an earlier DAQiFi version is done");
+            _appLogger.Warning(ex, "Could not record a part of the settings import from an earlier DAQiFi version; it is tried again later");
+            return false;
+        }
+    }
+
+    /// <summary>Takes a part's marker away after its work failed, so that the next Import tries it again.</summary>
+    private void Unmark(string markerFileName)
+    {
+        try
+        {
+            File.Delete(Path.Combine(_markerDirectory, markerFileName));
+        }
+        catch (Exception ex)
+        {
+            // The part now looks done without its work, so it does not run again. Rare, because the
+            // folder accepted the marker a moment ago, and logged so that it can be found.
+            _appLogger.Error(ex, "Could not take back the marker of a failed part of the settings import from an earlier DAQiFi version; that part will not run again");
         }
     }
 }
