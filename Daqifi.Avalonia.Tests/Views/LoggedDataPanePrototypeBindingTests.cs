@@ -84,7 +84,12 @@ public class LoggedDataPanePrototypeBindingTests
         Assert.Equal("TextBox", box.Name.LocalName);
         Assert.Null(box.Attribute("Text"));
         Assert.DoesNotContain(box.Elements(), element => element.Name.LocalName == "TextBox.Text");
-        Assert.Equal("OnSessionNameChanged", box.Attribute("TextChanged")?.Value);
+        // TextChanging, not TextChanged: TextChanged arrives later, through the dispatcher, after the
+        // pane's own write has ended, so the handler cannot tell that write from typing. Two such
+        // deferred events saved names the user never typed (#681, and in review of #684 an empty
+        // name over a saved one on a tab switch).
+        Assert.Equal("OnSessionNameChanged", box.Attribute("TextChanging")?.Value);
+        Assert.Null(box.Attribute("TextChanged"));
         Assert.Equal("OnSessionNameLostFocus", box.Attribute("LostFocus")?.Value);
         Assert.Equal("OnSessionNameKeyDown", box.Attribute("KeyDown")?.Value);
     }

@@ -981,14 +981,15 @@
                                  saved as "Pump testSession 2". The code-behind shows the name when
                                  another session is selected and when an edit ends (LostFocus, which
                                  the drawer closing also raises, or Enter), and never while the user
-                                 types. -->
+                                 types. The rename handler is on TextChanging, which is raised inside
+                                 that write, so the pane's own write is never saved as a rename. -->
                             <TextBlock Text="NAME"
                                        Classes="sectionLabel"
                                        Margin="0,8,0,8"/>
                             <Border Classes="drawerTextField">
                                 <TextBox x:Name="SessionNameTextBox"
                                          Theme="{StaticResource DrawerTextBox}"
-                                         TextChanged="OnSessionNameChanged"
+                                         TextChanging="OnSessionNameChanged"
                                          LostFocus="OnSessionNameLostFocus"
                                          KeyDown="OnSessionNameKeyDown"/>
                             </Border>

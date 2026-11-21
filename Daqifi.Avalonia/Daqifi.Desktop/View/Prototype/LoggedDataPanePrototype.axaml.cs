@@ -28,6 +28,11 @@ public partial class LoggedDataPanePrototype : UserControl
     /// not loaded, so an unloaded pane holds no subscription on it.</summary>
     private DaqifiViewModel? _nameBoxHost;
 
+    /// <summary>True while <see cref="ShowSessionName"/> writes the NAME box. The rename handler
+    /// runs on TextChanging, which the box raises inside that write, so this is how the handler
+    /// knows that the text did not come from the user.</summary>
+    private bool _showingSessionName;
+
     public LoggedDataPanePrototype()
     {
         InitializeComponent();
@@ -75,9 +80,17 @@ public partial class LoggedDataPanePrototype : UserControl
     }
 
     // @port: Daqifi.Desktop.View.Prototype.LoggedDataPanePrototype.OnSessionNameChanged
-    private async void OnSessionNameChanged(object? sender, TextChangedEventArgs e)
+    // Wired to TextChanging, not TextChanged (#681): Avalonia raises TextChanged later, through the
+    // dispatcher, when the pane's own write is long over and nothing can tell it from typing. Two
+    // of those deferred events saved text the user never typed: "Session {ID}" over an empty name,
+    // and, in review of #684, an empty string over a saved name when the pane unloaded on a tab
+    // switch. TextChanging is raised inside the write, so _showingSessionName is still set.
+    private async void OnSessionNameChanged(object? sender, TextChangingEventArgs e)
     {
-        if ((DataContext as DaqifiViewModel)?.SelectedLoggingSession is not LoggingSession session ||
+        // Only the user's own edits rename the session. The pane showing a name is not an edit, and
+        // a pane that is not loaded has no host, so it renames nothing.
+        if (_showingSessionName ||
+            _nameBoxHost?.SelectedLoggingSession is not LoggingSession session ||
             sender is not TextBox textBox)
         {
             return;
@@ -90,16 +103,6 @@ public partial class LoggedDataPanePrototype : UserControl
         // The box itself keeps what the user typed, even when that is nothing: it shows the getter's
         // "Session {ID}" only when the edit ends (ShowSessionName), never while the user types (#681).
         var newName = textBox.Text?.Trim() ?? string.Empty;
-
-        // The box already shows the session's name, so there is nothing to rename. This is how the
-        // pane's own write (ShowSessionName) is told from typing: TextChanged arrives later, through
-        // the dispatcher, so a flag set around that write is already clear when this runs. Without
-        // it, an edit that ended on an empty box saved "Session {ID}" as text over the empty name.
-        if (newName == session.Name)
-        {
-            return;
-        }
-
         session.Name = newName;
 
         _renameSessionCts?.Cancel();
@@ -170,12 +173,14 @@ public partial class LoggedDataPanePrototype : UserControl
         }
 
         _nameBoxHost = host;
+
+        // On unload (no host) the box keeps its text: there is no session to show, and the pane
+        // must not write a name it does not have (review of #684).
         if (host is not null)
         {
             host.PropertyChanged += OnNameBoxHostPropertyChanged;
+            ShowSessionName();
         }
-
-        ShowSessionName();
     }
 
     private void OnNameBoxHostPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -197,8 +202,19 @@ public partial class LoggedDataPanePrototype : UserControl
     /// returns "Session {ID}" for an empty name, so a binding put the default back into the box the
     /// moment the user emptied it, with the caret at the start, and the next name typed was saved as
     /// "Pump testSession 2". The pane writes the box only here, when an edit ends or a different
-    /// session is shown, and never while the user types.
+    /// session is shown, and never while the user types. This write is not a rename: the flag makes
+    /// <see cref="OnSessionNameChanged"/> ignore the TextChanging it raises.
     /// </remarks>
-    private void ShowSessionName() =>
-        SessionNameTextBox.Text = _nameBoxHost?.SelectedLoggingSession?.Name ?? string.Empty;
+    private void ShowSessionName()
+    {
+        _showingSessionName = true;
+        try
+        {
+            SessionNameTextBox.Text = _nameBoxHost?.SelectedLoggingSession?.Name ?? string.Empty;
+        }
+        finally
+        {
+            _showingSessionName = false;
+        }
+    }
 }
