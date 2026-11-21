@@ -18,7 +18,7 @@ namespace Daqifi.Avalonia.Tests.Loggers;
 /// and a delete-all purge can ask for the retained batch to be dropped. None of that had a test.
 /// The class even carries three <c>internal</c> members whose XML docs say they are "exposed for
 /// tests" — <see cref="SessionSampleWriter.PendingRetryCount"/>,
-/// <see cref="SessionSampleWriter.PollsUntilRetry"/> and
+/// <c>PollsUntilRetry</c> (since deleted: no test needs it) and
 /// <see cref="SessionSampleWriter.IsConsumerThreadAlive"/> — and nothing in the suite referenced any
 /// of them, so the seams were there and the tests were not.</para>
 ///
