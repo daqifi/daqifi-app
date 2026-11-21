@@ -293,6 +293,53 @@ public sealed class ProfileActivationTests : IDisposable
         Assert.DoesNotContain(device.DataChannels, c => c.IsActive);
     }
 
+    /// <summary>
+    /// The new-profile drawer is the other way to make a profile. With two channels named Temp and
+    /// only the second chosen, the profile must turn on the second.
+    /// </summary>
+    [Fact]
+    public async Task A_new_profile_with_one_of_two_same_named_channels_turns_on_the_input_chosen()
+    {
+        var device = Connect("PROFILE-DUP-NEW");
+        device.DataChannels[0].Name = "Temp";
+        device.DataChannels[1].Name = "Temp";
+        _pane.OpenNewDrawerCommand.Execute(null);
+        var item = _pane.NewDeviceItems.Single(d => ReferenceEquals(d.Device, device));
+        item.IsSelected = true;
+        foreach (var channelItem in item.ChannelItems)
+        {
+            channelItem.IsSelected = ReferenceEquals(channelItem.Channel, device.DataChannels[1]);
+        }
+        _pane.NewProfileName = "New, one of two of one name";
+        var before = LoggingManager.Instance.SubscribedProfiles.ToList();
+        _pane.SaveNewProfileCommand.Execute(null);
+        var profile = LoggingManager.Instance.SubscribedProfiles.Except(before).Single();
+
+        await Activate(profile);
+
+        Assert.Equal("2", device.LastAdcMask());
+        Assert.False(device.DataChannels[0].IsActive);
+        Assert.True(device.DataChannels[1].IsActive);
+    }
+
+    /// <summary>
+    /// An older profile with as many entries of one name as the device has channels of that name is
+    /// not ambiguous: each entry claims one, and both inputs are turned on (#670).
+    /// </summary>
+    [Fact]
+    public async Task An_older_profile_with_two_entries_for_two_same_named_channels_turns_on_both()
+    {
+        var device = Connect("PROFILE-OLD-3");
+        device.DataChannels[2].Name = "Temp";
+        device.DataChannels[3].Name = "Temp";
+        var profile = OlderProfile("Older, two of one name", device, "Temp", "Temp");
+
+        await Activate(profile);
+
+        Assert.True(profile.IsProfileActive);
+        Assert.Equal("12", device.LastAdcMask()); // AI2 | AI3
+    }
+
     /// <summary>An older profile whose names are unique on the device still applies by name.</summary>
     [Fact]
     public async Task An_older_profile_with_unique_names_still_applies_by_name()

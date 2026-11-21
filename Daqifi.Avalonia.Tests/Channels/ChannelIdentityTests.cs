@@ -132,6 +132,32 @@ public sealed class ChannelIdentityTests
     }
 
     /// <summary>
+    /// Two objects for one input of one board that has no serial and no MAC address. Nothing durable
+    /// names the board, but they hang off the same device wrapper, so they are one channel: a tile
+    /// that holds one of them must still find the other in the device's list.
+    /// </summary>
+    [Fact]
+    public void Two_objects_for_one_input_of_one_unidentified_board_are_one_channel()
+    {
+        var board = UnserializedBoard(string.Empty, "AI0");
+        var again = new AnalogChannel(board, new CoreAnalogChannel(0)) { Name = "Temp" };
+
+        Assert.True(board.DataChannels[0].Equals(again));
+    }
+
+    /// <summary>
+    /// Equality is reflexive even for a channel that has no device and no serial number to compare,
+    /// as test doubles and channels read back from storage do.
+    /// </summary>
+    [Fact]
+    public void A_channel_with_no_device_and_no_serial_is_still_equal_to_itself()
+    {
+        var lone = new Daqifi.Avalonia.Tests.Device.FakeChannel("AI0", string.Empty);
+
+        Assert.True(lone.Equals(lone));
+    }
+
+    /// <summary>
     /// The storage half. The database, Logged Data and the live plot key a sample by serial number
     /// and recorded name, so two boards that share the blank serial must not share a recorded name.
     /// </summary>
