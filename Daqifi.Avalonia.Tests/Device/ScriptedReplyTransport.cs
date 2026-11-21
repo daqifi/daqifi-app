@@ -14,13 +14,18 @@ namespace Daqifi.Avalonia.Tests.Device;
 /// <remarks>
 /// <see cref="CapturingTransport"/> never answers. That is right for a test that only reads the
 /// wire, and it is why no test reached <c>InitializeAsync</c> over a transport before #669. Here the
-/// reply function gets each command as the device would see it (one line, trimmed) and returns the
-/// bytes the device sends back, or <c>null</c> for no answer. <see cref="Board"/> scripts the
-/// connect conversation of a board.
+/// reply function gets each command as the device sees it (one line, trimmed) and returns the bytes
+/// the device sends back, or <c>null</c> for no answer. <see cref="Board"/> scripts the connect
+/// conversation of a board. The transport is its own stream: a read waits for an answer, and
+/// reports end-of-stream only after disposal.
 /// </remarks>
-internal sealed class ScriptedReplyTransport(Func<string, byte[]?> reply) : IStreamTransport
+internal sealed class ScriptedReplyTransport(Func<string, byte[]?> reply) : Stream, IStreamTransport
 {
-    private readonly ScriptedReplyStream _stream = new(reply);
+    private readonly object _gate = new();
+    private readonly StringBuilder _line = new();
+    private readonly List<string> _commands = [];
+    private readonly Queue<byte> _answers = new();
+    private bool _closed;
 
     /// <summary>
     /// A board that has an empty error queue and answers a status request with
@@ -37,9 +42,12 @@ internal sealed class ScriptedReplyTransport(Func<string, byte[]?> reply) : IStr
     }
 
     /// <summary>Every command line written so far, in order.</summary>
-    public IReadOnlyList<string> Commands => _stream.Commands;
+    public IReadOnlyList<string> Commands
+    {
+        get { lock (_gate) { return _commands.ToArray(); } }
+    }
 
-    public Stream Stream => _stream;
+    public Stream Stream => this;
 
     public bool IsConnected { get; private set; }
 
@@ -61,32 +69,87 @@ internal sealed class ScriptedReplyTransport(Func<string, byte[]?> reply) : IStr
         return Task.CompletedTask;
     }
 
-    public void Connect()
+    public void Connect() => SetConnected(true);
+
+    public void Disconnect() => SetConnected(false);
+
+    public override int Read(byte[] buffer, int offset, int count)
     {
-        if (IsConnected)
+        lock (_gate)
+        {
+            while (_answers.Count == 0 && !_closed)
+            {
+                Monitor.Wait(_gate);
+            }
+
+            var read = 0;
+            while (read < count && _answers.Count > 0)
+            {
+                buffer[offset + read++] = _answers.Dequeue();
+            }
+
+            return read;
+        }
+    }
+
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        lock (_gate)
+        {
+            foreach (var b in buffer.AsSpan(offset, count))
+            {
+                if (b != (byte)'\n')
+                {
+                    _line.Append((char)b);
+                    continue;
+                }
+
+                var command = _line.ToString().Trim();
+                _line.Clear();
+                _commands.Add(command);
+                foreach (var answer in reply(command) ?? [])
+                {
+                    _answers.Enqueue(answer);
+                }
+
+                Monitor.PulseAll(_gate);
+            }
+        }
+    }
+
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => true;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            Disconnect();
+            lock (_gate)
+            {
+                _closed = true;
+                Monitor.PulseAll(_gate);
+            }
+        }
+
+        base.Dispose(disposing);
+    }
+
+    private void SetConnected(bool connected)
+    {
+        if (IsConnected == connected)
         {
             return;
         }
 
-        IsConnected = true;
-        StatusChanged?.Invoke(this, new TransportStatusEventArgs(true, ConnectionInfo));
-    }
-
-    public void Disconnect()
-    {
-        if (!IsConnected)
-        {
-            return;
-        }
-
-        IsConnected = false;
-        StatusChanged?.Invoke(this, new TransportStatusEventArgs(false, ConnectionInfo));
-    }
-
-    public void Dispose()
-    {
-        Disconnect();
-        _stream.Dispose();
+        IsConnected = connected;
+        StatusChanged?.Invoke(this, new TransportStatusEventArgs(connected, ConnectionInfo));
     }
 
     /// <summary>A protobuf message with its length prefix, as the firmware frames it.</summary>
@@ -95,110 +158,5 @@ internal sealed class ScriptedReplyTransport(Func<string, byte[]?> reply) : IStr
         using var buffer = new MemoryStream();
         message.WriteDelimitedTo(buffer);
         return buffer.ToArray();
-    }
-
-    /// <summary>
-    /// Splits writes into lines and queues each line's answer for the reader. A read waits for an
-    /// answer, and reports end-of-stream only once the stream is disposed.
-    /// </summary>
-    private sealed class ScriptedReplyStream(Func<string, byte[]?> reply) : Stream
-    {
-        private readonly object _gate = new();
-        private readonly StringBuilder _line = new();
-        private readonly List<string> _commands = [];
-        private readonly Queue<byte> _answers = new();
-        private bool _closed;
-
-        public IReadOnlyList<string> Commands
-        {
-            get
-            {
-                lock (_gate)
-                {
-                    return _commands.ToArray();
-                }
-            }
-        }
-
-        public override bool CanRead => true;
-
-        public override bool CanSeek => false;
-
-        public override bool CanWrite => true;
-
-        public override long Length => throw new NotSupportedException();
-
-        public override long Position
-        {
-            get => throw new NotSupportedException();
-            set => throw new NotSupportedException();
-        }
-
-        public override int Read(byte[] buffer, int offset, int count)
-        {
-            lock (_gate)
-            {
-                while (_answers.Count == 0 && !_closed)
-                {
-                    Monitor.Wait(_gate);
-                }
-
-                var read = 0;
-                while (read < count && _answers.Count > 0)
-                {
-                    buffer[offset + read++] = _answers.Dequeue();
-                }
-
-                return read;
-            }
-        }
-
-        public override void Write(byte[] buffer, int offset, int count)
-        {
-            lock (_gate)
-            {
-                foreach (var b in buffer.AsSpan(offset, count))
-                {
-                    if (b != (byte)'\n')
-                    {
-                        _line.Append((char)b);
-                        continue;
-                    }
-
-                    var command = _line.ToString().Trim();
-                    _line.Clear();
-                    _commands.Add(command);
-
-                    foreach (var answer in reply(command) ?? [])
-                    {
-                        _answers.Enqueue(answer);
-                    }
-
-                    Monitor.PulseAll(_gate);
-                }
-            }
-        }
-
-        public override void Flush()
-        {
-        }
-
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-
-        public override void SetLength(long value) => throw new NotSupportedException();
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing)
-            {
-                lock (_gate)
-                {
-                    _closed = true;
-                    Monitor.PulseAll(_gate);
-                }
-            }
-
-            base.Dispose(disposing);
-        }
     }
 }
