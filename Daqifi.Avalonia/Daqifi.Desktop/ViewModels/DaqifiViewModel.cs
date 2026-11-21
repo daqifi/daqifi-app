@@ -3640,6 +3640,16 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     bool ILoggingSessionListHost.IsLoggingActive => LoggingManager.Instance.Active;
 
     /// <summary>
+    /// True while DEVICE LOGS lists or imports a card's files, or while sessions from an earlier
+    /// version are imported (#682). These are the two imports that can run while DELETE ALL can be
+    /// clicked: the APP LOGS tab is outside the DEVICE LOGS busy overlay, and the earlier-version
+    /// import runs from a notification. IMPORT SD LOG puts the Logged Data busy overlay over DELETE
+    /// ALL while it runs. The DEVICE LOGS flag also covers a file listing, which writes nothing; a
+    /// listing is short, and that flag is the one source for both.
+    /// </summary>
+    bool ILoggingSessionListHost.IsImportActive => DeviceLogsViewModel?.IsBusy == true || IsImportingPreviousSessions;
+
+    /// <summary>
     /// Re-raises the session-collection notifications on the UI thread. The list view model calls this
     /// off the UI thread (from a collection-changed callback or after a background delete), so this
     /// folds in the dispatcher marshalling the old collection-changed handler performed.

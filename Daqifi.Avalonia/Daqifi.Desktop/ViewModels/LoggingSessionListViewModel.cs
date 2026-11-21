@@ -244,8 +244,9 @@ public class LoggingSessionListViewModel
     }
 
     /// <summary>
-    /// Deletes every session. Refuses to run while logging is active, confirms the destructive
-    /// action, then purges the database storage off the UI thread under the busy flag.
+    /// Deletes every session. Refuses to run while logging or an import is active (asked before and
+    /// after the confirmation), confirms the destructive action, then purges the database storage
+    /// off the UI thread under the busy flag.
     /// </summary>
     /// <remarks>
     /// A purge that fails now keeps the session list and tells the user, instead of clearing the
@@ -272,11 +273,9 @@ public class LoggingSessionListViewModel
                 return;
             }
 
-            if (_host.IsLoggingActive)
+            if (WhyDeleteAllMustWait() is { } wait)
             {
-                await _host.ShowMessageAsync(
-                    "Cannot Delete",
-                    "Please stop logging before deleting all sessions.");
+                await _host.ShowMessageAsync("Cannot Delete", wait);
                 return;
             }
 
@@ -287,6 +286,15 @@ public class LoggingSessionListViewModel
                 isDestructive: true);
             if (!confirmed)
             {
+                return;
+            }
+
+            // Again after the answer (#682). The confirmation covers only the Logged Data pane, so
+            // logging (from Live Graph) or the import of earlier sessions (from the notifications)
+            // can start while it is open.
+            if (WhyDeleteAllMustWait() is { } waitNow)
+            {
+                await _host.ShowMessageAsync("Cannot Delete", waitNow);
                 return;
             }
 
@@ -348,6 +356,27 @@ public class LoggingSessionListViewModel
                 _appLogger.Error(ex, "Failed to show the delete-all result dialog");
             }
         }
+    }
+
+    /// <summary>
+    /// Why "delete all" must wait, or null when it can run. The purge replaces the database file, so
+    /// it must not run while this process writes to that file: logging, or an import (#682). Before
+    /// #682 only logging was refused, so a DELETE ALL during an SD card import made the file being
+    /// written fail with "disk I/O error", and the import then refilled the emptied list.
+    /// </summary>
+    private string? WhyDeleteAllMustWait()
+    {
+        if (_host.IsLoggingActive)
+        {
+            return "Please stop logging before deleting all sessions.";
+        }
+
+        if (_host.IsImportActive)
+        {
+            return "Wait for the import to finish before you delete all sessions.";
+        }
+
+        return null;
     }
 
     /// <summary>

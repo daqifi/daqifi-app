@@ -466,6 +466,8 @@ public class DeleteAllSessionsRecoveryTests : IDisposable
 
         public bool IsLoggingActive => false;
 
+        public bool IsImportActive => false;
+
         public void NotifyLoggingSessionsChanged() { }
 
         public void DisplaySessionOnPlot(LoggingSession session) { }

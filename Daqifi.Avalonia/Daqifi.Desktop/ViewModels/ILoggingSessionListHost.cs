@@ -52,6 +52,15 @@ public interface ILoggingSessionListHost
     /// <summary>True while a logging session is active. Gates the "delete all" path.</summary>
     // @port: Daqifi.Desktop.ViewModels.ILoggingSessionListHost.IsLoggingActive
     bool IsLoggingActive { get; }
+
+    /// <summary>
+    /// True while an import writes sessions into the database: an SD card import in DEVICE LOGS, or
+    /// the import of sessions from an earlier version. Gates the "delete all" path, as
+    /// <see cref="IsLoggingActive"/> does: the purge replaces the database file, so a writer that has
+    /// the file open fails with "disk I/O error" and then writes on into the new database (#682).
+    /// Downstream addition.
+    /// </summary>
+    bool IsImportActive { get; }
     #endregion
 
     #region Notifications

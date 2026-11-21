@@ -203,6 +203,8 @@ public class DeleteSessionFailureTests
 
         public bool IsLoggingActive => false;
 
+        public bool IsImportActive => false;
+
         public void NotifyLoggingSessionsChanged() => NotifyCount++;
 
         public void DisplaySessionOnPlot(LoggingSession session) { }

@@ -239,7 +239,8 @@ public static class DatabaseMigrator
     /// refused to read, which bounds the race; this one runs on a HEALTHY database, so a second
     /// instance could in principle write a journal after that suffix was checked. What bounds it
     /// here instead is narrower and worth stating: the purge is reachable only from "Delete All
-    /// Sessions", which this process gates on its own logging being stopped, and the replacement is
+    /// Sessions", which this process gates on its own logging being stopped and on no import of its
+    /// own running (an SD card import, or the import of earlier sessions: #682), and the replacement is
     /// migrated (not merely created), so a journal that did appear would be rolled into an empty
     /// schema rather than resurrecting sessions. Closing the gap properly means introducing
     /// process-wide database ownership, which is an app-wide mechanism and a separate change.
