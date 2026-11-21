@@ -93,9 +93,12 @@ public sealed class SdCardImportTimestampFrequencyTests : IDisposable
         var line = Assert.Single(_log.Informations, i => i.Contains("SD card session config"));
         Assert.Contains($"TimestampFreq={OtherDeviceClockHz} Hz (source: {nameof(SdCardTimestampSource.Device)})", line, StringComparison.Ordinal);
 
-        // 420,000 ticks at 40 MHz. The 42 MHz fallback would give 10 ms.
+        // 420,000 ticks at 40 MHz is 10.5 ms; the 42 MHz fallback would give 10 ms. Core's time
+        // reconstruction can land one 100 ns tick short of the exact value (104,999), so the
+        // spacing is checked to one tick.
         var times = TimesOf(sessionId);
-        Assert.Equal(TimeSpan.FromMilliseconds(10.5).Ticks, times[1] - times[0]);
+        var exact = TimeSpan.FromMilliseconds(10.5).Ticks;
+        Assert.InRange(times[1] - times[0], exact - 1, exact);
         Assert.DoesNotContain(_log.Warnings, MentionsFrequency);
     }
 
