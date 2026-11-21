@@ -19,7 +19,8 @@ namespace Daqifi.Avalonia.Tests.ViewModels;
 /// the dialog said only "Export failed. Please try again." — wrong advice for a full disk, and for a
 /// session name too long for a file name, since a retry fails the same way. Export All left its loop
 /// at the first failure, so the files before it were in the folder and the files after it were not,
-/// and nothing said which. A long name also went to Sentry as two Error events for each attempt.
+/// and nothing said which. A long name was also logged at Error twice for each attempt, and sent to
+/// Sentry although it is the user's data and not an app fault (see <see cref="ExportFailureSentryTests"/>).
 /// </para>
 ///
 /// <para>
@@ -299,15 +300,24 @@ public sealed class ExportFailureReportingTests : IDisposable
 }
 
 /// <summary>
-/// The Sentry half of issue #683: how many Error events one failed export sends. The exporter
-/// logged each failure at Error and threw it, and the dialog logged it at Error again, so every
-/// attempt was two events — and a name too long for the file system, which is the user's data and
-/// not an app fault, was two events too.
+/// The logging half of issue #683: at which level one failed export is logged, and how many times.
+/// The exporter logged every failure at Error and threw it, and the dialog then logged it again —
+/// at Error, or at Warning for a destination fault. So a failure was two ERROR lines in the log,
+/// and a destination fault that the dialog meant to keep out of Sentry (a denied folder, a name too
+/// long for the file system) still sent an Error event from the exporter.
 /// </summary>
 /// <remarks>
-/// Read off the process-wide Sentry hub, which is what <c>AppLogger.Error</c> reports to, hence the
-/// non-parallel collection. Breadcrumbs are read as well, as the positive control: a count of zero
-/// events means nothing unless the failure was logged somewhere.
+/// <para>
+/// Read off the process-wide Sentry hub, because each <c>AppLogger.Error</c> call captures to it
+/// and a <c>Warning</c> does not; hence the non-parallel collection. Breadcrumbs are read as well,
+/// as the positive control: zero events means nothing unless the failure was logged somewhere.
+/// </para>
+/// <para>
+/// The SDK's duplicate detection is OFF here, so each Error CALL is one event. With it on, as in
+/// the app, the SDK drops a second capture of the same exception instance: measured on the code
+/// before this fix, the double Error call for a full disk reached Sentry as ONE event, and only
+/// the log file showed it twice. Counting calls is what tells the two apart.
+/// </para>
 /// </remarks>
 [Collection(SentryHubCollection.Name)]
 public sealed class ExportFailureSentryTests : IDisposable
@@ -326,6 +336,7 @@ public sealed class ExportFailureSentryTests : IDisposable
             options.AutoSessionTracking = false;
             options.DisableAppDomainUnhandledExceptionCapture();
             options.DisableUnobservedTaskExceptionCapture();
+            options.DisableDuplicateEventDetection();
             options.SetBeforeSend((sentryEvent, _) =>
             {
                 lock (_events) { _events.Add(sentryEvent); }
@@ -362,11 +373,36 @@ public sealed class ExportFailureSentryTests : IDisposable
     }
 
     /// <summary>
-    /// A full disk keeps its Error treatment — the issue did not ask to change that — but it is one
-    /// event for one failure, not two.
+    /// A denied destination was always meant to be a Warning; the dialog logged it so. The exporter
+    /// logged it at Error first, so it reached Sentry anyway. Injected, because a folder the test
+    /// user cannot write is not portable: a root CI runner ignores the mode bits.
     /// </summary>
     [Fact]
-    public async Task A_full_disk_sends_one_error_event_not_two()
+    public async Task A_denied_destination_sends_no_error_event()
+    {
+        var session = _fixture.Seed("Run B", "AI1", 2.5);
+        var viewModel = new ExportDialogViewModel(
+            _fixture.FailWhileWriting(() => true, staging => new UnauthorizedAccessException($"Access to the path '{staging}' is denied.")),
+            session.ID)
+        {
+            ExportFilePath = Path.Combine(_fixture.Destination, "readings.csv"),
+        };
+
+        await viewModel.ExportLoggingSessionsCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.ExportSucceeded);
+        Assert.Contains("access was denied", viewModel.ExportResultMessage ?? string.Empty, StringComparison.Ordinal);
+        Assert.Empty(Events());
+        Assert.Contains(Breadcrumbs(), message => message.Contains("could not write", StringComparison.Ordinal)
+                                                  && message.Contains(nameof(UnauthorizedAccessException), StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A full disk keeps its Error treatment — the issue did not ask to change that — but it is
+    /// logged at Error once for one failure, not twice.
+    /// </summary>
+    [Fact]
+    public async Task A_full_disk_is_logged_at_error_once_not_twice()
     {
         var session = _fixture.Seed("Big B", "AI1", 2.5);
         var viewModel = new ExportDialogViewModel(
