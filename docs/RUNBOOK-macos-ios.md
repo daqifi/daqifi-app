@@ -361,9 +361,10 @@ fails to apply, `PlotView.OnApplyTemplate` silently no-ops and the plot renders
 
 **Already guarded correctly — do not go hunting these:**
 
-- `SetThreadExecutionState` (a `kernel32` P/Invoke) is behind
-  `OperatingSystem.IsWindows()` at `AbstractStreamingDevice.cs:1296` and `:1346`.
-  That is a runtime check, so it covers macOS properly. This threw a
+- `SetThreadExecutionState` (a `kernel32` P/Invoke) is called only by
+  `KeepAwakeOwner` in `Device/KeepAwake.cs`, and `KeepAwakeOwner.ForThisProcess`
+  creates that owner only when `OperatingSystem.IsWindows()` is true. That is a
+  runtime check, so it covers macOS properly. This threw a
   `DllNotFoundException` on Android once; the fix generalises.
 
 **Was confirmed on macOS, now fixed (issue #90) — USB hotplug detection:**
