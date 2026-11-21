@@ -420,7 +420,84 @@ public sealed class ProfileActivationTests : IDisposable
         Assert.Equal(["AI0"], ActiveNames(again));
         Assert.Equal(["AI3"], ActiveNames(another));
         Assert.False(profile.IsProfileActive);
-        Assert.Contains("more than one device", _pane.DrawerError, StringComparison.Ordinal);
+        Assert.Contains("cannot tell which", _pane.DrawerError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// PR #678 review, round 3: a profile captured with every input off on one board holds no
+    /// channels, so nothing in it can check a board by name. With that board away and another board
+    /// of the model connected, activation must not clear the other board. Captured, read back from
+    /// the file, then activated.
+    /// </summary>
+    [Fact]
+    public async Task A_profile_captured_all_off_does_not_clear_another_board()
+    {
+        var saved = Connect("PROFILE-ALLOFF-1");
+        var captured = CaptureCurrentSettings("All off");
+        Disconnect(saved);
+        var other = Connect("PROFILE-ALLOFF-2");
+        Enable(other, "AI3");
+
+        LoggingManager.Instance.LoadProfilesFromXml();
+        var profile = LoggingManager.Instance.SubscribedProfiles.Single(p => p.ProfileId == captured.ProfileId);
+        Assert.Empty(profile.Devices.Single().Channels);
+        await Activate(profile);
+
+        Assert.Equal(["AI3"], ActiveNames(other));
+        Assert.Equal(["AI3"], SubscribedNames(other));
+        Assert.False(profile.IsProfileActive);
+        Assert.Contains("PROFILE-ALLOFF-1", _pane.DrawerError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// An older profile (names only) holds the serial number of its board too, and applies only to
+    /// that board. Default channel names are the same on every board, so a name does not tell boards
+    /// apart. With the board away and another board of the model connected, activation is refused
+    /// and the other board stays as it was: once with AI1 on, once with every channel switched off
+    /// in the editor.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task An_older_profile_whose_board_is_not_connected_does_not_change_another_board(bool everyChannelOff)
+    {
+        var saved = Connect("PROFILE-OLDAWAY-1");
+        var profile = OlderProfile("Older, board away", saved, "AI1");
+        profile.Devices[0].Channels[0].IsChannelActive = !everyChannelOff;
+        Disconnect(saved);
+        var other = Connect("PROFILE-OLDAWAY-2");
+        Enable(other, "AI3");
+
+        await Activate(profile);
+
+        Assert.Equal(["AI3"], ActiveNames(other));
+        Assert.False(profile.IsProfileActive);
+        Assert.Contains("PROFILE-OLDAWAY-1", _pane.DrawerError, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// PR #678 review, round 3: two boards with no serial number and no MAC address, AI1 on the
+    /// first and AI3 on the second, captured together. With the first board away, one board is left
+    /// and two saved entries could each own it. The profile cannot tell which, so activation is
+    /// refused and the board keeps AI3. Profile order used to decide, and AI1 replaced AI3.
+    /// </summary>
+    [Fact]
+    public async Task Two_saved_boards_with_no_identifier_do_not_compete_for_the_one_left()
+    {
+        var first = Connect(string.Empty, name: "Nq1 bare");
+        var second = Connect(string.Empty, name: "Nq1 bare");
+        Enable(first, "AI1");
+        Enable(second, "AI3");
+        var profile = CaptureCurrentSettings("Two bare boards");
+        Disable(first, "AI1");
+        Disconnect(first);
+
+        await Activate(profile);
+
+        Assert.Equal(["AI3"], ActiveNames(second));
+        Assert.Equal(["AI3"], SubscribedNames(second));
+        Assert.False(profile.IsProfileActive);
+        Assert.Contains("cannot tell which", _pane.DrawerError, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -570,14 +647,17 @@ public sealed class ProfileActivationTests : IDisposable
     [Fact]
     public async Task A_profile_whose_channels_match_nothing_is_refused_with_the_reason()
     {
-        var original = Connect("PROFILE-MISS-1");
-        var profile = OlderProfile("Bench other model", original, "AI3");
+        var original = Connect(string.Empty, name: "Nq1 bare");
+        Enable(original, "AI3");
+        var profile = CaptureCurrentSettings("Bench other model");
+        Disable(original, "AI3");
         Disconnect(original);
 
-        // Same part number, so the model fallback matches it; it has no channel AI3. The profile is
-        // in the older shape (names only): since PR #678 a captured profile records its board and
-        // its inputs, and does not fall back to another board of the model at all.
-        var other = Connect("PROFILE-MISS-2", channelCount: 2);
+        // No serial and no MAC on either board, and one device of the model, so the model fallback
+        // pairs it with the profile; it has no input 3. (Since PR #678 an entry that holds a serial
+        // number or a MAC address applies only to that board, so this is the one way left to reach
+        // the fallback.)
+        var other = Connect(string.Empty, channelCount: 2, name: "Nq1 bare");
         Enable(other, "AI1");
 
         await Activate(profile);
