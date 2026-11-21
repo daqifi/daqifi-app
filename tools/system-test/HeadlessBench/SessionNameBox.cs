@@ -303,14 +303,8 @@ internal static partial class HeadlessBench
     private static void RunSessionNameLeaveCheck(
         Window main, DaqifiViewModel shell, LoggingSession first, LoggingSession second, LoggingSession third)
     {
-        var expected = new Dictionary<int, string>
-        {
-            [first.ID] = string.Empty,
-            [second.ID] = "Kiln",
-            [third.ID] = string.Empty,
-        };
-        string Stored() => string.Join(", ", expected.Keys.Select(id => $"{id}='{StoredSessionName(id)}'"));
-        bool StoredAsExpected() => expected.All(p => StoredSessionName(p.Key) == p.Value);
+        var ids = new[] { first.ID, second.ID, third.ID };
+        string Stored() => string.Join(", ", ids.Select(id => $"{id}='{StoredSessionName(id)}'"));
 
         // The reviewer's order: the named session is the selected one, its drawer was open and is
         // now closed. The session that is selected is the one an unload could write to, so with an
@@ -320,6 +314,13 @@ internal static partial class HeadlessBench
         shell.CloseLoggedSessionSettingsCommand.Execute(null);
         PumpFor(PastRenameDebounce);
         var selected = ReferenceEquals(shell.SelectedLoggingSession, second);
+
+        // Judged against what is stored now, not against fixed values, so this check measures the
+        // visit only: a fault in an earlier check cannot fail it, or hide behind it.
+        var snapshot = ids.ToDictionary(id => id, StoredSessionName);
+        var saved = snapshot[second.ID] ?? string.Empty;
+        var named = saved.Length > 0 && second.Name == saved;
+        bool StoredAsExpected() => ids.All(id => StoredSessionName(id) == snapshot[id]);
         var before = Stored();
         var paneBefore = LoggedDataPaneShown(main);
 
@@ -327,13 +328,13 @@ internal static partial class HeadlessBench
         PumpFor(PastRenameDebounce);
         PumpFor(PastRenameDebounce);
         var paneUnloaded = !LoggedDataPaneShown(main);
-        var awayOk = StoredAsExpected() && second.Name == "Kiln";
+        var awayOk = StoredAsExpected() && second.Name == saved;
         var away = Stored();
 
         shell.SelectedIndex = LoggedDataTabIndex;
         PumpFor(PastRenameDebounce);
         PumpFor(PastRenameDebounce);
-        var backOk = StoredAsExpected() && second.Name == "Kiln";
+        var backOk = StoredAsExpected() && second.Name == saved;
         var back = Stored();
 
         // And opening the drawer again shows the saved name and writes nothing.
@@ -343,12 +344,12 @@ internal static partial class HeadlessBench
             .FirstOrDefault(t => t.Name == "SessionNameTextBox" && t.IsEffectivelyVisible);
         var shown = box?.Text;
         PumpFor(PastRenameDebounce);
-        var reopenOk = shown == "Kiln" && StoredAsExpected() && second.Name == "Kiln";
+        var reopenOk = shown == saved && StoredAsExpected() && second.Name == saved;
         var reopened = Stored();
         shell.CloseLoggedSessionSettingsCommand.Execute(null);
         Pump();
 
-        Step(1, "LOGGED-NAME", "leave", selected && paneBefore && paneUnloaded && awayOk && backOk && reopenOk,
+        Step(1, "LOGGED-NAME", "leave", selected && named && paneBefore && paneUnloaded && awayOk && backOk && reopenOk,
              $"session 2 selected={selected}, drawer closed, stored {before} (Logged Data pane shown={paneBefore}); " +
              $"on Live Graph after {2 * PastRenameDebounce.TotalMilliseconds:F0} ms: pane unloaded={paneUnloaded}, " +
              $"stored {away}, session 2 '{second.Name}'; back on Logged Data: stored {back}; " +
