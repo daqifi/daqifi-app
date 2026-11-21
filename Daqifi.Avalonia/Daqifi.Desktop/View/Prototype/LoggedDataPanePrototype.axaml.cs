@@ -22,12 +22,7 @@ namespace Daqifi.Desktop.View.Prototype;
 public partial class LoggedDataPanePrototype : UserControl
 {
     private readonly AppLogger _logger = AppLogger.Instance;
-
-    /// <summary>The rename that the 250 ms debounce still holds back, or null when none is waiting.
-    /// A newer keystroke cancels it and takes its place; an unload writes it at once.</summary>
-    private PendingRename? _pendingRename;
-
-    private sealed record PendingRename(CancellationTokenSource Cancellation, int SessionId, string Name);
+    private CancellationTokenSource? _renameSessionCts;
 
     /// <summary>The view model whose selected session the NAME box shows. Null while the pane is
     /// not loaded, so an unloaded pane holds no subscription on it.</summary>
@@ -56,11 +51,11 @@ public partial class LoggedDataPanePrototype : UserControl
             }
         };
 
-        Unloaded += (_, _) =>
-        {
-            FollowNameBoxHost(null);
-            WritePendingRenameNow();
-        };
+        // Unloading does not cancel a rename that the 250 ms debounce still holds back: the write
+        // belongs to LoggingManager, not to this view, and it completes after the pane has gone.
+        // The cancel that was here lost a name typed just before a tab switch, with Enter or not:
+        // the app showed it, and the next launch showed the old name (review of #684).
+        Unloaded += (_, _) => FollowNameBoxHost(null);
     }
 
     /// <summary>
@@ -108,66 +103,36 @@ public partial class LoggedDataPanePrototype : UserControl
         var newName = textBox.Text?.Trim() ?? string.Empty;
         session.Name = newName;
 
-        _pendingRename?.Cancellation.Cancel();
-        var pending = new PendingRename(new CancellationTokenSource(), session.ID, newName);
-        _pendingRename = pending;
+        _renameSessionCts?.Cancel();
+        _renameSessionCts?.Dispose();
+
+        var renameCts = new CancellationTokenSource();
+        _renameSessionCts = renameCts;
 
         try
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(250), pending.Cancellation.Token);
-            await WriteSessionNameAsync(pending.SessionId, pending.Name, pending.Cancellation.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // A newer keystroke took over, or the pane unloaded and wrote this name at once.
-        }
-        finally
-        {
-            if (ReferenceEquals(_pendingRename, pending))
-            {
-                _pendingRename = null;
-            }
+            await Task.Delay(TimeSpan.FromMilliseconds(250), renameCts.Token);
 
-            pending.Cancellation.Dispose();
-        }
-    }
-
-    /// <summary>
-    /// Writes the rename that the debounce still holds back, at once and with no cancellation. Called
-    /// when the pane unloads (review of #684): the unload used to cancel that write, so a name typed
-    /// less than 250 ms before the user went to another tab showed in the app but was not stored,
-    /// and the next launch showed the old name. This covers every way to leave, with Enter or not.
-    /// </summary>
-    private void WritePendingRenameNow()
-    {
-        if (_pendingRename is not { } pending)
-        {
-            return;
-        }
-
-        _pendingRename = null;
-        pending.Cancellation.Cancel();
-        _ = WriteSessionNameAsync(pending.SessionId, pending.Name, CancellationToken.None);
-    }
-
-    /// <summary>
-    /// The write itself belongs to LoggingManager, which owns the sessions this pane lists and the
-    /// database they live in. A view knowing the Sessions table was the only place in the app where
-    /// markup code-behind opened a DbContext. A failed write is logged; a cancelled one is not a
-    /// failure (a newer write replaces it).
-    /// </summary>
-    private async Task WriteSessionNameAsync(int sessionId, string name, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await LoggingManager.Instance.PersistSessionNameAsync(sessionId, name, cancellationToken);
+            // The write itself belongs to LoggingManager, which owns the sessions this pane lists
+            // and the database they live in. A view knowing the Sessions table was the only place
+            // in the app where markup code-behind opened a DbContext.
+            await LoggingManager.Instance.PersistSessionNameAsync(session.ID, newName, renameCts.Token);
         }
         catch (OperationCanceledException)
         {
         }
         catch (Exception ex)
         {
-            _logger.Error(ex, $"Failed to update logging session name for session {sessionId}.");
+            _logger.Error(ex, $"Failed to update logging session name for session {session.ID}.");
+        }
+        finally
+        {
+            if (ReferenceEquals(_renameSessionCts, renameCts))
+            {
+                _renameSessionCts = null;
+            }
+
+            renameCts.Dispose();
         }
     }
 
