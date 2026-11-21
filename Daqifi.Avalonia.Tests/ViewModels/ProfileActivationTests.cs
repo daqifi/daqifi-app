@@ -86,11 +86,12 @@ public sealed class ProfileActivationTests : IDisposable
             Sent.Last(s => s.StartsWith("ENAble:VOLTage:DC ", StringComparison.Ordinal))["ENAble:VOLTage:DC ".Length..];
     }
 
-    private BenchDevice Connect(string serial, int channelCount = 4, string macAddress = "", string? name = null)
+    private BenchDevice Connect(
+        string serial, int channelCount = 4, string macAddress = "", string? name = null, string partNumber = "Nq1")
     {
         var device = new BenchDevice { Name = name ?? serial, DeviceSerialNo = serial, MacAddress = macAddress };
         device.Metadata.Capabilities = new DeviceCapabilities { MaxSamplingRate = 1000 };
-        device.Metadata.PartNumber = "Nq1";
+        device.Metadata.PartNumber = partNumber;
         for (var i = 0; i < channelCount; i++)
         {
             device.DataChannels.Add(new AnalogChannel(device, new CoreAnalogChannel(i)) { Name = $"AI{i}" });
@@ -639,6 +640,32 @@ public sealed class ProfileActivationTests : IDisposable
         Assert.Empty(ActiveNames(y));
         Assert.Empty(SubscribedNames(y));
         Assert.Equal(string.Empty, _pane.DrawerError);
+    }
+
+    /// <summary>
+    /// The same while a device of a different model is connected too. Only a device of the away
+    /// board's own model could be a guess for it, so the profile still applies (PR #678 review), and
+    /// the other model's device stays as it was.
+    /// </summary>
+    [Fact]
+    public async Task A_device_of_another_model_does_not_stop_a_profile_whose_other_board_is_away()
+    {
+        var x = Connect("PROFILE-MODEL-X");
+        var y = Connect("PROFILE-MODEL-Y");
+        Enable(x, "AI0");
+        var profile = CaptureCurrentSettings("Other model connected");
+        Disable(x, "AI0");
+        Disconnect(x);
+        var otherModel = Connect("PROFILE-MODEL-Z", partNumber: "Nq3");
+        Enable(otherModel, "AI2");
+        Enable(y, "AI2");
+
+        await Activate(profile);
+
+        Assert.Equal(string.Empty, _pane.DrawerError);
+        Assert.True(profile.IsProfileActive);
+        Assert.Empty(ActiveNames(y));
+        Assert.Equal(["AI2"], ActiveNames(otherModel));
     }
 
     /// <summary>
