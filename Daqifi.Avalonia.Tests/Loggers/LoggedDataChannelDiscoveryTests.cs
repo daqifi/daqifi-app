@@ -154,10 +154,15 @@ public sealed class LoggedDataChannelDiscoveryTests : IDisposable
             .Select(s => s.Tag is (string serial, string name) ? (serial, name) : ("?", "?"))
             .OrderBy(k => k).ToList();
 
-        Assert.True(expected.SequenceEqual(discovered),
-            $"{row}: stored {Describe(expected)}, mobile viewer found {Describe(discovered)}");
-        Assert.True(expected.SequenceEqual(traces),
-            $"{row}: stored {Describe(expected)}, Logged Data drew {Describe(traces)}");
+        var legendDevices = logger.DeviceLegendGroups.Select(g => g.DeviceSerialNo).OrderBy(s => s).ToList();
+        var expectedDevices = specs.Select(s => s.Serial).Distinct().OrderBy(s => s).ToList();
+
+        Assert.True(
+            expected.SequenceEqual(discovered) && expected.SequenceEqual(traces)
+                && expectedDevices.SequenceEqual(legendDevices),
+            $"{row}: stored {Describe(expected)}; mobile viewer found {Describe(discovered)}; " +
+            $"Logged Data drew {Describe(traces)}; legend device groups [{string.Join(", ", legendDevices)}]; " +
+            $"header sample count {logger.CurrentSessionSampleCount}");
     }
 
     private static string Describe(IEnumerable<(string, string)> keys) =>
