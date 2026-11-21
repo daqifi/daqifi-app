@@ -86,14 +86,14 @@ public sealed class ProfileActivationTests : IDisposable
             Sent.Last(s => s.StartsWith("ENAble:VOLTage:DC ", StringComparison.Ordinal))["ENAble:VOLTage:DC ".Length..];
     }
 
-    private BenchDevice Connect(string serial, string channelPrefix = "AI", int channelCount = 4)
+    private BenchDevice Connect(string serial, int channelCount = 4)
     {
         var device = new BenchDevice { Name = serial, DeviceSerialNo = serial };
         device.Metadata.Capabilities = new DeviceCapabilities { MaxSamplingRate = 1000 };
         device.Metadata.PartNumber = "Nq1";
         for (var i = 0; i < channelCount; i++)
         {
-            device.DataChannels.Add(new AnalogChannel(device, new CoreAnalogChannel(i)) { Name = $"{channelPrefix}{i}" });
+            device.DataChannels.Add(new AnalogChannel(device, new CoreAnalogChannel(i)) { Name = $"AI{i}" });
         }
         ConnectionManager.Instance.RegisterConnectedDevice(device);
         _registered.Add(device);
@@ -405,20 +405,22 @@ public sealed class ProfileActivationTests : IDisposable
     public async Task A_profile_whose_channels_match_nothing_is_refused_with_the_reason()
     {
         var original = Connect("PROFILE-MISS-1");
-        Enable(original, "AI0");
+        Enable(original, "AI3");
         var profile = CaptureCurrentSettings("Bench other model");
-        Disable(original, "AI0");
+        Disable(original, "AI3");
         Disconnect(original);
 
-        // Same part number, so the model fallback matches it; different channel names.
-        var other = Connect("PROFILE-MISS-2", channelPrefix: "CH");
-        Enable(other, "CH1");
+        // Same part number, so the model fallback matches it; it has no input 3. (This used to give
+        // the device other channel NAMES, which stood for "other channels" while the name was the
+        // channel's identity. Since PR #678 a profile records the input, and names are labels.)
+        var other = Connect("PROFILE-MISS-2", channelCount: 2);
+        Enable(other, "AI1");
 
         await Activate(profile);
 
         Assert.False(profile.IsProfileActive);
-        Assert.Equal(["CH1"], ActiveNames(other));
-        Assert.Equal(["CH1"], SubscribedNames(other));
+        Assert.Equal(["AI1"], ActiveNames(other));
+        Assert.Equal(["AI1"], SubscribedNames(other));
         Assert.Equal(ProfilesPaneViewModel.NoChannelsMatchedMessage, _pane.DrawerError);
     }
 
@@ -439,16 +441,17 @@ public sealed class ProfileActivationTests : IDisposable
         Disable(y, "AI1");
         Disconnect(y);
 
-        // Same serial, so it matches Y's entry, but its channels are named differently.
-        var renamed = Connect("PROFILE-PER-Y", channelPrefix: "CH");
-        Enable(renamed, "CH2");
+        // Same serial, so it matches Y's entry, but it has no input 1. (This used to give it other
+        // channel names; see the note in the test above.)
+        var renamed = Connect("PROFILE-PER-Y", channelCount: 1);
+        Enable(renamed, "AI0");
         Enable(x, "AI3");
 
         await Activate(profile);
 
         Assert.False(profile.IsProfileActive);
         Assert.Equal(["AI3"], ActiveNames(x));
-        Assert.Equal(["CH2"], ActiveNames(renamed));
+        Assert.Equal(["AI0"], ActiveNames(renamed));
         Assert.Equal(ProfilesPaneViewModel.NoChannelsMatchedMessage, _pane.DrawerError);
     }
 

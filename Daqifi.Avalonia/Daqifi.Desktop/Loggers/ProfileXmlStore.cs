@@ -225,6 +225,8 @@ internal sealed class ProfileXmlStore
                     Name = (string)c.Element("Name"),
                     Type = (string)c.Element("Type"),
                     IsChannelActive = (bool)c.Element("IsActive"),
+                    // Absent in files saved before PR #678's review; activation then matches by name.
+                    Index = (int?)c.Element("Index"),
                     SerialNo = (string)d.Element("DeviceSerialNo")
                 }).ToList() ?? []
             }).ToList() ?? [])

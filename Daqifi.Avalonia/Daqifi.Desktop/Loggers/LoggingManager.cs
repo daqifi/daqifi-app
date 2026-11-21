@@ -222,9 +222,11 @@ public partial class LoggingManager : ObservableObject
     /// the session changes the label on the screen, and the next session records the new name.
     /// </para>
     /// <para>
-    /// The fixed name is also unique on its device. The database stores no channel index, so two
-    /// channels that the user gave one name would share one column and could not be separated again
-    /// (#670). The first of them, in input order, keeps the name, and each other one gets its input's
+    /// The fixed name is also unique among the channels that share its stored serial number, which is
+    /// the key the database, Logged Data and the live plot use with the name. The database stores no
+    /// channel index, so two channels that the user gave one name would share one column and could
+    /// not be separated again (#670). Grouping by the stored serial, not by device identity, also
+    /// keeps apart two boards that reported no serial number: they share the blank serial. The first of them, in input order, keeps the name, and each other one gets its input's
     /// label after the name, for example <c>Temp (AI3)</c>. A channel with no name records under its
     /// input's label.
     /// </para>
@@ -666,7 +668,9 @@ public partial class LoggingManager : ObservableObject
                         select new XElement("Channel",
                             new XElement("Name", channel.Name),
                             new XElement("Type", channel.Type),
-                            new XElement("IsActive", channel.IsChannelActive)
+                            new XElement("IsActive", channel.IsChannelActive),
+                            // Left out when unknown, so a file stays in the shape older readers know.
+                            channel.Index is int index ? new XElement("Index", index) : null
                         )
                     ),
                     new XElement("SamplingFrequency", device.SamplingFrequency)

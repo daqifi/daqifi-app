@@ -112,4 +112,13 @@ public partial class ProfileChannel : ObservableObject
     private string type;
     [ObservableProperty]
     private bool isChannelActive;
+
+    /// <summary>
+    /// The input number of the channel the profile captured, or <see langword="null"/> in a profile
+    /// saved before it was stored. With it, activation turns on the input that was captured; by name
+    /// alone it cannot tell two channels of one name apart (PR #678 review).
+    /// </summary>
+    // Downstream-only: upstream profiles hold only the name and the type.
+    [ObservableProperty]
+    private int? index;
 }

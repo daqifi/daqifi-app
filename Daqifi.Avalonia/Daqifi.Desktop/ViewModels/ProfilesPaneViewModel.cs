@@ -123,6 +123,14 @@ public partial class ProfilesPaneViewModel : ObservableObject
     // Downstream-only: no upstream counterpart.
     public const string NoChannelsMatchedMessage = "A connected device has none of the channels this profile switches on.";
 
+    /// <summary>
+    /// Why an older profile (saved without input numbers) was refused: it names a channel by a name
+    /// that more than one channel of the device has, so it cannot say which input it means.
+    /// </summary>
+    internal static string AmbiguousChannelMessage(string channelName) =>
+        $"More than one channel is named \"{channelName}\", and this profile does not say which one. " +
+        "Give the channels different names, or capture the profile again from the current settings.";
+
     /// <summary>Live view of the saved profiles backed by <see cref="LoggingManager"/>.</summary>
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.Profiles
     public ObservableCollection<Profile> Profiles => LoggingManager.Instance.SubscribedProfiles;
@@ -441,6 +449,12 @@ public partial class ProfilesPaneViewModel : ObservableObject
             return true;
         }
 
+        if (matches.Select(m => AmbiguousOlderEntry(m.Key, m.Value)).FirstOrDefault(n => n != null) is { } ambiguous)
+        {
+            ShowError(profile, AmbiguousChannelMessage(ambiguous));
+            return true;
+        }
+
         return false;
     }
 
@@ -541,9 +555,12 @@ public partial class ProfilesPaneViewModel : ObservableObject
 
     /// <summary>The connected device's channels that a profile entry switches on.</summary>
     /// <remarks>
-    /// The profiles file holds each channel's name and type, not its index, so the match is by name.
-    /// Each entry claims a channel no earlier entry claimed: a profile saved with two channels of
-    /// one name switched on the first of them twice and the second never (#670).
+    /// An entry that holds the input number it captured resolves by type and input number: the name
+    /// is a label, and two channels can share one, so by name a profile that captured only the
+    /// second of two channels named Temp turned on the first (PR #678 review). An entry from a file
+    /// saved before the number was stored resolves by name and type, as before. Each entry claims a
+    /// channel no earlier entry claimed, so two such entries of one name turn on two inputs (#670);
+    /// <see cref="AmbiguousOlderEntry"/> refuses the case where a name alone cannot say which.
     /// </remarks>
     // Downstream-only: extracted from ApplyProfileToDevices so activation can check it first.
     private static List<IChannel> ResolveChannels(ProfileDevice pd, IStreamingDevice device)
@@ -552,12 +569,27 @@ public partial class ProfilesPaneViewModel : ObservableObject
         foreach (var entry in pd.Channels.Where(c => c.IsChannelActive))
         {
             var channel = device.DataChannels.FirstOrDefault(x =>
-                x.Name == entry.Name.Trim() && x.TypeString == entry.Type.Trim() && !resolved.Contains(x));
+                x.TypeString == entry.Type.Trim()
+                && (entry.Index is int index ? x.Index == index : x.Name == entry.Name.Trim())
+                && !resolved.Contains(x));
             if (channel != null) resolved.Add(channel);
         }
 
         return resolved;
     }
+
+    /// <summary>
+    /// The name of an older entry (one with no input number) that more channels of the device carry
+    /// than the profile has entries for, or <see langword="null"/> when there is none. Such an entry
+    /// cannot say which input it means, so activation refuses it rather than turn on the first.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    private static string? AmbiguousOlderEntry(ProfileDevice pd, IStreamingDevice device) =>
+        pd.Channels
+            .Where(c => c.IsChannelActive && c.Index is null)
+            .GroupBy(c => (Name: c.Name.Trim(), Type: c.Type.Trim()))
+            .FirstOrDefault(g => device.DataChannels.Count(x => x.Name == g.Key.Name && x.TypeString == g.Key.Type) > g.Count())
+            ?.Key.Name;
 
     /// <summary>Whether a profile entry switches on any channel at all.</summary>
     // Downstream-only: no upstream counterpart.
@@ -640,6 +672,7 @@ public partial class ProfilesPaneViewModel : ObservableObject
                 {
                     Name = channelItem.Channel.Name,
                     Type = channelItem.Channel.TypeString,
+                    Index = channelItem.Channel.Index,
                     IsChannelActive = true,
                     SerialNo = channelItem.Channel.DeviceSerialNo,
                 });
@@ -700,6 +733,7 @@ public partial class ProfilesPaneViewModel : ObservableObject
                     {
                         Name = c.Name,
                         Type = c.TypeString,
+                        Index = c.Index,
                         IsChannelActive = true,
                         SerialNo = c.DeviceSerialNo,
                     })
