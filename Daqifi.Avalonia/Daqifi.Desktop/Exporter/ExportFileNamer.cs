@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Text;
 
@@ -23,9 +24,27 @@ namespace Daqifi.Desktop.Exporter;
 /// Sanitizing second would let two names that are distinct beforehand (<c>a/b</c> and <c>a_b</c>)
 /// converge on one file afterwards, which is exactly one of the reported collisions.
 /// </para>
+/// <para>
+/// A name is also shortened to fit <see cref="MaxFileNameBytes"/>, with its <c>" (n)"</c> and its
+/// <c>.csv</c>. The session NAME box has no length limit, and a file system refuses a longer name:
+/// the export of that session failed with a <see cref="PathTooLongException"/>, and Export All
+/// stopped at it (issue #683). Shortening comes before disambiguation for the same reason that
+/// sanitizing does: two long names that differ only after the cut must still get two files.
+/// </para>
 /// </remarks>
 internal sealed class ExportFileNamer
 {
+    /// <summary>
+    /// The longest file name, in bytes, that every file system this app writes to accepts. Linux and
+    /// APFS count 255 bytes of UTF-8. NTFS, exFAT and HFS+ count 255 UTF-16 code units, and a UTF-16
+    /// code unit is never fewer bytes than one in UTF-8, so a name inside 255 UTF-8 bytes also fits
+    /// there. See <see cref="FileNameBytes"/> for the one exception, HFS+ decomposition.
+    /// </summary>
+    internal const int MaxFileNameBytes = 255;
+
+    /// <summary>The longest base name: <see cref="MaxFileNameBytes"/> less <c>"." + csv</c>.</summary>
+    internal const int MaxBaseNameBytes = MaxFileNameBytes - 1 - 3;
+
     /// <summary>
     /// Base names already handed out by this instance — i.e. by this one export — each held in the
     /// form <see cref="CollisionKey"/> reduces it to.
@@ -74,7 +93,11 @@ internal sealed class ExportFileNamer
         // alongside two called "Run" still gets a file of its own.
         while (!_used.Add(CollisionKey(name)))
         {
-            name = $"{baseName} ({n++})";
+            // The suffix is inside the limit too, so a base name that already fills it gives up
+            // the bytes the suffix needs. The loop then checks the result like any other name.
+            var suffix = $" ({n++})";
+            var stem = FitFileName(baseName, MaxBaseNameBytes - FileNameBytes(suffix));
+            name = (stem.Length == 0 ? FallbackName(sessionId) : stem) + suffix;
         }
 
         return name;
@@ -119,18 +142,32 @@ internal sealed class ExportFileNamer
 
     /// <summary>
     /// A session's display name reduced to a legal file name, with no disambiguation — for an
-    /// export of ONE session, where there is nothing to collide with.
+    /// export of ONE session, where there is nothing to collide with. The result has at most
+    /// <see cref="MaxBaseNameBytes"/>, so the name with <c>.csv</c> fits <see cref="MaxFileNameBytes"/>.
     /// </summary>
     /// <remarks>
     /// The blank fallback is defensive rather than routine: <see cref="Logger.LoggingSession.Name"/>
     /// already substitutes <c>"Session {ID}"</c> for a blank stored name, so this fires only when
     /// the caller could not resolve a name at all — the desktop dialog looks the session up by id in
-    /// a list it may no longer be in. The underscore spelling is that path's long-standing one.
+    /// a list it may no longer be in. The underscore spelling is that path's long-standing one. The
+    /// same fallback applies when the cut leaves nothing, which needs one text element (a letter
+    /// with a very long run of combining marks) that is larger than the whole limit.
     /// </remarks>
     // @port: Daqifi.Desktop.ViewModels.ExportDialogViewModel.MakeSafeFileName
     internal static string SafeName(string? sessionName, int sessionId)
     {
-        var name = string.IsNullOrWhiteSpace(sessionName) ? $"Session_{sessionId}" : sessionName;
+        if (string.IsNullOrWhiteSpace(sessionName)) { return FallbackName(sessionId); }
+
+        var name = FitFileName(ReplaceInvalidChars(sessionName), MaxBaseNameBytes);
+        return name.Length == 0 ? FallbackName(sessionId) : name;
+    }
+
+    /// <summary>
+    /// <paramref name="name"/> with every character that a file name cannot contain replaced by
+    /// <c>_</c>. No other change: no trim and no length limit.
+    /// </summary>
+    internal static string ReplaceInvalidChars(string name)
+    {
         foreach (var invalid in Path.GetInvalidFileNameChars())
         {
             name = name.Replace(invalid, '_');
@@ -138,4 +175,60 @@ internal sealed class ExportFileNamer
 
         return name;
     }
+
+    /// <summary>
+    /// The longest start of <paramref name="name"/> whose <see cref="FileNameBytes"/> is at most
+    /// <paramref name="maxBytes"/>. The cut is on a text element boundary, so it never splits a
+    /// surrogate pair, or an accent from its letter. Returns <paramref name="name"/> itself when it
+    /// fits, and an empty string when not even its first text element fits.
+    /// </summary>
+    internal static string FitFileName(string name, int maxBytes)
+    {
+        if (FileNameBytes(name) <= maxBytes) { return name; }
+
+        var elements = StringInfo.GetTextElementEnumerator(name);
+        var cut = new StringBuilder();
+        var bytes = 0;
+        while (elements.MoveNext())
+        {
+            var element = elements.GetTextElement();
+            // Counted per element, which is never less than the count of the joined text: the
+            // decomposed form of a whole name is the decomposed forms of its text elements.
+            bytes += FileNameBytes(element);
+            if (bytes > maxBytes) { break; }
+            cut.Append(element);
+        }
+
+        return cut.ToString();
+    }
+
+    /// <summary>
+    /// How many bytes <paramref name="text"/> takes in a file name: its UTF-8 length, or the UTF-8
+    /// length of its decomposed (NFD) form when that is larger.
+    /// </summary>
+    /// <remarks>
+    /// The decomposed form is there for HFS+, which stores a name decomposed and counts the
+    /// result in UTF-16 code units. A few characters grow more than that: <c>ΐ</c> (U+0390) is two
+    /// bytes of UTF-8 but three code points when decomposed, so 120 of them are 240 bytes and still
+    /// 360 code units, too long for HFS+. The UTF-8 length of the decomposed form is never less than
+    /// its UTF-16 length, so the larger of the two numbers is safe on every one of these file
+    /// systems.
+    /// </remarks>
+    internal static int FileNameBytes(string text)
+    {
+        var bytes = Encoding.UTF8.GetByteCount(text);
+        try
+        {
+            return Math.Max(bytes, Encoding.UTF8.GetByteCount(text.Normalize(NormalizationForm.FormD)));
+        }
+        catch (ArgumentException)
+        {
+            // Not well-formed UTF-16 (an unpaired surrogate). There is no decomposed form, and the
+            // UTF-8 count already gives the replacement character its three bytes.
+            return bytes;
+        }
+    }
+
+    /// <summary>The name of a session whose own name cannot be used.</summary>
+    private static string FallbackName(int sessionId) => $"Session_{sessionId}";
 }

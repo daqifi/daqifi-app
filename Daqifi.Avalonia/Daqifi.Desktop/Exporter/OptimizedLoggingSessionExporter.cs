@@ -99,33 +99,22 @@ public class OptimizedLoggingSessionExporter
     /// "ran and wrote the file" to the only caller that reports the outcome — so the export dialog
     /// showed a green tick and "Export complete" over an empty folder (issue #312).</para>
     /// </returns>
+    /// <remarks>
+    /// A failure is thrown, and NOT logged here. This overload is the desktop export path, and its
+    /// sole caller (<c>ExportDialogViewModel</c>) needs the failure to report a truthful result, so
+    /// it catches it, and it logs it once at the level the failure deserves. This method used to log
+    /// at Error as well, so each failure was two Sentry events, and a destination fault that the
+    /// dialog logs at Warning was still one (issue #683). The Try* overload keeps swallowing (returns
+    /// false) for mobile, so it still logs for itself.
+    /// </remarks>
     // @port: Daqifi.Desktop.Exporter.OptimizedLoggingSessionExporter.ExportLoggingSession
     public bool ExportLoggingSession(LoggingSession loggingSession, string filepath, bool exportRelativeTime,
-        IProgress<int> progress, CancellationToken cancellationToken, int sessionIndex, int totalSessions)
-    {
-        try
+        IProgress<int> progress, CancellationToken cancellationToken, int sessionIndex, int totalSessions) =>
+        WriteCsv(loggingSession, filepath, new CsvExportOptions
         {
-            return WriteCsv(loggingSession, filepath, new CsvExportOptions
-            {
-                Delimiter = _delimiter,
-                UseRelativeTime = exportRelativeTime,
-            }, progress, cancellationToken, sessionIndex, totalSessions);
-        }
-        catch (OperationCanceledException)
-        {
-            // Let the viewmodel's cancellation handler record the breadcrumb.
-            throw;
-        }
-        catch (Exception ex)
-        {
-            // Propagate after logging: this overload is the desktop export path, and its sole caller
-            // (ExportDialogViewModel) needs the failure to surface a truthful result instead of a
-            // false "Export complete". The Try* overload keeps swallowing (returns false) for mobile.
-            _appLogger.Error(ex,
-                $"Exception in OptimizedExportLoggingSession (sessionId={loggingSession?.ID}, filepath={filepath}, relativeTime={exportRelativeTime})");
-            throw;
-        }
-    }
+            Delimiter = _delimiter,
+            UseRelativeTime = exportRelativeTime,
+        }, progress, cancellationToken, sessionIndex, totalSessions);
 
     /// <summary>
     /// As <see cref="ExportLoggingSession"/>, but folds a FAILURE into the same false its sibling
@@ -182,40 +171,26 @@ public class OptimizedLoggingSessionExporter
     /// immediately truncated by a cast, and the only thing the wider type could express was a
     /// fractional window that silently became a different one — 0.5 becoming a window of 0 being the
     /// worst of them. The narrower parameter deletes the cast and the case together.
+    /// <para>A failure is thrown and not logged here, for the reason given on
+    /// <see cref="ExportLoggingSession"/>.</para>
     /// </remarks>
     // @port: Daqifi.Desktop.Exporter.OptimizedLoggingSessionExporter.ExportAverageSamples
     public bool ExportAverageSamples(LoggingSession session, string filepath, int averageQuantity,
         bool exportRelativeTime, IProgress<int> progress, CancellationToken cancellationToken, int sessionIndex, int totalSessions)
     {
-        // Thrown, not logged-and-returned, and outside the try so it reaches the caller unchanged. A
-        // window of zero or less cannot produce a single row, and the bare `return` this used to do
-        // was indistinguishable from a finished export: the dialog reported "Export complete" over an
+        // Thrown, not logged-and-returned, so it reaches the caller unchanged. A window of zero or
+        // less cannot produce a single row, and the bare `return` this used to do was
+        // indistinguishable from a finished export: the dialog reported "Export complete" over an
         // empty folder (issue #312). The dialog now refuses to start such an export at all, so
         // arriving here at all is a caller bug — which is what this exception is for.
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(averageQuantity);
 
-        try
+        return WriteCsv(session, filepath, new CsvExportOptions
         {
-            return WriteCsv(session, filepath, new CsvExportOptions
-            {
-                Delimiter = _delimiter,
-                UseRelativeTime = exportRelativeTime,
-                AverageWindow = averageQuantity,
-            }, progress, cancellationToken, sessionIndex, totalSessions);
-        }
-        catch (OperationCanceledException)
-        {
-            // Let the viewmodel's cancellation handler record the breadcrumb.
-            throw;
-        }
-        catch (Exception ex)
-        {
-            // Propagate after logging (see ExportLoggingSession): the desktop VM needs the failure so it
-            // never reports a false success on a locked or otherwise unwritable destination.
-            _appLogger.Error(ex,
-                $"Failed in OptimizedExportAverageSamples (sessionId={session?.ID}, filepath={filepath}, averageWindow={averageQuantity}, relativeTime={exportRelativeTime})");
-            throw;
-        }
+            Delimiter = _delimiter,
+            UseRelativeTime = exportRelativeTime,
+            AverageWindow = averageQuantity,
+        }, progress, cancellationToken, sessionIndex, totalSessions);
     }
     #endregion
 

@@ -18,7 +18,7 @@ namespace Daqifi.Avalonia.Tests.Exporter;
 public sealed class DestinationFailureClassifierTests
 {
     /// <summary>
-    /// The three failures that are the destination's fault, and are therefore reported to the user
+    /// The failures that are the destination's fault, and are therefore reported to the user
     /// as something they can act on and logged at Warning rather than raising a Sentry issue.
     /// </summary>
     [Fact]
@@ -26,7 +26,65 @@ public sealed class DestinationFailureClassifierTests
     {
         Assert.True(DestinationFailureClassifier.IsBlocked(new UnauthorizedAccessException()));
         Assert.True(DestinationFailureClassifier.IsBlocked(new DirectoryNotFoundException()));
+        // A path too long for the file system is the user's data, not an app fault (issue #683).
+        Assert.True(DestinationFailureClassifier.IsBlocked(new PathTooLongException()));
     }
+
+    /// <summary>
+    /// A full disk is recognised by the operating system's own code, which .NET puts in the
+    /// HResult: the raw errno on macOS and Linux, a FACILITY_WIN32 HResult on Windows. And it is
+    /// NOT a destination fault: it keeps its Error treatment, which issue #683 left as it was.
+    /// </summary>
+    [Fact]
+    public void A_full_disk_is_recognised_but_is_not_a_destination_fault()
+    {
+        var diskFull = DiskFull();
+
+        Assert.True(DestinationFailureClassifier.IsDiskFull(diskFull));
+        Assert.False(DestinationFailureClassifier.IsBlocked(diskFull));
+    }
+
+    /// <summary>
+    /// The negative half, without which the positive one proves nothing: an I/O error with any
+    /// other code — the default one, or another errno — is not a full disk, and neither is an
+    /// exception of another type that happens to carry the same number.
+    /// </summary>
+    [Fact]
+    public void Other_failures_are_not_a_full_disk()
+    {
+        Assert.False(DestinationFailureClassifier.IsDiskFull(new IOException("There is not enough space on the disk.")));
+        Assert.False(DestinationFailureClassifier.IsDiskFull(new IOException("Input/output error", OperatingSystem.IsWindows() ? unchecked((int)0x8007001F) : 5)));
+        Assert.False(DestinationFailureClassifier.IsDiskFull(new InvalidOperationException("No space left on device") { HResult = DiskFull().HResult }));
+    }
+
+    [Fact]
+    public void A_full_disk_tells_the_user_the_disk_is_full()
+    {
+        var message = DestinationFailureClassifier.Describe(DiskFull(), "/some/folder/Big B.csv", "the export file");
+
+        Assert.Equal(
+            "Could not write 'Big B.csv' — the disk is full. Make space on the disk, or choose a different location.",
+            message);
+    }
+
+    /// <summary>
+    /// The system's own message for a too-long path names the path, which for the export is a
+    /// staging file the user never sees. The sentence names the file and what to do instead.
+    /// </summary>
+    [Fact]
+    public void A_path_too_long_tells_the_user_to_choose_a_shorter_one()
+    {
+        var message = DestinationFailureClassifier.Describe(
+            new PathTooLongException("The path '/x/daqifi-exporting-abc.def' is too long"), "/some/folder/run.csv", "the export file");
+
+        Assert.Equal(
+            "Could not write 'run.csv' — its name or its folder path is too long. Choose a folder with a shorter path.",
+            message);
+    }
+
+    /// <summary>What the runtime raises for a write to a full disk on this host.</summary>
+    private static IOException DiskFull() =>
+        new("No space left on device", OperatingSystem.IsWindows() ? unchecked((int)0x80070070) : 28);
 
     /// <summary>
     /// The narrowness is the point: a bare <see cref="IOException"/> covers a full disk, a failing

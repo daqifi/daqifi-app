@@ -26,18 +26,53 @@ namespace Daqifi.Desktop.Exporter;
 internal static class DestinationFailureClassifier
 {
     /// <summary>
-    /// True when a failure is the destination's fault — denied, gone, or held by another program.
-    /// Deliberately narrow: a generic <see cref="IOException"/> (a full disk, a failing drive, an
-    /// EF/SQLite read error) keeps the default Error/Sentry treatment so real problems stay visible.
+    /// True when a failure is the destination's fault — denied, gone, held by another program, or a
+    /// path too long for the file system. Deliberately narrow: a generic <see cref="IOException"/>
+    /// (a full disk, a failing drive, an EF/SQLite read error) keeps the default Error/Sentry
+    /// treatment so real problems stay visible.
     /// </summary>
+    /// <remarks>
+    /// A path that is too long is the user's data, not an app fault: a session name has no length
+    /// limit, and a folder can be nested as deep as the user likes. It went to Sentry as an Error,
+    /// twice for each attempt (issue #683). The export now shortens a long session name, so what is
+    /// left of this case is a long folder path, or a long name typed into the save picker.
+    /// </remarks>
     // @port: Daqifi.Desktop.ViewModels.ExportDialogViewModel.IsDestinationBlocked
     internal static bool IsBlocked(Exception ex) => ex switch
     {
         UnauthorizedAccessException => true,
         DirectoryNotFoundException => true,
+        PathTooLongException => true,
         IOException io => IsSharingViolation(io),
         _ => false,
     };
+
+    /// <summary>
+    /// True when the write failed because the disk is full. This does NOT make it the destination's
+    /// fault — <see cref="IsBlocked"/> stays false, so a full disk keeps its Error/Sentry treatment.
+    /// It only lets <see cref="Describe"/> say what occurred, instead of a message that holds the
+    /// staging file's name, or "Please try again", which is wrong advice for a full disk.
+    /// </summary>
+    /// <remarks>
+    /// .NET puts the operating system's own code in <see cref="Exception.HResult"/>: the raw errno on
+    /// macOS and Linux (<c>ENOSPC</c> is 28 on both), and a FACILITY_WIN32 HResult on Windows. Gated
+    /// by OS for the reason <see cref="IsSharingViolation"/> is: one number means different things on
+    /// each. The macOS value was measured on a full 3 MB disk image (issue #683); the Windows values
+    /// are from the Win32 documentation and are not measured.
+    /// </remarks>
+    internal static bool IsDiskFull(Exception ex)
+    {
+        const int ENOSPC = 28;
+        const int FACILITY_WIN32 = unchecked((int)0x80070000);
+        const int ERROR_HANDLE_DISK_FULL = 39;
+        const int ERROR_DISK_FULL = 112;
+
+        if (ex is not IOException io) { return false; }
+
+        if (!OperatingSystem.IsWindows()) { return io.HResult == ENOSPC; }
+
+        return io.HResult is FACILITY_WIN32 + ERROR_DISK_FULL or FACILITY_WIN32 + ERROR_HANDLE_DISK_FULL;
+    }
 
     /// <summary>
     /// Turns a file-access failure into a message that tells the user what to do about it.
@@ -60,8 +95,12 @@ internal static class DestinationFailureClassifier
                 $"Could not write {name} — access was denied. Choose a different folder, or check that the file is not read-only.",
             DirectoryNotFoundException =>
                 $"Could not write {name} — that folder no longer exists. Choose a different location and try again.",
+            PathTooLongException =>
+                $"Could not write {name} — its name or its folder path is too long. Choose a folder with a shorter path.",
             IOException io when IsSharingViolation(io) =>
                 $"Could not write {name} — it is open in another program. Close it and try again.",
+            _ when IsDiskFull(ex) =>
+                $"Could not write {name} — the disk is full. Make space on the disk, or choose a different location.",
             _ =>
                 $"Could not write {name}. {ex.Message}",
         };

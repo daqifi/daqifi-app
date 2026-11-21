@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 
 namespace Daqifi.Desktop.Exporter;
 
@@ -69,30 +68,17 @@ internal static class SuggestedFileNames
 
     /// <summary>
     /// A session name made safe for a file name: no character that a file name cannot contain, no
-    /// leading or trailing space or dot, and at most <see cref="MaxSessionPartBytes"/> bytes. The cut
-    /// is on a text element boundary, so it never splits a surrogate pair or an accent from its
-    /// letter. <paramref name="fallback"/> is used when nothing is left.
+    /// leading or trailing space or dot, and at most <see cref="MaxSessionPartBytes"/> bytes as
+    /// <see cref="ExportFileNamer.FileNameBytes"/> counts them. The cut is
+    /// <see cref="ExportFileNamer.FitFileName"/>'s, so it never splits a surrogate pair or an accent
+    /// from its letter. <paramref name="fallback"/> is used when nothing is left.
     /// </summary>
     private static string SessionPart(string? sessionName, string fallback)
     {
         var safe = string.IsNullOrWhiteSpace(sessionName)
             ? string.Empty
-            : ExportFileNamer.SafeName(sessionName, 0).Trim(' ', '.');
-        if (Encoding.UTF8.GetByteCount(safe) > MaxSessionPartBytes)
-        {
-            var elements = StringInfo.GetTextElementEnumerator(safe);
-            var cut = new StringBuilder();
-            var bytes = 0;
-            while (elements.MoveNext())
-            {
-                var element = elements.GetTextElement();
-                bytes += Encoding.UTF8.GetByteCount(element);
-                if (bytes > MaxSessionPartBytes) { break; }
-                cut.Append(element);
-            }
-
-            safe = cut.ToString().TrimEnd(' ', '.');
-        }
+            : ExportFileNamer.ReplaceInvalidChars(sessionName).Trim(' ', '.');
+        safe = ExportFileNamer.FitFileName(safe, MaxSessionPartBytes).TrimEnd(' ', '.');
 
         return safe.Length == 0 ? fallback : safe;
     }
