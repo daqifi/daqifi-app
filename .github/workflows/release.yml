@@ -19,7 +19,7 @@ name: Release
 #
 #   DAQiFi-<version>-linux-x64.AppImage     the app; it updates itself in place
 #   Daqifi.App-<version>-linux-full.nupkg   the package the in-app updater downloads
-#   releases.linux.json                     the feed for the "linux" channel
+#   releases.linux.json, RELEASES-linux     the feed for the "linux" channel
 #
 # macOS is not here yet: it needs notarisation first (#350, tracked on #344).
 #

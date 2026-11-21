@@ -11,7 +11,11 @@ name: Linux AppImage
 #
 #   DAQiFi-<version>-linux-x64.AppImage     the app: download it, chmod +x, run it
 #   Daqifi.App-<version>-linux-full.nupkg   the package the in-app updater downloads
-#   releases.linux.json                     the feed Velopack's GithubSource reads
+#   releases.linux.json, RELEASES-linux     the feed Velopack's GithubSource reads
+#
+# vpk writes the AppImage as Daqifi.App.AppImage; it is renamed like the Windows MSI. The name
+# is only for the download: an update replaces the file wherever it is, under whatever name the
+# user gave it. vpk's assets.linux.json is an index for `vpk upload` and is not shipped.
 #
 # The channel is "linux", Velopack's default on Linux, exactly as the Windows job uses the
 # default "win" channel and VelopackAppUpdateService asks for no channel. Channels are still an
@@ -200,9 +204,9 @@ jobs:
           out="${RUNNER_TEMP}/upload"
           mkdir -p "${out}"
           src="${RUNNER_TEMP}/releases"
-          cp "${src}/${PACK_ID}-linux.AppImage" "${out}/DAQiFi-${VERSION}-linux-x64.AppImage"
+          cp "${src}/${PACK_ID}.AppImage" "${out}/DAQiFi-${VERSION}-linux-x64.AppImage"
           cp "${src}/${PACK_ID}-${VERSION}-linux-full.nupkg" "${out}/"
-          cp "${src}/releases.linux.json" "${out}/"
+          cp "${src}/releases.linux.json" "${src}/RELEASES-linux" "${out}/"
           ls -la "${out}"
 
       # What a user downloads, looked at from the inside: the file type and size, then the
@@ -225,6 +229,11 @@ jobs:
           echo "size: ${size} bytes ($(( size / 1048576 )) MiB)"
           echo "### Linux AppImage" >> "$GITHUB_STEP_SUMMARY"
           echo "\`DAQiFi-${VERSION}-linux-x64.AppImage\`: ${type}, ${size} bytes" >> "$GITHUB_STEP_SUMMARY"
+
+          # vpk uses AppImageKit's runtime, which loads libfuse.so.2 to mount the image. The
+          # README tells users who lack it what to install; this records whether this runner has it.
+          echo "runtime: $("${appimage}" --appimage-version 2>&1 || true)"
+          if ldconfig -p | grep -q 'libfuse\.so\.2'; then echo "libfuse.so.2: present"; else echo "libfuse.so.2: absent"; fi
 
           mkdir "${RUNNER_TEMP}/extract"
           cd "${RUNNER_TEMP}/extract"
