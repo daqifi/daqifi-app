@@ -1,4 +1,5 @@
 using CommunityToolkit.Mvvm.Input;
+using Daqifi.Avalonia.Tests.UpdateVersion;
 using Daqifi.Desktop.Models;
 using Daqifi.Desktop.UpdateVersion;
 using Daqifi.Desktop.ViewModels;
@@ -149,6 +150,30 @@ public class AppUpdateViewModelTests
         /// <summary>When set, the administrator question stays open until the test answers it.</summary>
         public TaskCompletionSource<bool>? ConfirmGate { get; set; }
 
+        /// <summary>
+        /// The releases API in place of the network (#347), as one page with no next page. Null, and
+        /// <see cref="FetchPage"/> null: the section fetches no notes.
+        /// </summary>
+        public Func<CancellationToken, Task<string>>? FetchNotes { get; set; }
+
+        /// <summary>The releases API page by page, for a test that needs more than one page. Wins over <see cref="FetchNotes"/>.</summary>
+        public Func<Uri, CancellationToken, Task<ReleasesPage>>? FetchPage { get; set; }
+
+        /// <summary>How many pages the section asked for.</summary>
+        public int NotesFetches { get; private set; }
+
+        private Func<Uri, CancellationToken, Task<ReleasesPage>>? CountedFetch()
+        {
+            var fetch = FetchPage
+                        ?? (FetchNotes is { } single
+                            ? async (Uri _, CancellationToken token) => new ReleasesPage(await single(token), null)
+                            : null);
+            return fetch is null ? null : (uri, token) => { NotesFetches++; return fetch(uri, token); };
+        }
+
+        /// <summary>The version of this copy, the start of the release-notes range.</summary>
+        public string InstalledVersion { get; set; } = "3.3.0";
+
         private AppUpdateViewModel? _viewModel;
 
         public AppUpdateViewModel ViewModel => _viewModel ??= new(
@@ -159,7 +184,9 @@ public class AppUpdateViewModelTests
             () => SectionOpened++,
             Logger,
             now: () => CheckTime,
-            delay: Waits.Delay);
+            delay: Waits.Delay,
+            fetchReleasePage: CountedFetch(),
+            installedVersion: InstalledVersion);
 
         public Task CheckNowAsync() => ViewModel.CheckNowCommand.ExecuteAsync(null);
 
@@ -819,5 +846,233 @@ public class AppUpdateViewModelTests
         Assert.Equal(
             AppUpdateViewModel.FormatVersion(Daqifi.Desktop.Common.AppVersion.Semantic, Daqifi.Desktop.Common.AppVersion.ShortBuildMetadata),
             h.ViewModel.Version);
+    }
+
+    // ---- #347: the release notes of the pending update ----
+
+    private static string Text(NoteBlock block) => string.Concat(block.Spans.Select(s => s.Text));
+
+    /// <summary>The section shows the notes of the version on offer, before anything is downloaded.</summary>
+    [Fact]
+    public async Task FoundUpdate_ShowsTheNotesOfThePendingVersion()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        h.FetchNotes = _ => Task.FromResult(GitHubReleaseNotesTests.Answer(
+            ("v3.4.0", false, "## Fixes\n- The graph no longer stalls."), ("v3.3.0", false, "Old.")));
+
+        await h.CheckNowAsync();
+
+        Assert.True(h.ViewModel.HasReleaseNotes);
+        var section = Assert.Single(h.ViewModel.ReleaseNotes);
+        Assert.Equal("3.4.0", section.Version);
+        Assert.Equal(["Fixes", "The graph no longer stalls."], section.Blocks.Select(Text));
+        Assert.Equal("Download update", h.ViewModel.ActionText);
+        Assert.Equal(0, h.Service.Downloads);
+    }
+
+    /// <summary>Installed 3.3.0, offered 3.6.0: the notes of 3.6.0, 3.5.0 and 3.4.0, newest first, each under its version.</summary>
+    [Fact]
+    public async Task SkippedVersions_ShowEveryReleaseBetween_NewestFirst()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.6.0", null);
+        h.FetchNotes = _ => Task.FromResult(GitHubReleaseNotesTests.Answer(
+            ("v3.6.0", false, "Six."), ("v3.5.0", false, "Five."), ("v3.4.0", false, "Four."), ("v3.3.0", false, "Three.")));
+
+        await h.CheckNowAsync();
+
+        Assert.Equal(["3.6.0", "3.5.0", "3.4.0"], h.ViewModel.ReleaseNotes.Select(s => s.Version));
+        Assert.Equal(["Six.", "Five.", "Four."], h.ViewModel.ReleaseNotes.Select(s => Text(s.Blocks.Single())));
+    }
+
+    /// <summary>
+    /// Notes that cannot be fetched say so, with the release page. The update itself is not held:
+    /// it downloads, and "Restart to update" installs it.
+    /// </summary>
+    [Fact]
+    public async Task FailedNotesFetch_SaysUnavailable_AndTheUpdateStillInstalls()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        h.FetchNotes = _ => Task.FromException<string>(new HttpRequestException("rate limit exceeded"));
+
+        await h.CheckNowAsync();
+
+        var section = Assert.Single(h.ViewModel.ReleaseNotes);
+        Assert.StartsWith("Release notes unavailable.", Text(section.Blocks.Single()));
+        Assert.Contains(section.Blocks.Single().Spans, s => s.Link == GitHubReleaseNotes.ReleasePage("3.4.0"));
+        Assert.Equal("DAQiFi 3.4.0 is available.", h.ViewModel.Status);
+
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(1, h.Service.Downloads);
+        Assert.Equal("Restart to update", h.ViewModel.ActionText);
+
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal("3.4.0", h.Service.AppliedVersion);
+    }
+
+    /// <summary>A fetch that never answers holds neither the check nor the update.</summary>
+    [Fact]
+    public async Task NotesFetchThatNeverEnds_HoldsNeitherTheCheckNorTheUpdate()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        h.FetchNotes = _ => new TaskCompletionSource<string>().Task;
+
+        await h.CheckNowAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.False(h.ViewModel.IsChecking);
+        Assert.False(h.ViewModel.HasReleaseNotes);
+        Assert.Equal("Download update", h.ViewModel.ActionText);
+
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal("3.4.0", h.Service.AppliedVersion);
+    }
+
+    /// <summary>The releases API allows few requests without a token: no offer, no fetch.</summary>
+    [Fact]
+    public async Task NoUpdate_FetchesNoNotes()
+    {
+        using var h = new Harness();
+        h.FetchNotes = _ => Task.FromResult("[]");
+
+        await h.CheckNowAsync();
+
+        Assert.Equal(0, h.NotesFetches);
+        Assert.False(h.ViewModel.HasReleaseNotes);
+    }
+
+    /// <summary>Each check finds the same offer again; its notes are fetched once.</summary>
+    [Fact]
+    public async Task SameOffer_FetchesItsNotesOnce()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        h.FetchNotes = _ => Task.FromResult(GitHubReleaseNotesTests.Answer(("v3.4.0", false, "Four.")));
+
+        await h.CheckNowAsync();
+        await h.CheckNowAsync();
+
+        Assert.Equal(2, h.Service.Checks);
+        Assert.Equal(1, h.NotesFetches);
+    }
+
+    /// <summary>A failed fetch is tried again at the next check, and its notes then replace the line.</summary>
+    [Fact]
+    public async Task FailedNotesFetch_IsTriedAgainAtTheNextCheck()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        var answer = Task.FromException<string>(new HttpRequestException("offline"));
+        h.FetchNotes = _ => answer;
+        await h.CheckNowAsync();
+
+        answer = Task.FromResult(GitHubReleaseNotesTests.Answer(("v3.4.0", false, "Four.")));
+        await h.CheckNowAsync();
+
+        Assert.Equal(2, h.NotesFetches);
+        Assert.Equal("Four.", Text(Assert.Single(h.ViewModel.ReleaseNotes).Blocks.Single()));
+    }
+
+    /// <summary>A newer version on offer gets its own notes; a withdrawn one takes its notes away.</summary>
+    [Fact]
+    public async Task NewerOffer_ReplacesTheNotes_AndAWithdrawnOneClearsThem()
+    {
+        using var h = new Harness();
+        h.FetchNotes = _ => Task.FromResult(GitHubReleaseNotesTests.Answer(("v3.4.1", false, "Fix."), ("v3.4.0", false, "Four.")));
+        h.Service.Offer = new("3.4.0", null);
+        await h.CheckNowAsync();
+
+        h.Service.Offer = new("3.4.1", null);
+        await h.CheckNowAsync();
+
+        Assert.Equal(2, h.NotesFetches);
+        Assert.Equal(["3.4.1", "3.4.0"], h.ViewModel.ReleaseNotes.Select(s => s.Version));
+
+        h.Service.Offer = null;
+        await h.CheckNowAsync();
+
+        Assert.False(h.ViewModel.HasReleaseNotes);
+    }
+
+    // ---- PR #695 review ----
+
+    /// <summary>
+    /// Thread 1: prereleases fill the first page, and the stable release in between is on page two.
+    /// The section reads page two, and shows that release.
+    /// </summary>
+    [Fact]
+    public async Task SkippedStableRelease_OnPageTwo_IsInTheNotes()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.6.0", null);
+        var next = new Uri("https://api.github.com/repositories/1/releases?per_page=100&page=2");
+        h.FetchPage = (uri, _) => Task.FromResult(uri == next
+            ? new ReleasesPage(GitHubReleaseNotesTests.Answer(("v3.5.0", false, "Five."), ("v3.3.0", false, "Three.")), null)
+            : new ReleasesPage(GitHubReleaseNotesTests.Answer(("v3.6.0", false, "Six."), ("v3.6.0-rc.1", true, "rc")), next));
+
+        await h.CheckNowAsync();
+
+        Assert.Equal(["3.6.0", "3.5.0"], h.ViewModel.ReleaseNotes.Select(s => s.Version));
+        Assert.Equal(2, h.NotesFetches);
+    }
+
+    /// <summary>
+    /// Thread 2: while the notes of a newer offer are fetched, the notes of the older offer are not
+    /// shown under it.
+    /// </summary>
+    [Fact]
+    public async Task NewerOffer_ClearsTheOlderNotes_WhileItsOwnAreFetched()
+    {
+        using var h = new Harness();
+        var held = new TaskCompletionSource<ReleasesPage>();
+        h.FetchPage = (_, _) => h.NotesFetches == 1
+            ? Task.FromResult(new ReleasesPage(GitHubReleaseNotesTests.Answer(("v3.4.0", false, "Four.")), null))
+            : held.Task;
+        h.Service.Offer = new("3.4.0", null);
+        await h.CheckNowAsync();
+        Assert.Equal(["3.4.0"], h.ViewModel.ReleaseNotes.Select(s => s.Version));
+
+        h.Service.Offer = new("3.5.0", null);
+        await h.CheckNowAsync();
+
+        Assert.Equal("DAQiFi 3.5.0 is available.", h.ViewModel.Status);
+        Assert.False(h.ViewModel.HasReleaseNotes);
+        Assert.Empty(h.ViewModel.ReleaseNotes);
+
+        held.SetResult(new ReleasesPage(GitHubReleaseNotesTests.Answer(("v3.5.0", false, "Five."), ("v3.4.0", false, "Four.")), null));
+
+        Assert.Equal(["3.5.0", "3.4.0"], h.ViewModel.ReleaseNotes.Select(s => s.Version));
+    }
+
+    /// <summary>
+    /// Thread 3: an answer without the offered release (empty, unreadable, or only older releases) is
+    /// asked for again at the next check, as a failed request is. Only notes that hold the offered
+    /// release are kept.
+    /// </summary>
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("not json")]
+    [InlineData("[{\"tag_name\":\"v3.3.0\",\"prerelease\":false,\"draft\":false,\"body\":\"Old.\"}]")]
+    public async Task AnswerWithoutTheOfferedRelease_IsAskedForAgainAtTheNextCheck(string firstAnswer)
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        var answer = firstAnswer;
+        h.FetchNotes = _ => Task.FromResult(answer);
+        await h.CheckNowAsync();
+        Assert.StartsWith("Release notes unavailable.", Text(Assert.Single(h.ViewModel.ReleaseNotes).Blocks.Single()));
+
+        answer = GitHubReleaseNotesTests.Answer(("v3.4.0", false, "Four."));
+        await h.CheckNowAsync();
+
+        Assert.Equal(2, h.NotesFetches);
+        Assert.Equal("Four.", Text(Assert.Single(h.ViewModel.ReleaseNotes).Blocks.Single()));
+
+        await h.CheckNowAsync();
+
+        Assert.Equal(2, h.NotesFetches);
     }
 }

@@ -17,7 +17,19 @@ public class AppUpdateSectionBindingTests
     [InlineData("IsVisible=\"{Binding AppUpdate.HasStatus}\"")]
     [InlineData("IsVisible=\"{Binding AppUpdate.CanCheckNow}\"")]
     [InlineData("IsVisible=\"{Binding AppUpdate.HasAction}\"")]
+    [InlineData("IsVisible=\"{Binding AppUpdate.HasReleaseNotes}\"")]
     public void The_section_hides_what_does_not_apply(string binding) =>
+        BindingFacts.AssertBinds(Drawer, binding);
+
+    /// <summary>
+    /// The release notes (#347): the sections come from the view model, and each block's text from
+    /// the attached property that builds its runs and link buttons. Without that binding a block is
+    /// an empty line, which no compiler check sees.
+    /// </summary>
+    [Theory]
+    [InlineData("ItemsSource=\"{Binding AppUpdate.ReleaseNotes}\"")]
+    [InlineData("local:ReleaseNotesText.Spans=\"{Binding Spans}\"")]
+    public void The_section_shows_the_release_notes(string binding) =>
         BindingFacts.AssertBinds(Drawer, binding);
 
     /// <summary>The mobile heads update through their app stores, so their settings have no UPDATES section.</summary>

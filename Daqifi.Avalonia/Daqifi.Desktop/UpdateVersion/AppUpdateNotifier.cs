@@ -111,6 +111,13 @@ public sealed class AppUpdateNotifier
     public bool LastCheckFailed { get; private set; }
 
     /// <summary>
+    /// The version the last check that got an answer found, on offer or downloaded, or <c>null</c>
+    /// when that check found none. The UPDATES section shows its release notes (#347). A failed
+    /// check leaves it as it was, as it leaves the notification.
+    /// </summary>
+    public string? OfferedVersion { get; private set; }
+
+    /// <summary>
     /// True while the notification shown waits for the user: an offer, a ready update, or a failure
     /// to try again. False while nothing is shown, and for the whole of an install step: a download,
     /// or a restart from its click to the end, the administrator question included (#346 review,
@@ -145,6 +152,8 @@ public sealed class AppUpdateNotifier
             LastCheckFailed = true;
             return null;
         }
+
+        OfferedVersion = offer?.Version;
 
         // Taken only after a check that worked: offline, the next check can still tell.
         var attempted = _attempts?.Take();

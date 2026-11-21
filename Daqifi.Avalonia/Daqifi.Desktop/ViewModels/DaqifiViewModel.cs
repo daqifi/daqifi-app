@@ -2974,7 +2974,10 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         _appLogger,
         attempts: new UpdateAttemptMarker(Path.Combine(Daqifi.Desktop.Common.AppDataPaths.DataDirectory, "update-attempt")),
         // Download progress arrives on a background thread.
-        post: action => Dispatcher.UIThread.Post(action));
+        post: action => Dispatcher.UIThread.Post(action),
+        // The release notes of the version on offer, from its GitHub release (#347). Fetched only
+        // while an update is on offer, and never awaited by the update itself.
+        fetchReleasePage: GitHubReleaseNotes.FetchPageAsync);
 
     private Notifications? _updateNotice;
 
