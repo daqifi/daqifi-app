@@ -31,9 +31,10 @@
         <!--
             Empty state. Sibling of the list in the same row, swapped on HasNotifications the way
             the Logged Data pane swaps on HasLoggingSessions. Uses the app-wide emptyTitle/emptyBody
-            classes from Resources/Components.axaml; the icon and the body sentence are the ones the
-            mobile notifications overlay (Views/MobileMainView.axaml) already shows for this state,
-            so both shells say the same thing.
+            classes from Resources/Components.axaml; the icon is the one the mobile notifications
+            overlay (Views/MobileMainView.axaml) shows for this state. The body sentence also names
+            app updates (#346), which only the desktop gets: the mobile heads update through their
+            app stores, so the mobile overlay keeps "Device and firmware alerts".
         -->
         <StackPanel Grid.Row="1"
                     IsVisible="{Binding !HasNotifications}"
@@ -50,7 +51,7 @@
                        Text="NO NOTIFICATIONS"/>
             <TextBlock Classes="emptyBody"
                        AutomationProperties.AutomationId="NotificationsEmptyBody"
-                       Text="Device and firmware alerts will appear here."/>
+                       Text="Device, firmware and app update alerts will appear here."/>
         </StackPanel>
 
         <ScrollViewer Grid.Row="1" IsVisible="{Binding HasNotifications}">

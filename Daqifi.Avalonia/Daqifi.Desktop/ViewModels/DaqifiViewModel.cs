@@ -1139,8 +1139,11 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
                     // The profiles file is read by LoggingManager.Instance as it is created, on
                     // every head (#544) — not here, which only the desktop ever reached.
 
-                    // Notifications
-                    _ = CheckForAppUpdateAsync();
+                    // Notifications. The first update check waits AppUpdateViewModel.StartupDelay,
+                    // so it does not run at the same time as device discovery (#346). An offer then
+                    // has no Install button while logging, a firmware write or an SD card transfer
+                    // runs, and gets it back when that ends (#348).
+                    _ = AppUpdate.RunAsync();
 
                     // Startup moved an unreadable database aside — say so, or the Logged Data pane
                     // is simply empty with no explanation of where the sessions went.
@@ -2926,35 +2929,32 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
         return UpdateBlocker.None;
     }
 
-    /// <summary>
-    /// Asks the update service whether a newer version exists and, if so, adds a notification
-    /// whose button installs it (#343). Replaces the old check against the WPF app's releases (#345).
-    /// </summary>
-    private async Task CheckForAppUpdateAsync()
-    {
-        var notifier = new AppUpdateNotifier(
-            AppUpdates.Current,
-            CurrentUpdateBlocker,
-            // A modal box, not ConfirmOverlay: that overlay is only drawn inside the Profiles pane, so
-            // from the notifications flyout it would wait on a question nobody can see.
-            async (message, title) =>
-            {
-                IsNotificationsOpen = false;
-                return await _messageBoxService.ShowAsync(message, title, MessageBoxButton.OKCancel, MessageBoxImage.Question)
-                       == MessageBoxResult.OK;
-            },
-            // Download progress arrives on a background thread.
-            notice => Dispatcher.UIThread.Post(() => ShowUpdateNotice(notice)),
-            _appLogger,
-            attempts: new UpdateAttemptMarker(Path.Combine(Daqifi.Desktop.Common.AppDataPaths.DataDirectory, "update-attempt")));
+    private AppUpdateViewModel? _appUpdate;
 
-        // For the rest of the run, an offer has no Install button while logging, a firmware write
-        // or an SD card transfer runs, and gets it back when that ends (#348). It never installs.
-        if (await notifier.CheckAsync() is not null)
+    /// <summary>
+    /// The UPDATES section of the settings drawer, and the checks for a newer version (#346). The
+    /// section downloads an update and then restarts to install it (#343). An update it finds also
+    /// goes to the bell, whose button opens this section. Replaces the old check against the WPF
+    /// app's releases (#345).
+    /// </summary>
+    public AppUpdateViewModel AppUpdate => _appUpdate ??= new AppUpdateViewModel(
+        AppUpdates.Current,
+        CurrentUpdateBlocker,
+        // A modal box, not ConfirmOverlay: that overlay is only drawn inside the Profiles pane, so
+        // from the settings drawer it would wait on a question nobody can see.
+        async (message, title) =>
         {
-            await notifier.WatchAsync();
-        }
-    }
+            IsNotificationsOpen = false;
+            return await _messageBoxService.ShowAsync(message, title, MessageBoxButton.OKCancel, MessageBoxImage.Question)
+                   == MessageBoxResult.OK;
+        },
+        ShowUpdateNotice,
+        // The bell entry's button. Opening the drawer closes the bell (one panel at a time, #615).
+        () => IsAppSettingsOpen = true,
+        _appLogger,
+        attempts: new UpdateAttemptMarker(Path.Combine(Daqifi.Desktop.Common.AppDataPaths.DataDirectory, "update-attempt")),
+        // Download progress arrives on a background thread.
+        post: action => Dispatcher.UIThread.Post(action));
 
     private Notifications? _updateNotice;
 
@@ -3879,6 +3879,9 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
             return;
         }
         _disposed = true;
+
+        // The update checks every few hours and the watch of an offered update (#346).
+        _appUpdate?.Dispose();
 
         // Disk-space gating/monitoring coordinator (owns the IDiskSpaceMonitor and its subscriptions).
         _diskSpaceCoordinator?.Dispose();

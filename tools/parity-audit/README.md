@@ -97,6 +97,12 @@ byte-identical, and a Debug capture is self-consistent, so repeating it confirms
 difference instead of exposing it. The tell is that the differing pixels are a short hex
 string beside the version number (found from the wrong end in #262).
 
+`run.sh` also passes `-p:SourceRevisionId=capture`. Since #346 the settings drawer shows the
+version with its short commit in every configuration, so a capture built from git would move
+`desktop-6` and `desktop-min-6` at every commit. With the fixed value the row reads
+`3.3.0 (capture)`. A bare `dotnet run` of the harness shows the real commit there, and those two
+screens then differ from the baseline for that reason alone.
+
 Every mode fails non-zero on anything it cannot vouch for, including an **incomplete**
 capture. `AvaloniaCapture` declares the screens it is contracted to produce
 (`ExpectedScreens`) and fails the run if any is absent or if it wrote one that is not on
@@ -556,6 +562,31 @@ places that are checked against reality on every run. `./run.sh --check-baseline
 captures once and verifies against the one for the current host, failing on a changed
 screen, a missing one, and one the baseline does not list (`shasum -c` only checks the
 names it was given, so the extra-file direction is checked separately).
+
+`desktop-6-settings-drawer` and `desktop-min-6-settings-drawer` were re-recorded again
+2026-11-20 for the #346 review: the version row now shows the short commit in a Release build
+too, and `run.sh` builds the capture with `SourceRevisionId=capture` (see "Go through `run.sh`"
+above), so the row reads `3.3.0 (capture)`. Those two are the only screens that show the
+version. The other thirty-eight hashes did not move. The pre-change capture of this branch merged
+with `origin/main` (`6a2ee8f`, with #659's harness) reproduced the manifest on all forty, five
+`--determinism` runs agreed on all forty after the change with every drawer settled in 2 rounds,
+and the hashes are from determinism run 1.
+
+Four desktop screens were re-recorded 2026-11-20 (macOS 26.5, Apple silicon, .NET SDK 10.0.303)
+for #346. `desktop-6-settings-drawer` and `desktop-min-6-settings-drawer` show the new UPDATES
+section below EXPORT, with the app's version. The harness sets no update service, so the section
+shows the version only; its state line and buttons are hidden there, as on a platform that does
+not update itself. `desktop-7-notifications-flyout` and `desktop-min-7-notifications-flyout` show
+the new empty-bell sentence, which also names app updates. The other thirty-six hashes did not
+move. The pre-change capture at `origin/main` (`031775e`) reproduced the manifest on all forty.
+After the change, every saved frame agreed over eleven runs, and the hashes are from a
+determinism run 1. The host was loaded (load 4 to 6) and `desktop-min-6` was refused 2 px short
+of open in four of the eleven runs; a load-matched `origin/main` control refused `desktop-min-6`
+and `-7` the same way. That was #657, and #659 has since removed the pane's transition from the
+capture, so the slide can no longer cause that refusal (see the sixth settle problem above). A
+drawer that is refused short of open now needs a look. A version
+bump in `Directory.Build.props` now moves these two settings-drawer screens too, as it already
+moves the mobile stream screens.
 
 Twelve desktop screens were re-recorded 2026-11-19 (macOS 26.5, Apple silicon, .NET SDK 10.0.303)
 for #616: with no data, the Live Graph and Logged Data plots are hidden, and each pane shows the

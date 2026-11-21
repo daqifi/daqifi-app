@@ -13,8 +13,8 @@ namespace Daqifi.Avalonia.Tests.ViewModels;
 /// #348: an app update restarts the app, and a restart is destructive during a logging session, a
 /// firmware update, or an SD card transfer. These tests set the flags the app sets in each state,
 /// and read the answer of the view model's gate (<see cref="DaqifiViewModel.CurrentUpdateBlocker"/>).
-/// They then check the result through the real gate: no Install button while the state holds,
-/// and the button back when it clears. <see cref="Daqifi.Avalonia.Tests.UpdateVersion.AppUpdateNotifierTests"/>
+/// They then check the result through the real gate: no "Restart to update" button while the state
+/// holds, and the button back when it clears. <see cref="Daqifi.Avalonia.Tests.UpdateVersion.AppUpdateNotifierTests"/>
 /// covers what the update does with each answer.
 /// </summary>
 /// <remarks>
@@ -122,15 +122,17 @@ public sealed class UpdateBlockerConditionTests : IDisposable
     }
 
     /// <summary>
-    /// The whole rule through the real gate, for each of the ticket's three states. While the state
-    /// holds, the update's notification has no Install button and says why. When the state clears,
-    /// the next look of the watch puts the button back. Nothing is downloaded or installed.
+    /// The whole rule through the real gate, for each of the ticket's three states. Downloading
+    /// stops nothing, so the update downloads while the state holds; the downloaded update then has
+    /// no "Restart to update" button and says why (#346 review moved the rule from the offer to the
+    /// restart). When the state clears, the next look of the watch puts the button back. Nothing
+    /// is installed.
     /// </summary>
     [Theory]
     [InlineData("logging", "when logging stops")]
     [InlineData("firmware", "when the firmware update finishes")]
     [InlineData("sd card", "when the SD card transfer finishes")]
-    public async Task UpdateOffer_HasNoInstallButton_WhileTheStateHolds(string state, string waitingFor)
+    public async Task RestartToUpdate_HasNoButton_WhileTheStateHolds(string state, string waitingFor)
     {
         var (start, stop) = StateSwitch(state);
         var service = new OneUpdateService();
@@ -154,9 +156,12 @@ public sealed class UpdateBlockerConditionTests : IDisposable
         try
         {
             var offer = await notifier.CheckAsync();
+            Assert.Equal("Download update", offer!.ActionText);
 
-            Assert.Equal($"DAQiFi 3.4.0 is available. Install it {waitingFor}.", offer!.Message);
-            Assert.Null(offer.ActionText);
+            await notifier.InstallAsync(new AppUpdateOffer("3.4.0", null));
+
+            Assert.Equal($"DAQiFi 3.4.0 is ready. Restart {waitingFor}.", shown.Last()!.Message);
+            Assert.Null(shown.Last()!.ActionText);
         }
         finally
         {
@@ -166,9 +171,9 @@ public sealed class UpdateBlockerConditionTests : IDisposable
         onLook = () => { if (++looks > 1) { stopWatching.Cancel(); } };
         await notifier.WatchAsync(stopWatching.Token);
 
-        Assert.Equal("DAQiFi 3.4.0 is available.", shown.Last()!.Message);
-        Assert.Equal("Install and restart", shown.Last()!.ActionText);
-        Assert.Equal(0, service.Downloads);
+        Assert.Equal("DAQiFi 3.4.0 is ready.", shown.Last()!.Message);
+        Assert.Equal("Restart to update", shown.Last()!.ActionText);
+        Assert.Equal(1, service.Downloads);
         Assert.Equal(0, service.Applies);
     }
 
