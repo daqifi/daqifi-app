@@ -139,6 +139,27 @@ public sealed class ChannelIdentityTests
         Assert.Contains(manager.SubscribedChannels, c => ReferenceEquals(c, device.DataChannels[1]));
     }
 
+    /// <summary>
+    /// Turning a tile off unsubscribes its channel. With two channels of one name, turning off the
+    /// second must unsubscribe the second, and leave the first subscribed and recording.
+    /// </summary>
+    [Fact]
+    public void Unsubscribing_one_of_two_same_named_channels_unsubscribes_that_one()
+    {
+        var device = Device(Serial, "AI0", "AI0");
+        var first = device.DataChannels[0];
+        var second = device.DataChannels[1];
+        var manager = NewManager();
+        manager.Subscribe(first);
+        manager.Subscribe(second);
+
+        manager.Unsubscribe(second);
+
+        Assert.Same(first, Assert.Single(manager.SubscribedChannels));
+        Assert.True(first.IsActive, "The channel the user did not turn off must stay subscribed and active.");
+        Assert.False(second.IsActive);
+    }
+
     /// <summary>Subscribing the same channel twice still subscribes it once.</summary>
     [Fact]
     public void Subscribing_a_channel_again_after_a_rename_keeps_one_subscription()
@@ -191,6 +212,29 @@ public sealed class ChannelIdentityTests
             "Two objects for one input of one device are one channel, whatever their names.");
         Assert.False(device.DataChannels[0].Equals(otherDevice),
             "Input 0 of another device is another channel.");
+    }
+
+    /// <summary>
+    /// The names a session records under: the channel's name when it is unique on its device; the
+    /// input's label after it when an earlier input has that name; the label alone for a channel
+    /// with no name; and a counter in the very unlikely case that the user typed the suffix itself
+    /// into another name. Another device's channels do not count.
+    /// </summary>
+    [Fact]
+    public void A_session_records_each_channel_under_a_name_unique_on_its_device()
+    {
+        // Input 4 is named after input 3's label, which input 3 records under because it has no name.
+        var device = Device(Serial, "Temp", "Temp (AI2)", "Temp", "", "AI3");
+        var other = Device("SN-OTHER", "Temp");
+        IEnumerable<IChannel> channels = [.. device.DataChannels, .. other.DataChannels];
+
+        LoggingManager.FixRecordedNames(channels);
+
+        Assert.Equal(
+            ["Temp", "Temp (AI2)", "Temp (AI2 2)", "AI3", "AI3 (AI4)"],
+            device.DataChannels.Select(c => c.RecordedName));
+        Assert.Equal("Temp", other.DataChannels[0].RecordedName);
+        Assert.Equal("", device.DataChannels[3].Name);
     }
 
     /// <summary>
