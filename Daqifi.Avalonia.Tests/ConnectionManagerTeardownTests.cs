@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Daqifi.Avalonia.Tests.Device;
 using Daqifi.Core.Device;
 using Daqifi.Desktop;
@@ -191,18 +192,25 @@ public class ConnectionManagerTeardownTests
     /// <c>device.Connect()</c>, so it failed on a busy CI runner when no fixed wait was present.
     /// </para>
     /// <para>
-    /// A fixed wait is a timer. Its continuation is not ready until the timer fires, and then
-    /// the timer's thread posts it. So the test starts the connect on a UI thread that it turns
-    /// by hand, lets <c>device.Connect()</c> return, and runs only the work that is ready at that
-    /// moment. If the connect is not complete then, it waits for something that is not ready: a
-    /// fixed wait came back. The result does not change with the load on the machine. The awaits
-    /// in this test have no time limit, so a slow runner only makes the test take longer.
+    /// An awaited fixed wait is a timer. Its continuation is not ready until the timer fires, and
+    /// then the timer's thread posts it. So the test starts the connect on a UI thread that it
+    /// turns by hand, lets <c>device.Connect()</c> return, and runs only the work that is ready at
+    /// that moment. If the connect is not complete then, it waits for something that is not ready:
+    /// an awaited wait came back on the caller's thread. The result does not change with the load
+    /// on the machine. The awaits in this test have no time limit, so a slow runner only makes the
+    /// test take longer.
     /// </para>
     /// <para>
     /// This works only if the code after <c>device.Connect()</c> comes back to the caller's thread,
     /// as it does on Avalonia's dispatcher. If that code runs on the thread pool, a wait there is
     /// not seen here: the connect then posts to this thread only when it is complete. So the test
     /// also asserts that the device is listed on the caller's thread.
+    /// </para>
+    /// <para>
+    /// Two waits are not visible to this test: a wait inside the <c>Task.Run</c> delegate, which ends
+    /// before the continuation is posted, and a <c>Thread.Sleep</c> on the caller's thread, which
+    /// blocks inside the ready work. <see cref="Connect_calls_no_delay_or_sleep_after_device_Connect"/>
+    /// covers those two.
     /// </para>
     /// </remarks>
     [Fact]
@@ -239,6 +247,48 @@ public class ConnectionManagerTeardownTests
         var result = await connecting;
         Assert.True(result.IsConnected);
         Assert.Contains(device, manager.ConnectedDevices);
+    }
+
+    /// <summary>
+    /// After <c>device.Connect()</c>, the connect calls no <c>Task.Delay</c> and no
+    /// <c>Thread.Sleep</c>: not in the <c>Task.Run</c> delegate, and not in the code on the caller's
+    /// thread (#688 review).
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Connect_returns_without_a_fixed_settle_after_the_device_is_ready"/> cannot see
+    /// these two forms of the #617 settle: a wait in the delegate ends before the continuation is
+    /// posted, and a <c>Thread.Sleep</c> blocks inside the ready work. Without a clock, only the code
+    /// can show them. So this test reads the source of <c>RunConnectAttempt</c> with its comments and
+    /// string literals removed (<see cref="BindingFacts.CodeOnly"/>), from the <c>device.Connect()</c>
+    /// call to the end of the method. It does not read the methods that the connect calls.
+    /// </remarks>
+    [Fact]
+    public void Connect_calls_no_delay_or_sleep_after_device_Connect()
+    {
+        var code = BindingFacts.CodeOnly(BindingFacts.Source("Daqifi.Avalonia/Daqifi.Desktop/ConnectionManager.cs"));
+
+        var declarations = Regex.Matches(code, @"\bTask\s*<\s*DAQiFiConnectionStatus\s*>\s+RunConnectAttempt\s*\(");
+        Assert.True(declarations.Count == 1,
+            $"Found {declarations.Count} declaration(s) of RunConnectAttempt. Point this test at the method that calls device.Connect().");
+
+        var bodyStart = code.IndexOf('{', declarations[0].Index);
+        var bodyEnd = bodyStart;
+        for (var depth = 0; bodyEnd < code.Length; bodyEnd++)
+        {
+            if (code[bodyEnd] == '{') { depth++; }
+            else if (code[bodyEnd] == '}' && --depth == 0) { break; }
+        }
+
+        var body = code[bodyStart..bodyEnd];
+        var connectCalls = Regex.Matches(body, @"\bdevice\s*\.\s*Connect\s*\(\s*\)");
+        Assert.True(connectCalls.Count == 1,
+            $"RunConnectAttempt calls device.Connect() {connectCalls.Count} time(s), not once, so this test cannot find where the device is ready.");
+
+        var waits = Regex.Matches(body[connectCalls[0].Index..], @"\b(?<call>Task\s*\.\s*Delay|Thread\s*\.\s*Sleep)\s*\(")
+            .Select(wait => wait.Groups["call"].Value)
+            .ToList();
+        Assert.True(waits.Count == 0,
+            $"RunConnectAttempt calls {string.Join(", ", waits)} after device.Connect(). device.Connect() already waits for the device to be ready (#617).");
     }
 
     /// <summary>
