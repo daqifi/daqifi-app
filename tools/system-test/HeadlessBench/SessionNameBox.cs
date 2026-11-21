@@ -137,6 +137,28 @@ internal static partial class HeadlessBench
                               $"{PastRenameDebounce.TotalMilliseconds:F0} ms (caret {box.CaretIndex}, " +
                               $"still in the box={focused})");
 
+            // The box's own Cut/Copy/Paste menu: opening it is part of the edit (the user is about
+            // to paste), not the end of it, so the empty box must stay empty while it is open.
+            if (ReferenceEquals(way.Session, second))
+            {
+                var flyout = box.ContextFlyout;
+                flyout?.ShowAt(box);
+                PumpFor(TimeSpan.FromMilliseconds(200));
+                var opened = flyout?.IsOpen == true;
+                var focusInBox = box.IsKeyboardFocusWithin;
+                var whileOpen = box.Text;
+                flyout?.Hide();
+                PumpFor(TimeSpan.FromMilliseconds(200));
+                var afterHide = box.Text;
+                var focusBack = box.IsKeyboardFocusWithin;
+                box.Focus();
+                Pump();
+                emptyOk &= opened && whileOpen == string.Empty && afterHide == string.Empty;
+                emptyEvidence.Add($"the box's menu opened={opened} (focus in the box while open={focusInBox}): " +
+                                  $"box '{whileOpen}' while open, '{afterHide}' after it closed " +
+                                  $"(focus back in the box={focusBack})");
+            }
+
             main.KeyTextInput(way.Typed);
             Pump();
             var stored = WaitForStoredSessionName(way.Session.ID, way.Typed);
