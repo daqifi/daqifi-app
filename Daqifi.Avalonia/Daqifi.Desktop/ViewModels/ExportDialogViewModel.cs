@@ -320,9 +320,9 @@ public partial class ExportDialogViewModel : ObservableObject, IDisposable
         // destination). Everything else falls back to the generic message.
         string? failureReason = null;
 
-        // The destination currently being written, so the catch below can name the offending
-        // file even though the exception surfaces from deep inside the exporter.
-        var currentFilepath = ExportFilePath;
+        // The sessions whose file could not be written, in order. One failure no longer ends the run:
+        // see the loop below.
+        var failures = new List<ExportFailure>();
         try
         {
             await Task.Run(async () =>
@@ -354,14 +354,15 @@ public partial class ExportDialogViewModel : ObservableObject, IDisposable
                 // Pre-flight: check every destination before writing anything, so a multi-session
                 // export can't leave half its files on disk before failing, and the user gets an
                 // actionable message naming the file that blocked it (issue #747). Inherently racy,
-                // so the catch below still handles a destination that goes bad after the check.
+                // and it probes only files that already exist, so the write loop's own catch still
+                // handles a destination that goes bad after the check, or a new file that cannot be
+                // written (a full disk, a path too long).
                 foreach (var (_, filepath) in live)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var reason = DescribeUnwritableDestination(filepath, out var probeError);
                     if (reason == null) { continue; }
 
-                    currentFilepath = filepath;
                     failureReason = reason;
                     // DescribeUnwritableDestination only returns a reason when it caught an exception,
                     // so probeError is non-null on this path.
@@ -372,14 +373,29 @@ public partial class ExportDialogViewModel : ObservableObject, IDisposable
                 for (var i = 0; i < live.Count; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    currentFilepath = live[i].Filepath;
+                    var (session, filepath) = live[i];
 
-                    var wroteFile = ExportAllSelected
-                        ? ExportAllSamples(live[i].Session, currentFilepath, progress, cancellationToken, i, live.Count)
-                        : ExportAverageSelected
-                          && ExportAverageSamples(live[i].Session, currentFilepath, progress, cancellationToken, i, live.Count);
+                    try
+                    {
+                        var wroteFile = ExportAllSelected
+                            ? ExportAllSamples(session, filepath, progress, cancellationToken, i, live.Count)
+                            : ExportAverageSelected
+                              && ExportAverageSamples(session, filepath, progress, cancellationToken, i, live.Count);
 
-                    if (wroteFile) { exported++; }
+                        if (wroteFile) { exported++; }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        // Go on to the next session, and report every failure at the end (#683). The
+                        // loop used to end here, so one session that could not be written (a full
+                        // disk, a name too long for the file system) kept every session after it out
+                        // of the folder, and the message did not say which files were there. Each
+                        // session's file is staged and moved into place only on success, so the
+                        // failed one left nothing, and the next one is as safe to try as the first.
+                        // A cancel is not a failure: it still ends the run, from the catch below.
+                        failures.Add(new ExportFailure(filepath, ex));
+                        LogSessionFailure(session.ID, filepath, ex);
+                    }
                 }
             }, cancellationToken);
 
@@ -387,6 +403,16 @@ public partial class ExportDialogViewModel : ObservableObject, IDisposable
             {
                 failed = true;
                 AppLogger.Instance.AddBreadcrumb("export", "Data export blocked by destination file",
+                    Common.Loggers.BreadcrumbLevel.Warning);
+            }
+            else if (failures.Count > 0)
+            {
+                failed = true;
+                failureReason = DescribeFailures(exported, targets.Count, failures);
+                // Warning whatever the cause: each failure was already logged at its own level as it
+                // happened, so an Error among them has its own Sentry event.
+                AppLogger.Instance.AddBreadcrumb("export",
+                    $"Data export could not write {failures.Count} of {targets.Count} file(s)",
                     Common.Loggers.BreadcrumbLevel.Warning);
             }
             else if (exported == 0 || exported < targets.Count)
@@ -422,21 +448,12 @@ public partial class ExportDialogViewModel : ObservableObject, IDisposable
             AppLogger.Instance.Information("Export operation was cancelled by user.");
             AppLogger.Instance.AddBreadcrumb("export", "Data export cancelled", Common.Loggers.BreadcrumbLevel.Warning);
         }
-        catch (Exception ex) when (DestinationFailureClassifier.IsBlocked(ex))
-        {
-            // A destination that cannot be written — held by another program, read-only, denied, or
-            // on a folder that disappeared — is a user/environmental condition, not an app bug. Log
-            // it as a warning (stack trace stays in the local log, no Sentry event) the same way the
-            // device layer classifies an unreachable device. Anything else, including a database-level
-            // I/O error, still takes the Error/Sentry path below.
-            failed = true;
-            failureReason = DestinationFailureClassifier.Describe(ex, currentFilepath, EXPORT_FILE);
-            AppLogger.Instance.Warning(ex, $"Export failed writing '{currentFilepath}'.");
-            AppLogger.Instance.AddBreadcrumb("export", "Data export blocked by destination file",
-                Common.Loggers.BreadcrumbLevel.Warning);
-        }
         catch (Exception ex)
         {
+            // Only what happens outside a session's own write reaches here — reading the session list
+            // from the database, say — since the loop above catches each write's failure itself. A
+            // destination fault is therefore not expected here, and none is given a destination
+            // message: the database file being denied is not the export folder being denied.
             failed = true;
             AppLogger.Instance.Error(ex, "Problem Exporting Data");
             AppLogger.Instance.AddBreadcrumb("export", "Data export failed", Common.Loggers.BreadcrumbLevel.Error);
@@ -620,6 +637,80 @@ public partial class ExportDialogViewModel : ObservableObject, IDisposable
             _ => $"{lead}: {goneSessions} no longer in the database, and no data was found for the rest.",
         };
     }
+
+    /// <summary>
+    /// What the dialog says when one or more sessions could not be written. It names the first file
+    /// that failed and why, and for Export All it starts with how many files the folder now holds,
+    /// because the run goes on past a failure and the folder has the others.
+    /// </summary>
+    /// <param name="exported">Sessions that produced a CSV.</param>
+    /// <param name="requested">Sessions the user selected.</param>
+    /// <param name="failures">The sessions that could not be written, in order; at least one.</param>
+    /// <remarks>
+    /// Only the first failure is described. A full disk usually fails each session after it in the
+    /// same way, and a list of N copies of one reason does not help more than one copy and a count.
+    /// The log has a line for each.
+    /// </remarks>
+    private static string DescribeFailures(int exported, int requested, IReadOnlyList<ExportFailure> failures)
+    {
+        var first = DescribeFailure(failures[0]);
+
+        // One session: the old single-file message, with nothing to count.
+        if (requested == 1) { return first; }
+
+        var lead = exported == 0
+            ? "Nothing was exported"
+            : $"Exported {exported} of {requested} sessions";
+
+        // Every session not exported other than the one described: other failures, and also any
+        // session that had no data or was deleted, so that the sentence is true of all of them.
+        var others = requested - exported - 1;
+        var tail = others switch
+        {
+            <= 0 => string.Empty,
+            1 => " 1 other session was not exported either.",
+            _ => $" {others} other sessions were not exported either.",
+        };
+
+        return $"{lead}. {first}{tail}";
+    }
+
+    /// <summary>
+    /// What the user is told about one session that could not be written.
+    /// </summary>
+    /// <remarks>
+    /// A failure the classifier knows gets its sentence — a denied or missing folder, a path too
+    /// long, a full disk. Anything else gets a fixed sentence and NOT the exception's own message:
+    /// the write goes to a staging file, so the system's message names that file
+    /// (<c>daqifi-exporting-…</c>), which the user has never seen and cannot find.
+    /// </remarks>
+    private static string DescribeFailure(ExportFailure failure) =>
+        DestinationFailureClassifier.IsBlocked(failure.Error) || DestinationFailureClassifier.IsDiskFull(failure.Error)
+            ? DestinationFailureClassifier.Describe(failure.Error, failure.Filepath, EXPORT_FILE)
+            : $"Could not export '{Path.GetFileName(failure.Filepath)}' because of an unexpected error. The log has the details.";
+
+    /// <summary>
+    /// Logs one session that could not be written, once. A destination fault — including a path
+    /// too long for the file system — is the user's data or environment, so it is a Warning, with no
+    /// Sentry event. Anything else, a full disk included, keeps the Error/Sentry path (see
+    /// <see cref="DestinationFailureClassifier.IsBlocked"/>).
+    /// </summary>
+    private static void LogSessionFailure(int sessionId, string filepath, Exception ex)
+    {
+        if (DestinationFailureClassifier.IsBlocked(ex))
+        {
+            AppLogger.Instance.Warning(ex, $"Export of session {sessionId} could not write '{filepath}'.");
+        }
+        else
+        {
+            AppLogger.Instance.Error(ex, $"Export of session {sessionId} to '{filepath}' failed.");
+        }
+    }
+
+    /// <summary>
+    /// One session whose file could not be written: the file it was going to, and why not.
+    /// </summary>
+    private sealed record ExportFailure(string Filepath, Exception Error);
 
     /// <summary>
     /// One session mapped to the file it will be written to.

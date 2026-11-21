@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Avalonia.Platform.Storage;
 using Daqifi.Avalonia.Services;
 using Daqifi.Desktop.Common.Loggers;
+using Daqifi.Desktop.Exporter;
 
 namespace Daqifi.Avalonia.Views.Mobile;
 
@@ -198,8 +199,14 @@ internal sealed class StorageExportWriter
         }
     }
 
+    /// <summary>What a suffixed name starts with when not even one character of the stem fits beside
+    /// the suffix. The writer does not know the session's id, which the namer's own fallback uses.</summary>
+    private const string FallbackStem = "Session";
+
     /// <summary><paramref name="fileName"/> if nothing in the folder has that name, else the first
-    /// free <c>stem (n).ext</c> from n = 2 (the suffix <c>ExportFileNamer</c> uses), or null.</summary>
+    /// free <c>stem (n).ext</c> from n = 2, or null. The suffix is <see cref="ExportFileNamer.WithSuffix"/>'s,
+    /// the one the namer uses, so the stem gives up the bytes the suffix needs and the name still fits
+    /// the file system (review of PR #685: the full stem plus " (2)" was 259 bytes, and the create threw).</summary>
     private static async Task<string?> FreeNameAsync(IExportFolder folder, string fileName)
     {
         if (!await folder.ContainsAsync(fileName).ConfigureAwait(false))
@@ -211,8 +218,11 @@ internal sealed class StorageExportWriter
         var extension = Path.GetExtension(fileName);
         var first = 2;
         // A name the namer already suffixed ("Run (2)") continues the count — "Run (3)", not
-        // "Run (2) (2)".
-        var suffixed = System.Text.RegularExpressions.Regex.Match(stem, @"^(.*) \((\d{1,4})\)$");
+        // "Run (2) (2)". ASCII digits only, because those are the only ones a suffix is written
+        // with: `\d` matches every Unicode digit, so a take number the user typed as "(２)" was
+        // read as a suffix, int.Parse then threw, and the session was not exported (review of
+        // PR #685). Any other number is the user's text and stays in the stem.
+        var suffixed = System.Text.RegularExpressions.Regex.Match(stem, @"^(.*) \(([0-9]{1,4})\)$");
         if (suffixed.Success)
         {
             stem = suffixed.Groups[1].Value;
@@ -221,7 +231,7 @@ internal sealed class StorageExportWriter
 
         for (var n = first; n < first + MaxNameAttempts; n++)
         {
-            var candidate = $"{stem} ({n}){extension}";
+            var candidate = ExportFileNamer.WithSuffix(stem, n, extension, FallbackStem) + extension;
             if (!await folder.ContainsAsync(candidate).ConfigureAwait(false))
             {
                 return candidate;
