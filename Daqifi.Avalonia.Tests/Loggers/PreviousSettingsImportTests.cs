@@ -1025,6 +1025,26 @@ public sealed class PreviousSettingsImportTests : IDisposable
     }
 
     /// <summary>
+    /// Round 3: Dismiss now writes its record into the settings file, so it takes the settings
+    /// writers' lock like every other writer. While another writer holds it, Dismiss does not
+    /// write, and the delimiter is still offered at the next launch.
+    /// </summary>
+    [Fact]
+    public void Dismiss_does_not_write_the_settings_while_another_writer_holds_the_lock()
+    {
+        WriteDelimiter(OldSettings, ";");
+        var settings = Settings();
+
+        using (new FileStream(CurrentSettings + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.False(settings.KeepCsvDelimiter());
+        }
+
+        Assert.Equal(false, DaqifiSettings.ReadStoredDelimiter(CurrentSettings)?.ChosenByUser);
+        Assert.True(OfferedAtNextLaunch());
+    }
+
+    /// <summary>
     /// Review P2, the conservative rule. A settings file that an earlier build wrote does not say
     /// whether its comma was chosen, so the import keeps it rather than guess.
     /// </summary>
