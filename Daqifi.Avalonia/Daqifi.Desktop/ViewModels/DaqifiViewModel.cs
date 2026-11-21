@@ -2134,10 +2134,17 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     /// Raised from Core's consumer thread for the first gap in a device's stream (#595). Marshalled
     /// for the same reason as <see cref="OnScaleResultsRejected"/>.
     /// </summary>
-    private void OnStreamGapDetected(AbstractStreamingDevice device, string message)
+    private void OnStreamGapDetected(AbstractStreamingDevice device, Notifications notice) =>
+        Dispatcher.UIThread.Post(() => AddStreamGapNotice(notice));
+
+    /// <summary>
+    /// Adds the device's first-gap notice. Always: the device raises it once per device per session,
+    /// so two of them with the same text are two devices or two sessions (review of PR #663).
+    /// </summary>
+    internal void AddStreamGapNotice(Notifications notice)
     {
-        var serial = device.DeviceSerialNo;
-        Dispatcher.UIThread.Post(() => AddDeviceNoticeOnce(serial, message));
+        NotificationList.Add(notice);
+        NotificationCount = NotificationList.Count;
     }
 
     /// <summary>
@@ -2147,20 +2154,15 @@ public partial class DaqifiViewModel : ObservableObject, IFirmwareUpdateHost, IL
     internal void AddDeviceNoticeOnce(string? deviceSerialNo, string message)
     {
         // A device-owned notice, so the per-device pruning in RemoveNotification takes it away when
-        // the device disconnects. An empty serial is stored as null instead: the pruning would
-        // match an empty serial to no device and remove the notice on the same UpdateUi pass.
-        var serial = string.IsNullOrEmpty(deviceSerialNo) ? null : deviceSerialNo;
+        // the device disconnects.
+        var notice = Notifications.ForDevice(deviceSerialNo, message);
 
-        if (NotificationList.Any(n => n.Message == message && n.DeviceSerialNo == serial))
+        if (NotificationList.Any(n => n.Message == notice.Message && n.DeviceSerialNo == notice.DeviceSerialNo))
         {
             return;
         }
 
-        NotificationList.Add(new Notifications
-        {
-            DeviceSerialNo = serial,
-            Message = message
-        });
+        NotificationList.Add(notice);
         NotificationCount = NotificationList.Count;
     }
 

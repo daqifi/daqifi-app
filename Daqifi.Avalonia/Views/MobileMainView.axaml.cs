@@ -190,9 +190,13 @@ public partial class MobileMainView : UserControl
     private void OnScaleResultsRejected(AbstractChannel channel) =>
         _notifications.AddOnce(new Notifications { Message = channel.RejectedScaleResultsNotification });
 
-    /// <summary>The phone's half of #595: Core found a gap in a device's stream. Same marshalling.</summary>
-    private void OnStreamGapDetected(AbstractStreamingDevice device, string message) =>
-        _notifications.AddOnce(new Notifications { Message = message });
+    /// <summary>
+    /// The phone's half of #595: Core found a gap in a device's stream. <c>Add</c>, not
+    /// <c>AddOnce</c>: the device raises this once per device per session, and two devices with one
+    /// friendly name can raise the same text (review of PR #663). <c>Add</c> marshals too.
+    /// </summary>
+    private void OnStreamGapDetected(AbstractStreamingDevice device, Notifications notice) =>
+        _notifications.Add(notice);
 
     /// <summary>Landscape → desktop-style left rail; portrait → bottom nav.</summary>
     private void UpdateOrientation()

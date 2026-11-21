@@ -5,6 +5,7 @@ using Daqifi.Core.Device;
 using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.DialogService;
 using Daqifi.Desktop.Device;
+using Daqifi.Desktop.Models;
 using Daqifi.Desktop.ViewModels;
 using Xunit;
 
@@ -59,7 +60,7 @@ public sealed class StreamGapNoticeTests : IDisposable
         var notice = Assert.Single(notices);
         Assert.Equal(
             AbstractStreamingDevice.DescribeStreamGap(_harness.Device.DeviceDisplayName, gapsCoreFound[0]),
-            notice);
+            notice.Message);
     }
 
     /// <summary>The guard: a stream with no gap raises no notice and counts nothing.</summary>
@@ -119,7 +120,7 @@ public sealed class StreamGapNoticeTests : IDisposable
         var periods = withGap ? new uint[] { 0, 1, 2, 3, 6, 7, 8, 9, 14 } : new uint[] { 0, 1, 2, 3, 4, 5, 6, 7, 8 };
         foreach (var notice in NoticesRaisedWhile(() => Feed(periods)))
         {
-            viewModel.AddDeviceNoticeOnce(_harness.Device.DeviceSerialNo, notice);
+            viewModel.AddStreamGapNotice(notice);
         }
 
         if (!withGap)
@@ -135,6 +136,54 @@ public sealed class StreamGapNoticeTests : IDisposable
         // No device with that serial is connected, which is the state after it is unplugged.
         viewModel.RemoveNotification();
         Assert.Empty(viewModel.NotificationList);
+    }
+
+    /// <summary>
+    /// Two devices with different serials and one friendly name: each gets its own notice, owned by
+    /// its own serial (review of PR #663, which measured one notice for two such boards on the phone).
+    /// </summary>
+    [Fact]
+    public void Two_devices_with_one_name_each_get_a_notice_with_their_own_serial()
+    {
+        using var other = CoreDecodingHarness.Create(analogPorts: 1);
+        _harness.Device.DeviceSerialNo = "SN-A";
+        other.Device.DeviceSerialNo = "SN-B";
+        _harness.Device.FriendlyName = "Bench Nyquist";
+        other.Device.FriendlyName = "Bench Nyquist";
+        _harness.EnableAnalog(0);
+        other.EnableAnalog(0);
+        _harness.Device.InitializeStreaming();
+        other.Device.InitializeStreaming();
+
+        var notices = NoticesRaisedWhile(
+            () =>
+            {
+                Feed(0, 1, 2, 3, 6, 7, 8);
+                Feed(other, 0, 1, 2, 3, 6, 7, 8);
+            },
+            _harness.Device, other.Device);
+
+        Assert.Equal(new[] { "SN-A", "SN-B" }, notices.Select(n => n.DeviceSerialNo).Order());
+        Assert.All(notices, n => Assert.StartsWith("Bench Nyquist: samples are missing. ", n.Message));
+    }
+
+    /// <summary>
+    /// The bell adds every first-gap notice, also when the text is the same: two devices with one
+    /// name and a gap in the same second, or two sessions of one device with a gap in the same
+    /// second. The device already raises a notice only once per device per session.
+    /// </summary>
+    [Fact]
+    public void The_bell_keeps_every_first_gap_notice_even_with_the_same_text()
+    {
+        var viewModel = NewViewModel();
+        const string text = "Bench Nyquist: samples are missing. The data stream from the device had its first gap at 14:03:12.";
+
+        viewModel.AddStreamGapNotice(Notifications.ForDevice("SN-A", text));
+        viewModel.AddStreamGapNotice(Notifications.ForDevice("SN-B", text));
+        viewModel.AddStreamGapNotice(Notifications.ForDevice("SN-A", text));
+
+        Assert.Equal(new[] { "SN-A", "SN-B", "SN-A" }, viewModel.NotificationList.Select(n => n.DeviceSerialNo));
+        Assert.Equal(3, viewModel.NotificationCount);
     }
 
     [Fact]
@@ -221,16 +270,18 @@ public sealed class StreamGapNoticeTests : IDisposable
     }
 
     /// <summary>
-    /// The notice texts <see cref="AbstractStreamingDevice.StreamGapDetected"/> raised for this
-    /// harness's device while <paramref name="act"/> ran. The event is static, so other devices'
-    /// notices (from tests that run in parallel) are filtered out.
+    /// The notices <see cref="AbstractStreamingDevice.StreamGapDetected"/> raised while
+    /// <paramref name="act"/> ran, for <paramref name="devices"/> (by default this harness's device).
+    /// The event is static, so other devices' notices (from tests that run in parallel) are
+    /// filtered out.
     /// </summary>
-    private List<string> NoticesRaisedWhile(Action act)
+    private List<Notifications> NoticesRaisedWhile(Action act, params AbstractStreamingDevice[] devices)
     {
-        var raised = new List<string>();
-        void Handler(AbstractStreamingDevice source, string notice)
+        var watched = devices.Length > 0 ? devices : [_harness.Device];
+        var raised = new List<Notifications>();
+        void Handler(AbstractStreamingDevice source, Notifications notice)
         {
-            if (ReferenceEquals(source, _harness.Device))
+            if (watched.Any(device => ReferenceEquals(source, device)))
             {
                 lock (raised) { raised.Add(notice); }
             }
@@ -250,12 +301,14 @@ public sealed class StreamGapNoticeTests : IDisposable
     }
 
     /// <summary>Feeds one one-channel frame at each of these whole sample periods from the start.</summary>
-    private void Feed(params uint[] periodsFromStart)
+    private void Feed(params uint[] periodsFromStart) => Feed(_harness, periodsFromStart);
+
+    private static void Feed(CoreDecodingHarness harness, params uint[] periodsFromStart)
     {
         foreach (var periods in periodsFromStart)
         {
-            _harness.Core.Feed(CoreDecodingHarness.FloatFrame(
-                CoreDecodingHarness.FirstCounter + periods * _harness.TicksPerSample, 1f));
+            harness.Core.Feed(CoreDecodingHarness.FloatFrame(
+                CoreDecodingHarness.FirstCounter + periods * harness.TicksPerSample, 1f));
         }
     }
 }

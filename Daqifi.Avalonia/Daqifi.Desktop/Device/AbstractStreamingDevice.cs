@@ -1042,15 +1042,22 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
 
     /// <summary>
     /// Raised, on Core's consumer thread, for the FIRST gap Core finds in a streaming session of a
-    /// device (issue #595). Once per device per session, however many gaps follow, so a subscriber
-    /// shows one notification. The string is the notification text (<see cref="DescribeStreamGap"/>).
+    /// device (issue #595), with the notice to show: its text (<see cref="DescribeStreamGap"/>) and
+    /// the device's serial. Once per device per session, however many gaps follow.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Static for the reason <see cref="AbstractChannel.ScaleResultsRejected"/> is: both shells'
     /// notification lists need it, and neither subscribes to each device. A subscriber must marshal
     /// to the UI thread, because a notification list is an <c>ObservableCollection</c>.
+    /// </para>
+    /// <para>
+    /// This event is the "once" rule, so a subscriber adds every notice it gets. Two raises are two
+    /// devices, or two sessions, even when their text is the same: two boards with one friendly name
+    /// and a shared outage, say. A list that compared texts showed one of them (review of PR #663).
+    /// </para>
     /// </remarks>
-    public static event Action<AbstractStreamingDevice, string>? StreamGapDetected;
+    public static event Action<AbstractStreamingDevice, Notifications>? StreamGapDetected;
 
     private long _streamGapCount;
     private long _streamGapTicks;
@@ -1096,7 +1103,8 @@ public abstract partial class AbstractStreamingDevice : ObservableObject, IStrea
 
         if (occurrence == 1)
         {
-            StreamGapDetected?.Invoke(this, DescribeStreamGap(DeviceDisplayName, gap));
+            StreamGapDetected?.Invoke(
+                this, Notifications.ForDevice(DeviceSerialNo, DescribeStreamGap(DeviceDisplayName, gap)));
         }
     }
 
