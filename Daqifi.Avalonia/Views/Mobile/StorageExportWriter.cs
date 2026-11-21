@@ -218,8 +218,11 @@ internal sealed class StorageExportWriter
         var extension = Path.GetExtension(fileName);
         var first = 2;
         // A name the namer already suffixed ("Run (2)") continues the count — "Run (3)", not
-        // "Run (2) (2)".
-        var suffixed = System.Text.RegularExpressions.Regex.Match(stem, @"^(.*) \((\d{1,4})\)$");
+        // "Run (2) (2)". ASCII digits only, because those are the only ones a suffix is written
+        // with: `\d` matches every Unicode digit, so a take number the user typed as "(２)" was
+        // read as a suffix, int.Parse then threw, and the session was not exported (review of
+        // PR #685). Any other number is the user's text and stays in the stem.
+        var suffixed = System.Text.RegularExpressions.Regex.Match(stem, @"^(.*) \(([0-9]{1,4})\)$");
         if (suffixed.Success)
         {
             stem = suffixed.Groups[1].Value;
