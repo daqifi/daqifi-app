@@ -290,7 +290,66 @@ internal static partial class HeadlessBench
 
         Step(1, "LOGGED-NAME", "commit", commitOk, string.Join("; ", commitEvidence),
              Capture(main, "t1-namebox-committed"));
+
+        RunSessionNameLeaveCheck(main, shell, first, second, third);
     }
+
+    /// <summary>
+    /// LOGGED-NAME/leave: going to another tab and back, with no edit, changes no stored name. Found
+    /// in review of #684: the pane wrote an empty string into the box when it unloaded, and the
+    /// deferred TextChanged that followed saved it, so a visit to Live Graph erased a saved "Kiln".
+    /// The pane must really unload for this to mean anything, so that is asserted too.
+    /// </summary>
+    private static void RunSessionNameLeaveCheck(
+        Window main, DaqifiViewModel shell, LoggingSession first, LoggingSession second, LoggingSession third)
+    {
+        var expected = new Dictionary<int, string>
+        {
+            [first.ID] = string.Empty,
+            [second.ID] = "Kiln",
+            [third.ID] = string.Empty,
+        };
+        string Stored() => string.Join(", ", expected.Keys.Select(id => $"{id}='{StoredSessionName(id)}'"));
+        bool StoredAsExpected() => expected.All(p => StoredSessionName(p.Key) == p.Value);
+
+        var before = Stored();
+        var paneBefore = LoggedDataPaneShown(main);
+
+        shell.SelectedIndex = LiveGraphTabIndex;
+        PumpFor(PastRenameDebounce);
+        PumpFor(PastRenameDebounce);
+        var paneUnloaded = !LoggedDataPaneShown(main);
+        var awayOk = StoredAsExpected() && second.Name == "Kiln";
+        var away = Stored();
+
+        shell.SelectedIndex = LoggedDataTabIndex;
+        PumpFor(PastRenameDebounce);
+        PumpFor(PastRenameDebounce);
+        var backOk = StoredAsExpected() && second.Name == "Kiln";
+        var back = Stored();
+
+        // And opening the drawer again shows the saved name and writes nothing.
+        shell.OpenLoggingSessionSettingsCommand.Execute(second);
+        PumpFor(TimeSpan.FromMilliseconds(400));
+        var box = main.GetVisualDescendants().OfType<TextBox>()
+            .FirstOrDefault(t => t.Name == "SessionNameTextBox" && t.IsEffectivelyVisible);
+        var shown = box?.Text;
+        PumpFor(PastRenameDebounce);
+        var reopenOk = shown == "Kiln" && StoredAsExpected() && second.Name == "Kiln";
+        var reopened = Stored();
+        shell.CloseLoggedSessionSettingsCommand.Execute(null);
+        Pump();
+
+        Step(1, "LOGGED-NAME", "leave", paneBefore && paneUnloaded && awayOk && backOk && reopenOk,
+             $"with the drawer closed, stored {before} (Logged Data pane shown={paneBefore}); " +
+             $"on Live Graph after {2 * PastRenameDebounce.TotalMilliseconds:F0} ms: pane unloaded={paneUnloaded}, " +
+             $"stored {away}, session 2 '{second.Name}'; back on Logged Data: stored {back}; " +
+             $"drawer reopened on session 2: box '{shown}', stored {reopened}",
+             null);
+    }
+
+    private static bool LoggedDataPaneShown(Window main) =>
+        main.GetVisualDescendants().OfType<Daqifi.Desktop.View.Prototype.LoggedDataPanePrototype>().Any();
 
     /// <summary>Opens <paramref name="session"/>'s settings drawer the way the row's settings button
     /// does, and puts keyboard focus in its NAME box the way a click in the box does.</summary>

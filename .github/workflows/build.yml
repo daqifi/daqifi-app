@@ -391,7 +391,7 @@ jobs:
               "drop-mid-stream": [("CONN-LOST", "works"), ("CONN-LOST", "limits")],
               "disconnect-mid-stream": [("CONN-DISC", "works"), ("CONN-DISC", "reboot")],
               "mode-change-mid-session": [("LOG-MODE", "click"), ("LOG-MODE", "refused"), ("LOG-MODE", "works"), ("LOG-MODE", "sd")],
-              "session-name-box": [("LOGGED-NAME", "empty"), ("LOGGED-NAME", "works"), ("LOGGED-NAME", "commit")],
+              "session-name-box": [("LOGGED-NAME", "empty"), ("LOGGED-NAME", "works"), ("LOGGED-NAME", "commit"), ("LOGGED-NAME", "leave")],
           }
           root = pathlib.Path(sys.argv[1])
           failed = False
