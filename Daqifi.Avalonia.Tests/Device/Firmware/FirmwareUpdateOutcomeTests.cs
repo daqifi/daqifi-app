@@ -803,6 +803,42 @@ public class FirmwareUpdateOutcomeTests : IDisposable
     }
     #endregion
 
+    #region 5. Failure text (issue #672)
+    /// <summary>
+    /// The device drawer's half of issue #672. A failed flash shows a summary and Core's recovery
+    /// guidance, and a programmed-and-verified flash whose device did not come back shows the
+    /// "installed, power-cycle" text without raising the error flag. The bootloader dialog must show
+    /// the same text for the same exception (<c>FirmwareDialogFailureGuidanceTests</c>), so both test
+    /// files assert against one written-out expectation (<see cref="CoreFlashFailures"/>): a change to
+    /// either window that makes them differ fails one of them.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(CoreFlashFailures.All), MemberType = typeof(CoreFlashFailures))]
+    public async Task A_core_failure_shows_the_text_the_bootloader_dialog_shows(Pic32FlashCondition condition)
+    {
+        var failure = CoreFlashFailures.For(condition);
+        using var harness = ConnectedDevice();
+        _host.SelectedDevice = harness.Device;
+        _host.FirmwareFilePath = FirmwareFile();
+        _updates.Pic32Failure = failure.Exception;
+
+        await CreateCoordinator().UploadFirmwareAsync().WaitAsync(Timeout);
+
+        Assert.Equal([failure.ExpectedText], _host.ErrorMessages);
+        Assert.Equal(!failure.FirmwareInstalled, _host.HasErrorOccured);
+        Assert.Empty(_host.SuccessMessages);
+
+        if (failure.ExpectedErrorLog is null)
+        {
+            Assert.Empty(_logger.Errors);
+        }
+        else
+        {
+            Assert.Equal([failure.ExpectedErrorLog], _logger.Errors);
+        }
+    }
+    #endregion
+
     #region Helpers
     /// <summary>
     /// The full success dialog text when the WiFi settings are not known: the version paragraph
@@ -921,7 +957,8 @@ public class FirmwareUpdateOutcomeTests : IDisposable
 
     /// <summary>
     /// PIC32 update service that flashes nothing. It sends <see cref="Reports"/> to the progress
-    /// reporter, then runs <see cref="OnPic32Flash"/>.
+    /// reporter, then runs <see cref="OnPic32Flash"/>, then throws <see cref="Pic32Failure"/> if one
+    /// is set.
     /// </summary>
     private sealed class ReportingUpdateService : IFirmwareUpdateService
     {
@@ -930,6 +967,9 @@ public class FirmwareUpdateOutcomeTests : IDisposable
         public List<FirmwareUpdateProgress> Reports { get; } = [];
 
         public Action? OnPic32Flash { get; set; }
+
+        /// <summary>The exception the PIC32 flash ends with, as Core would throw it (issue #672); null for a success.</summary>
+        public Exception? Pic32Failure { get; set; }
 
 #pragma warning disable CS0067 // Part of the interface; nothing in these tests raises it.
         public event EventHandler<FirmwareUpdateStateChangedEventArgs>? StateChanged;
@@ -955,7 +995,7 @@ public class FirmwareUpdateOutcomeTests : IDisposable
             }
 
             OnPic32Flash?.Invoke();
-            return Task.CompletedTask;
+            return Pic32Failure is null ? Task.CompletedTask : Task.FromException(Pic32Failure);
         }
 
         public int WifiFlashes;
@@ -976,7 +1016,7 @@ public class FirmwareUpdateOutcomeTests : IDisposable
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
-    /// <summary>Records the status writes and the success dialog text the coordinator sends.</summary>
+    /// <summary>Records the status writes and the success and error dialog texts the coordinator sends.</summary>
     private sealed class RecordingHost : IFirmwareUpdateHost
     {
         private readonly ConcurrentQueue<string> _statusWrites = new();
@@ -1014,7 +1054,9 @@ public class FirmwareUpdateOutcomeTests : IDisposable
 
         public void RefreshNotificationCount() { }
 
-        public void ShowFirmwareError(string message) { }
+        public List<string> ErrorMessages { get; } = [];
+
+        public void ShowFirmwareError(string message) => ErrorMessages.Add(message);
 
         public void ShowFirmwareUpdateSucceeded(string message) => SuccessMessages.Add(message);
 

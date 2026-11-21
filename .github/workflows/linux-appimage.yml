@@ -1,0 +1,397 @@
+name: Linux AppImage
+
+# Builds the linux-x64 AppImage with Velopack (#351), then opens it and starts it on Ubuntu to
+# prove it runs. Two callers:
+#
+#   - release.yml, for a version tag. It attaches this job's files to the tag's release.
+#   - A pull request that changes the packaging. The files go only to this run's artifacts, so
+#     a broken AppImage shows on the pull request and not on release day.
+#
+# What one run produces:
+#
+#   DAQiFi-<version>-linux-x64.AppImage     the app: download it, chmod +x, run it
+#   Daqifi.App-<version>-linux-full.nupkg   the package the in-app updater downloads
+#   releases.linux.json, RELEASES-linux     the feed Velopack's GithubSource reads
+#
+# vpk writes the AppImage as Daqifi.App.AppImage; it is renamed like the Windows MSI. The name
+# is only for the download: an update replaces the file wherever it is, under whatever name the
+# user gave it. vpk's assets.linux.json is an index for `vpk upload` and is not shipped.
+#
+# The channel is "linux", Velopack's default on Linux, exactly as the Windows job uses the
+# default "win" channel and VelopackAppUpdateService asks for no channel. Channels are still an
+# open decision (#349) and this file does not take it. The Windows files of a release have
+# other names (releases.win.json, Daqifi.App-<version>-full.nupkg), so both platforms share one
+# release and one feed source without a collision.
+#
+# Not a required check: it runs only when the packaging changes, and a required check that a
+# path filter skips never reports, which would block every other pull request.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/linux-appimage.yml'
+      - '.github/workflows/release.yml'
+      - 'Daqifi.Avalonia.Desktop/**'
+      - 'Daqifi.Avalonia/Daqifi.Desktop/Images/AppIcon.ico'
+      - 'Directory.Build.props'
+      - 'global.json'
+  workflow_call:
+    inputs:
+      ref:
+        description: The commit to build. release.yml passes the commit its version check passed.
+        type: string
+        required: true
+      version:
+        description: The release version, from the tag, e.g. 3.4.0 or 3.4.0-beta.1.
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  # Permanent once shipped, for the reasons at the top of release.yml. It must be the PACK_ID
+  # there: one pack ID is one app to the updater, on every platform.
+  PACK_ID: Daqifi.App
+  PACK_TITLE: DAQiFi
+
+jobs:
+  appimage:
+    name: Linux AppImage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # A newer push to the same pull request replaces the older run. A release run never shares
+    # a group with anything (run_id is unique), so nothing cancels it.
+    concurrency:
+      group: linux-appimage-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      # A release run builds the exact commit release.yml checked. A pull request run builds the
+      # usual merge commit.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      # From global.json, never a floating 10.0.x: the SDK patch decides package versions the
+      # lock files record (see build.yml and #107).
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      # A release uses its tag's version. A pull request run gets DaqifiAppVersion with a
+      # "-ci.<run>" suffix, so that its AppImage can never pass for a real release.
+      - name: Choose the version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_VERSION}" ]; then
+            version="${INPUT_VERSION}"
+          else
+            base=$(python3 -c 'import sys; sys.path.insert(0, ".github/scripts"); import check_release_version as c; print(c.app_version("."))')
+            version="${base}-ci.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "Version ${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify locked-mode restore is armed
+        run: |
+          set -euo pipefail
+          locked=$(dotnet msbuild Daqifi.Avalonia.Desktop/Daqifi.Avalonia.Desktop.csproj -getProperty:RestoreLockedMode)
+          echo "RestoreLockedMode=${locked}"
+          if [ "${locked}" != "true" ]; then
+            echo "::error::RestoreLockedMode is '${locked}', expected 'true'. A release must not resolve packages the lock files do not name."
+            exit 1
+          fi
+
+      # RID-less, like every other restore in this repo: an explicit -r restore rewrites the lock
+      # file to hold only that RID (#85). The RID arrives at publish time instead.
+      - name: Restore
+        run: dotnet restore Daqifi.Avalonia.Desktop/Daqifi.Avalonia.Desktop.csproj
+
+      # Same shape as the Windows publish. ReadyToRun (#614) comes from the csproj for every
+      # RID, and the Windows job's check of the shipped assemblies guards that one setting for
+      # both platforms.
+      - name: Publish (self-contained, linux-x64)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          dotnet publish Daqifi.Avalonia.Desktop/Daqifi.Avalonia.Desktop.csproj \
+            -c Release -r linux-x64 --self-contained true --no-restore \
+            -p:Version="${VERSION}" -p:ContinuousIntegrationBuild=true \
+            -o "${RUNNER_TEMP}/publish"
+          test -x "${RUNNER_TEMP}/publish/Daqifi.Avalonia.Desktop"
+
+      - name: Lock files are unchanged by the build
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- '*packages.lock.json'; then
+            echo "::error::The build changed a lock file. What would ship is not what the lock files describe."
+            exit 1
+          fi
+
+      # The packer must read and write the same package format as the library the app was built
+      # against, so its version comes from the Velopack PackageReference itself. release.yml's
+      # Windows job checks its VPK_VERSION against the same line.
+      - name: Install vpk
+        run: |
+          set -euo pipefail
+          lib=$(sed -n 's/.*Include="Velopack" Version="\([^"]*\)".*/\1/p' Daqifi.Avalonia.Desktop/Daqifi.Avalonia.Desktop.csproj)
+          if [ -z "${lib}" ]; then
+            echo "::error::No Velopack PackageReference version found in Daqifi.Avalonia.Desktop.csproj."
+            exit 1
+          fi
+          echo "Velopack library and vpk ${lib}"
+          dotnet tool install --global vpk --version "${lib}"
+          # vpk builds the AppImage's file system with mksquashfs.
+          if ! command -v mksquashfs >/dev/null; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q squashfs-tools
+          fi
+
+      # The AppImage needs a PNG icon. It is taken from the largest frame of the Windows icon, so
+      # the two platforms cannot drift apart and there is no second copy of the image to keep.
+      - name: Take the PNG icon from AppIcon.ico
+        run: |
+          set -euo pipefail
+          python3 - Daqifi.Avalonia/Daqifi.Desktop/Images/AppIcon.ico "${RUNNER_TEMP}/DAQiFi.png" <<'PY'
+          import struct, sys
+
+          source, target = sys.argv[1], sys.argv[2]
+          data = open(source, "rb").read()
+          reserved, kind, count = struct.unpack_from("<HHH", data, 0)
+          if (reserved, kind) != (0, 1):
+              raise SystemExit(f"::error::{source} is not an icon file.")
+          frames = []
+          for i in range(count):
+              width, height = data[6 + 16 * i] or 256, data[7 + 16 * i] or 256
+              size, offset = struct.unpack_from("<II", data, 6 + 16 * i + 8)
+              frames.append((width, height, data[offset:offset + size]))
+          width, height, png = max(frames, key=lambda f: f[0] * f[1])
+          if width != height or not png.startswith(b"\x89PNG\r\n\x1a\n"):
+              raise SystemExit(f"::error::The largest frame of {source} is not a square PNG.")
+          open(target, "wb").write(png)
+          print(f"{target}: {width}x{height} PNG, {len(png)} bytes")
+          PY
+
+      # No signing: an AppImage carries none that a distribution checks.
+      #
+      # No --delta, for the reason the Windows job gives: deltas need the previous release
+      # first, and they save bandwidth only.
+      - name: Pack the AppImage
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          vpk pack \
+            --packId "${PACK_ID}" --packTitle "${PACK_TITLE}" --packAuthors DAQiFi \
+            --packVersion "${VERSION}" --runtime linux-x64 \
+            --packDir "${RUNNER_TEMP}/publish" --mainExe Daqifi.Avalonia.Desktop \
+            --icon "${RUNNER_TEMP}/DAQiFi.png" --categories 'Science;Engineering' \
+            --delta None \
+            --outputDir "${RUNNER_TEMP}/releases"
+          ls -la "${RUNNER_TEMP}/releases"
+
+      - name: Collect the release files
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/upload"
+          mkdir -p "${out}"
+          src="${RUNNER_TEMP}/releases"
+          cp "${src}/${PACK_ID}.AppImage" "${out}/DAQiFi-${VERSION}-linux-x64.AppImage"
+          cp "${src}/${PACK_ID}-${VERSION}-linux-full.nupkg" "${out}/"
+          cp "${src}/releases.linux.json" "${src}/RELEASES-linux" "${out}/"
+          ls -la "${out}"
+
+      # What a user downloads, looked at from the inside: the file type and size, then the
+      # contents --appimage-extract unpacks (it needs no FUSE). The updater finds UpdateNix and
+      # sq.version beside the app, and sq.version must name this version and the linux channel,
+      # because that is what the app reports to the feed.
+      - name: Inspect the AppImage
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          appimage="${RUNNER_TEMP}/upload/DAQiFi-${VERSION}-linux-x64.AppImage"
+          type=$(file -b "${appimage}")
+          echo "file: ${type}"
+          case "${type}" in
+            *"ELF 64-bit LSB"*"x86-64"*) ;;
+            *) echo "::error::The AppImage is not an x86-64 ELF executable."; exit 1 ;;
+          esac
+          size=$(stat -c %s "${appimage}")
+          echo "size: ${size} bytes ($(( size / 1048576 )) MiB)"
+          echo "### Linux AppImage" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`DAQiFi-${VERSION}-linux-x64.AppImage\`: ${type}, ${size} bytes" >> "$GITHUB_STEP_SUMMARY"
+
+          # The runtime vpk embeds (static type2-runtime) needs no libfuse2, only FUSE's
+          # fusermount3 to mount the image. The README says so; this records what this runner has.
+          echo "runtime: $("${appimage}" --appimage-version 2>&1 || true)"
+          echo "fusermount3: $(command -v fusermount3 || echo absent)"
+
+          mkdir "${RUNNER_TEMP}/extract"
+          cd "${RUNNER_TEMP}/extract"
+          "${appimage}" --appimage-extract > /dev/null
+          root=squashfs-root
+          ls -la "${root}"
+          echo "usr/bin holds $(find "${root}/usr/bin" -maxdepth 1 -type f | wc -l) files"
+          missing=0
+          for path in AppRun usr/bin/Daqifi.Avalonia.Desktop usr/bin/UpdateNix; do
+            if [ ! -x "${root}/${path}" ]; then echo "::error::${path} is missing or not executable."; missing=1; fi
+          done
+          if [ ! -f "${root}/usr/bin/sq.version" ]; then echo "::error::usr/bin/sq.version is missing."; missing=1; fi
+          shopt -s nullglob
+          desktop=("${root}"/*.desktop)
+          if [ "${#desktop[@]}" -ne 1 ]; then echo "::error::Expected one .desktop file, found ${#desktop[@]}."; missing=1; else cat "${desktop[0]}"; fi
+          [ "${missing}" -eq 0 ]
+          cat "${root}/usr/bin/sq.version"
+          grep -q "<version>${VERSION}</version>" "${root}/usr/bin/sq.version" \
+            || { echo "::error::sq.version does not name version ${VERSION}."; exit 1; }
+          grep -q "<channel>linux</channel>" "${root}/usr/bin/sq.version" \
+            || { echo "::error::sq.version does not name the linux channel."; exit 1; }
+
+      # Start the AppImage itself on this Ubuntu runner, under a virtual display, twice: once
+      # where it was downloaded, then again after the file is moved and renamed, the way a user
+      # (or AppImageLauncher) relocates it. Each run must itself open the database in the one
+      # data folder under $HOME/.local/share/DAQiFi (a process of that run holds it open), stay
+      # up, and write nothing beside the AppImage: the AppImage's own folder is a read-only
+      # mount, and the database must survive a move.
+      #
+      # HOME is a fresh folder and XDG_DATA_HOME and DAQIFI_DATA_DIR are unset, so this is the
+      # default data path a user gets. DAQIFI_TEST_MODE=1 keeps crash reports from this runner
+      # out of Sentry and starts no hardware discovery; it does not move the data folder.
+      # APPIMAGE_EXTRACT_AND_RUN=1 starts the AppImage without a FUSE mount, so the check does
+      # not depend on the runner's FUSE support.
+      - name: Start the AppImage on Ubuntu
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! command -v Xvfb >/dev/null; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q xvfb
+          fi
+          # ImageMagick only takes the screenshot below, so failing to install it fails nothing.
+          if ! command -v import >/dev/null; then
+            { sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends imagemagick; } \
+              || echo "::warning::ImageMagick did not install; there will be no screenshot."
+          fi
+          Xvfb :99 -screen 0 1280x800x24 > /dev/null 2>&1 &
+          xvfb=$!
+          trap 'kill "${xvfb}" 2> /dev/null || true' EXIT
+
+          smoke="${RUNNER_TEMP}/smoke"
+          home="${smoke}/home"
+          data="${home}/.local/share/DAQiFi"
+          mkdir -p "${home}" "${smoke}/downloads" "${smoke}/moved"
+          cp "${RUNNER_TEMP}/upload/DAQiFi-${VERSION}-linux-x64.AppImage" "${smoke}/downloads/DAQiFi.AppImage"
+          chmod +x "${smoke}/downloads/DAQiFi.AppImage"
+
+          # holder <process group>: prints the first process in the group that has the database
+          # open. The app's EF connection is pooled, so a process that opened the database keeps
+          # a descriptor to it while it runs. That is evidence from THIS process: a second run
+          # cannot pass on files the first run left behind.
+          holder() {
+            local p
+            for p in $(pgrep -g "$1"); do
+              if [ -n "$(find "/proc/${p}/fd" -lname "${data}/DAQiFiDatabase.db" -print -quit 2> /dev/null)" ]; then
+                echo "${p}"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          # launch <AppImage> <name>: start it, wait until a process of it holds the database at
+          # the expected path and the log exists, check that it is still running 10 s later, then
+          # stop it.
+          launch() {
+            local app="$1" name="$2" output="${smoke}/$2.out"
+            echo "::group::${name}: ${app}"
+            setsid env -u XDG_DATA_HOME -u DAQIFI_DATA_DIR \
+              HOME="${home}" DISPLAY=:99 DAQIFI_TEST_MODE=1 APPIMAGE_EXTRACT_AND_RUN=1 \
+              "${app}" > "${output}" 2>&1 &
+            local pid=$!
+            local waited=0 holding=""
+            until [ -f "${data}/Logs/DAQifiAppLog.log" ] && holding=$(holder "${pid}"); do
+              if ! kill -0 "${pid}" 2> /dev/null || [ "${waited}" -ge 120 ]; then
+                echo "::error::${name}: the app exited, or did not open ${data}/DAQiFiDatabase.db in 120 s."
+                cat "${output}"
+                find "${home}" -type f
+                echo "::endgroup::"
+                return 1
+              fi
+              sleep 2
+              waited=$(( waited + 2 ))
+            done
+            sleep 10
+            if ! kill -0 "${pid}" 2> /dev/null; then
+              echo "::error::${name}: the app exited after it created its data."
+              cat "${output}"
+              tail -n 50 "${data}/Logs/DAQifiAppLog.log"
+              echo "::endgroup::"
+              return 1
+            fi
+            echo "${name}: process ${holding} has ${data}/DAQiFiDatabase.db open; running after $(( waited + 10 )) s"
+            # A picture of the virtual screen, for a reviewer: it shows that the window drew, not
+            # only that the process stayed up. Best effort; it judges nothing.
+            mkdir -p "${RUNNER_TEMP}/screenshot"
+            import -display :99 -window root "${RUNNER_TEMP}/screenshot/${name}.png" \
+              || echo "::warning::${name}: no screenshot (ImageMagick could not capture the display)."
+            kill -TERM -- "-${pid}" 2> /dev/null || true
+            for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "${pid}" 2> /dev/null || break; sleep 1; done
+            kill -KILL -- "-${pid}" 2> /dev/null || true
+            echo "::endgroup::"
+          }
+
+          launch "${smoke}/downloads/DAQiFi.AppImage" first-run
+          inode=$(stat -c %i "${data}/DAQiFiDatabase.db")
+
+          mv "${smoke}/downloads/DAQiFi.AppImage" "${smoke}/moved/Renamed.AppImage"
+          launch "${smoke}/moved/Renamed.AppImage" after-move
+
+          failed=0
+          databases=$(find "${home}" -name 'DAQiFiDatabase.db')
+          echo "databases under HOME: ${databases}"
+          if [ "${databases}" != "${data}/DAQiFiDatabase.db" ]; then
+            echo "::error::Expected exactly one database, at ${data}/DAQiFiDatabase.db."
+            failed=1
+          fi
+          if [ "$(stat -c %i "${data}/DAQiFiDatabase.db")" != "${inode}" ]; then
+            echo "::error::The run after the move replaced the database instead of opening it."
+            failed=1
+          fi
+          for dir in downloads moved; do
+            extra=$(find "${smoke}/${dir}" -mindepth 1 -maxdepth 1 ! -name '*.AppImage' -printf '%f ')
+            if [ -n "${extra}" ]; then
+              echo "::error::The app wrote beside the AppImage in ${dir}: ${extra}"
+              failed=1
+            fi
+          done
+          echo "Data folder: ${data}"
+          ls -la "${data}"
+          [ "${failed}" -eq 0 ]
+          echo "Started twice on $(. /etc/os-release && echo "${PRETTY_NAME}"); one data folder, ${data}." >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-${{ steps.version.outputs.version }}
+          path: ${{ runner.temp }}/upload
+          if-no-files-found: error
+          # A pull request run's AppImage is for looking at, not for keeping.
+          retention-days: ${{ github.event_name == 'pull_request' && 14 || 0 }}
+
+      # Apart from the release files, so release.yml never attaches it.
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: linux-screenshot-${{ steps.version.outputs.version }}
+          path: ${{ runner.temp }}/screenshot
+          if-no-files-found: ignore
+          retention-days: 14

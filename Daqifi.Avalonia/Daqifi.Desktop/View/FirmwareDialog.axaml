@@ -40,7 +40,7 @@
     <Grid Background="{StaticResource Surface}">
 
         <!-- Before Upload -->
-        <Grid IsVisible="{Binding !IsUploadComplete}" RowDefinitions="Auto,Auto,Auto,*">
+        <Grid IsVisible="{Binding !IsUploadComplete}" RowDefinitions="Auto,Auto,*,Auto">
 
             <HeaderedContentControl Grid.Row="0" Header="Bootloader Version" Theme="{StaticResource DarkGroupBox}" Margin="10,10,10,12">
                 <TextBlock Text="{Binding Version}" Foreground="{StaticResource TextPrimary}"/>
@@ -66,7 +66,22 @@
                 </StackPanel>
             </HeaderedContentControl>
 
-            <TextBlock IsVisible="{Binding HasErrorOccured}" Grid.Row="2" Text="Sorry, something went wrong uploading the firmware.  :(" HorizontalAlignment="Center" Foreground="{StaticResource StatusRed}"/>
+            <!--
+                The error line (issue #672). For a failure Core describes, the text ends with Core's
+                recovery guidance: what the failed flash left on the board and what to do next. That
+                text can be longer than the space between the panels above and the buttons below, so
+                this row takes the remaining height and scrolls, and the buttons keep their own row.
+                At FontSize 12 the longest guidance Core 1.10.0 gives (possibly half-flashed) fits
+                in the dialog's declared 500 x 380 without a scroll.
+            -->
+            <ScrollViewer Grid.Row="2" Margin="12,0,12,4" VerticalScrollBarVisibility="Auto">
+                <TextBlock AutomationProperties.AutomationId="FirmwareUploadError"
+                           IsVisible="{Binding HasErrorOccured}"
+                           Text="{Binding ErrorMessage}"
+                           TextWrapping="Wrap"
+                           FontSize="12"
+                           Foreground="{StaticResource StatusRed}"/>
+            </ScrollViewer>
 
             <DockPanel Grid.Row="3" HorizontalAlignment="Right" VerticalAlignment="Bottom" LastChildFill="True" Margin="5">
                 <Button Click="btnCancel_Click" Content="Cancel" Width="100" Height="30" Margin="0,0,10,0" Theme="{StaticResource DarkSecondaryButton}"/>
@@ -114,7 +129,18 @@
 
         <!-- After Upload -->
         <Grid IsVisible="{Binding IsUploadComplete}" RowDefinitions="*,Auto,Auto,*">
-            <TextBlock Grid.Row="2" Text="Upload Complete" HorizontalAlignment="Center" Foreground="{StaticResource TextPrimary}"/>
+            <TextBlock Grid.Row="1" Text="Upload Complete" HorizontalAlignment="Center" Foreground="{StaticResource TextPrimary}"/>
+            <!--
+                The firmware is installed and verified, but the device did not return to normal mode:
+                a success that needs a power-cycle (issue #672, the same rule as the device drawer's
+                update). Hidden for every other success, so that layout stays as it was.
+            -->
+            <TextBlock Grid.Row="2"
+                       AutomationProperties.AutomationId="FirmwareUploadCompleteNotice"
+                       IsVisible="{Binding HasUploadCompleteNotice}"
+                       Text="{Binding UploadCompleteNotice}"
+                       HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" Margin="20,12,20,0"
+                       Foreground="{StaticResource StatusAmber}"/>
             <DockPanel Grid.Row="3" HorizontalAlignment="Right" VerticalAlignment="Bottom" LastChildFill="True" Margin="5">
                 <Button Click="btnOk_Click" Content="OK" DockPanel.Dock="Bottom" Width="100" Height="30" HorizontalAlignment="Right" Theme="{StaticResource DarkPrimaryButton}"/>
             </DockPanel>
