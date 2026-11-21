@@ -52,6 +52,13 @@ public interface ILoggingSessionListHost
     /// <summary>True while a logging session is active. Gates the "delete all" path.</summary>
     // @port: Daqifi.Desktop.ViewModels.ILoggingSessionListHost.IsLoggingActive
     bool IsLoggingActive { get; }
+
+    /// <summary>
+    /// The app's one <see cref="SessionStoreGate"/>, which every import claims before it writes
+    /// sessions into the database (#682). The "delete all" purge claims it before it replaces the
+    /// database file, so the purge and an import never overlap, in either order. Downstream addition.
+    /// </summary>
+    SessionStoreGate SessionStore { get; }
     #endregion
 
     #region Notifications

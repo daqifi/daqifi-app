@@ -253,6 +253,8 @@ public class DeleteSessionFailureTests
 
         public bool IsLoggingActive => false;
 
+        public SessionStoreGate SessionStore { get; } = new();
+
         public void NotifyLoggingSessionsChanged() => NotifyCount++;
 
         public void DisplaySessionOnPlot(LoggingSession session) { }

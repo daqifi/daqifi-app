@@ -252,16 +252,66 @@ public sealed class DeviceLogsImportBatchTests : IDisposable
     }
     #endregion
 
+    #region DELETE ALL and imports never overlap (#682)
+    /// <summary>
+    /// #682 review: DELETE ALL holds the shell's store while it replaces the database. An import
+    /// started then would write into the file being replaced, or into the new one just before the
+    /// purge deletes it. Neither command asks the importer for anything, and the user is told why.
+    /// </summary>
+    [Fact]
+    public async Task Import_all_and_import_file_while_delete_all_holds_the_store_ask_for_nothing_and_say_why()
+    {
+        var store = new SessionStoreGate();
+        var (vm, _, importer) = await PaneWithThreeFiles(store);
+        using var purge = store.TryBeginPurge();
+        Assert.NotNull(purge);
+
+        await vm.ImportAllFilesCommand.ExecuteAsync(null);
+        await vm.ImportFileCommand.ExecuteAsync(new SdCardFile { FileName = FileA });
+
+        Assert.Empty(importer.Requested);
+        Assert.Equal(2, _dialogs.Shown.Count(d => d.Caption == "Cannot Import" && d.Text == SessionStoreGate.WaitForDeleteAll));
+        Assert.False(vm.IsBusy);
+    }
+
+    /// <summary>
+    /// The other order: an import holds the store from its first file to its end, so DELETE ALL
+    /// cannot claim it meanwhile; when the import ends (here with every file skipped, and with a
+    /// card-wide failure) the store is free.
+    /// </summary>
+    [Fact]
+    public async Task An_import_holds_the_store_until_it_ends()
+    {
+        var store = new SessionStoreGate();
+        var (vm, _, importer) = await PaneWithThreeFiles(store);
+        var purgeDuringImport = new List<string>();
+        importer.OnImport = _ =>
+        {
+            using var claim = store.TryBeginPurge();
+            purgeDuringImport.Add(claim is null ? "refused" : "claimed");
+        };
+
+        await vm.ImportAllFilesCommand.ExecuteAsync(null);
+        using (var afterBatch = store.TryBeginPurge()) { Assert.NotNull(afterBatch); }
+
+        importer.Failures[FileA] = new SdCardNotPresentException(rawDeviceResponse: []);
+        await vm.ImportFileCommand.ExecuteAsync(new SdCardFile { FileName = FileA });
+        using (var afterFailure = store.TryBeginPurge()) { Assert.NotNull(afterFailure); }
+
+        Assert.Equal(["refused", "refused", "refused", "refused"], purgeDuringImport);
+    }
+    #endregion
+
     #region Helpers
     /// <summary>One connected device listing three log files, with the pane settled on it.</summary>
     private async Task<(DeviceLogsViewModel Vm, RecordingStreamingDevice Device, RecordingSessionImporter Importer)>
-        PaneWithThreeFiles()
+        PaneWithThreeFiles(SessionStoreGate? store = null)
     {
         var device = Device("AAAA0001", FileA, FileB, FileC);
         Register(device);
 
         var importer = new RecordingSessionImporter();
-        var vm = OpenPane(importer);
+        var vm = OpenPane(importer, store);
         await Settle(vm);
 
         Assert.Same(device, vm.SelectedDevice);
@@ -274,7 +324,7 @@ public sealed class DeviceLogsImportBatchTests : IDisposable
     private static RecordingStreamingDevice Device(string serial, params string[] files) =>
         new(serial) { SdCardFiles = [.. files.Select(f => new SdCardFile { FileName = f })] };
 
-    private DeviceLogsViewModel OpenPane(RecordingSessionImporter importer) =>
+    private DeviceLogsViewModel OpenPane(RecordingSessionImporter importer, SessionStoreGate? store = null) =>
         // Marshal inline, and not at all once the test has torn down — the view model outlives it
         // on the process-wide ConnectionManager. Same arrangement as DeviceLogsSelectionTests.
         new(new RecordingAppLogger(), importer, update =>
@@ -283,7 +333,7 @@ public sealed class DeviceLogsImportBatchTests : IDisposable
             {
                 update();
             }
-        }, _dialogs);
+        }, _dialogs, store);
 
     /// <summary>The body of the one "Import Complete" dialog the batch ended with.</summary>
     private string ImportAllSummary() =>

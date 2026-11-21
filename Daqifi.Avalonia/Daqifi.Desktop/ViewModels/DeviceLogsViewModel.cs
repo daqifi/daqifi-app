@@ -274,6 +274,12 @@ public partial class DeviceLogsViewModel : ObservableObject
     public DeviceLogsViewModel() : this(null, null) { }
 
     /// <summary>
+    /// The desktop shell's constructor: the pane's imports claim the shell's
+    /// <see cref="SessionStoreGate"/>, the one DELETE ALL claims too (#682).
+    /// </summary>
+    public DeviceLogsViewModel(SessionStoreGate sessionStore) : this(null, null, sessionStore: sessionStore) { }
+
+    /// <summary>
     /// Test seam: injects the logger, SD card importer, UI-thread marshal and message box. Production
     /// uses the parameterless ctor, which passes null so the defaults (<see cref="AppLogger.Instance"/>,
     /// a real <see cref="SdCardSessionImporter"/>, <c>Dispatcher.UIThread</c> and an
@@ -284,9 +290,12 @@ public partial class DeviceLogsViewModel : ObservableObject
         IAppLogger? logger,
         ISdCardSessionImporter? importer,
         Action<Action>? marshalToUiThread = null,
-        IMessageBoxService? messageBoxService = null)
+        IMessageBoxService? messageBoxService = null,
+        SessionStoreGate? sessionStore = null)
     {
         _logger = logger ?? AppLogger.Instance;
+        // A pane with no shell (the mobile head, a test) gets a gate of its own: nothing there purges.
+        _sessionStore = sessionStore ?? new SessionStoreGate();
         _importerOverride = importer;
         _marshalToUiThread = marshalToUiThread;
         _messageBoxService = messageBoxService ?? new AvaloniaMessageBoxService();
@@ -640,6 +649,14 @@ public partial class DeviceLogsViewModel : ObservableObject
         // last file's outcome sitting beside a running import of a different one.
         ClearImportOutcome();
 
+        // Claimed for the whole import, so it never overlaps DELETE ALL's purge (#682).
+        using var claim = _sessionStore.TryBeginImport();
+        if (claim is null)
+        {
+            await ReportImportOutcome(new ImportOutcome("Cannot Import", SessionStoreGate.WaitForDeleteAll, IsFailure: false));
+            return;
+        }
+
         try
         {
             BeginBusy();
@@ -689,6 +706,14 @@ public partial class DeviceLogsViewModel : ObservableObject
         var outcome = new ImportAllOutcome { TotalCount = filesToImport.Count };
 
         ClearImportOutcome();
+
+        // Claimed for the whole import, so it never overlaps DELETE ALL's purge (#682).
+        using var claim = _sessionStore.TryBeginImport();
+        if (claim is null)
+        {
+            await ReportImportOutcome(new ImportOutcome("Cannot Import", SessionStoreGate.WaitForDeleteAll, IsFailure: false));
+            return;
+        }
 
         try
         {
@@ -1051,6 +1076,9 @@ public partial class DeviceLogsViewModel : ObservableObject
     }
 
     private readonly IMessageBoxService _messageBoxService;
+
+    /// <summary>Claimed by each import before it writes, so it never overlaps DELETE ALL (#682).</summary>
+    private readonly SessionStoreGate _sessionStore;
 }
 
 /// <summary>

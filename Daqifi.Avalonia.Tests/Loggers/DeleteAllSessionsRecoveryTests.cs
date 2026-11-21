@@ -466,6 +466,8 @@ public class DeleteAllSessionsRecoveryTests : IDisposable
 
         public bool IsLoggingActive => false;
 
+        public SessionStoreGate SessionStore { get; } = new();
+
         public void NotifyLoggingSessionsChanged() { }
 
         public void DisplaySessionOnPlot(LoggingSession session) { }
