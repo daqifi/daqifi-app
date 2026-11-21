@@ -64,7 +64,7 @@ public sealed class SessionSampleWriter : IDisposable
     /// <summary>
     /// Consumer poll cycles still to skip before the next bulk-insert attempt of a failed batch — the
     /// exponential backoff that throttles retries on a persistently failing database. Written only by
-    /// the consumer thread; exposed (read-only) for tests via <see cref="PollsUntilRetry"/>.
+    /// the consumer thread.
     /// </summary>
     private volatile int _pollsUntilRetry;
 
@@ -543,14 +543,6 @@ public sealed class SessionSampleWriter : IDisposable
     /// </summary>
     // @port: Daqifi.Desktop.Logger.SessionSampleWriter.PendingRetryCount
     internal int PendingRetryCount => _pendingRetryCount;
-
-    /// <summary>
-    /// Consumer poll cycles still to skip before the next retry of a failed batch (the exponential
-    /// backoff). Exposed so a test can wait until the backoff has grown before asserting that
-    /// <see cref="WaitForIdle"/> overrides it.
-    /// </summary>
-    // @port: Daqifi.Desktop.Logger.SessionSampleWriter.PollsUntilRetry
-    internal int PollsUntilRetry => _pollsUntilRetry;
     #endregion
 
     #region IDisposable

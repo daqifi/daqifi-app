@@ -10,7 +10,7 @@
        nav rail + content (~1:1 with the desktop app); PORTRAIT falls back to the
        bottom-nav single-column. The content area is SHARED (col 1, row 0) between
        both — only the nav chrome swaps by orientation (code-behind toggles the
-       rail vs the bottom bar). Rail styling mirrors the shared NavTabItem theme.
+       rail vs the bottom bar). Rail styling mirrors the desktop NavTabItem theme.
 
        Compiled bindings (issue #327): this view has no view model of its own. The root's
        DataContext is never set; every binding sits in one of three subtrees whose DataContext
