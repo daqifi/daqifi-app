@@ -670,6 +670,103 @@ public sealed class PreviousSettingsImportTests : IDisposable
         Assert.Equal(offered, Import().HasSettingsToImport(CurrentProfiles, settings));
     }
 
+    // ---- Review round 2 (2026-11-21, 01:07Z). Each test follows the reviewer's reproduction. ----
+
+    /// <summary>
+    /// Round 2, P2. Two copies of the app have the same settings file open. The second selects a
+    /// semicolon and then a comma. The first copy's import must read that saved choice, not the
+    /// one it cached at launch, and keep the comma.
+    /// </summary>
+    [Fact]
+    public async Task A_comma_selected_in_another_running_copy_is_kept()
+    {
+        var first = Settings();
+        var second = Settings();
+        second.CsvDelimiter = ";";
+        second.CsvDelimiter = ",";
+        WriteDelimiter(OldSettings, ";");
+
+        var outcome = await Import().ImportAsync(Manager(), first);
+
+        Assert.False(outcome.DelimiterCopied);
+        Assert.Equal(",", Settings().CsvDelimiter);
+    }
+
+    /// <summary>
+    /// Round 2, P2. An ordinary settings save takes the same lock as the import, so it never
+    /// writes between the import's read and its write. While another writer holds the lock, the
+    /// save does not reach the file.
+    /// </summary>
+    [Fact]
+    public void An_ordinary_settings_save_does_not_write_while_another_writer_holds_the_lock()
+    {
+        var settings = Settings();
+
+        using (new FileStream(CurrentSettings + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            settings.CsvDelimiter = ";";
+        }
+
+        Assert.Equal(",", Settings().CsvDelimiter);
+    }
+
+    /// <summary>
+    /// Round 2, P2. This user's profiles file is busy, there is an old semicolon, and there is no
+    /// old profiles file. The busy file must not hide the delimiter from the offer. And when there
+    /// are old profiles, a busy file means "cannot tell", so the Import is offered and can try.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_busy_profiles_file_here_does_not_hide_the_offer(bool oldProfilesToo)
+    {
+        var manager = Manager();
+        var settings = Settings();
+        if (oldProfilesToo)
+        {
+            WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
+        }
+        else
+        {
+            WriteDelimiter(OldSettings, ";");
+        }
+
+        using var busy = new FileStream(CurrentProfiles, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        Assert.True(Import().HasSettingsToImport(CurrentProfiles, settings));
+    }
+
+    /// <summary>
+    /// Round 2, P2. Only the profiles marker cannot be written. A part whose work is done but not
+    /// recorded could run again and undo what the user changed since, so the part does no work
+    /// until its record is written, and the import is not complete. Once the marker can be
+    /// written, the profile comes across, and a profile the user then deletes stays deleted.
+    /// </summary>
+    [Fact]
+    public async Task A_profiles_marker_that_cannot_be_written_stops_the_part_until_it_can_be()
+    {
+        WriteProfiles(OldProfiles, WpfProfile(BenchId, "Bench rig"));
+        Directory.CreateDirectory(ProfilesMarker);
+        var manager = Manager();
+        var settings = Settings();
+
+        var first = await Import().ImportAsync(manager, settings);
+
+        Assert.False(first.Complete);
+        Assert.Equal(0, first.ProfilesAdded);
+        Assert.Empty(manager.SubscribedProfiles);
+
+        Directory.Delete(ProfilesMarker);
+        var second = await Import().ImportAsync(manager, settings);
+        Assert.True(second.Complete);
+        Assert.Equal(1, second.ProfilesAdded);
+
+        Assert.True(manager.UnsubscribeProfile(manager.SubscribedProfiles.Single()));
+        var third = await Import().ImportAsync(manager, settings);
+        Assert.Equal(0, third.ProfilesAdded);
+        Assert.Empty(manager.SubscribedProfiles);
+    }
+
     /// <summary>
     /// Review P2, the conservative rule. A settings file that an earlier build wrote does not say
     /// whether its comma was chosen, so the import keeps it rather than guess.

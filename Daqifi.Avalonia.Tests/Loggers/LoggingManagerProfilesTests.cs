@@ -243,6 +243,37 @@ public sealed class LoggingManagerProfilesTests : IDisposable
     }
 
     /// <summary>
+    /// #512 review round 2. The Profiles pane saves and deletes on the UI thread. When another
+    /// window holds the writers' lock, the save must fail soon, with nothing changed, so the pane
+    /// can say so, instead of freezing the window while it waits. After the lock is gone, the same
+    /// save works.
+    /// </summary>
+    /// <remarks>
+    /// The bound here is many times the wait in the code, so that a busy test machine cannot make
+    /// it fail, and still far below the ten seconds that froze the window.
+    /// </remarks>
+    [Fact]
+    public void A_save_while_another_window_holds_the_lock_fails_soon_and_can_be_tried_again()
+    {
+        var manager = NewManager();
+        var profile = NewProfile();
+        bool savedWhileLocked;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        using (new FileStream(ProfilePath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            savedWhileLocked = manager.SubscribeProfile(profile);
+        }
+
+        Assert.False(savedWhileLocked);
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(3), $"The save blocked for {clock.Elapsed}.");
+        Assert.Empty(manager.SubscribedProfiles);
+
+        Assert.True(manager.SubscribeProfile(profile));
+        Assert.Equal(profile.ProfileId, Assert.Single(NewManager().LoadProfilesFromXml()).ProfileId);
+    }
+
+    /// <summary>
     /// #544: the startup read lists what the file holds. It used to run on desktop only; it now
     /// runs as the app's manager is created, on every head.
     /// </summary>
