@@ -58,6 +58,36 @@ but the map they index is not in this repository.
   goes stale on the next bump. That logic is *referenced, not ported*; bugs in device
   communication usually belong there rather than here.
 
+## Installing on Linux
+
+Releases built by the release workflow carry `DAQiFi-<version>-linux-x64.AppImage`.
+(`v3.3.0-beta.1` was built by hand before that workflow existed, and has no Linux file.)
+An AppImage is one file that runs on most x86-64 distributions. You do not install it,
+but the first run needs one manual step that the Windows installer does not:
+
+```bash
+chmod +x DAQiFi-*-linux-x64.AppImage
+./DAQiFi-*-linux-x64.AppImage
+```
+
+The AppImage mounts itself with FUSE, which almost every desktop distribution has. It
+does not need the older `libfuse2`. If it stops with a FUSE error, install your
+distribution's `fuse3` package, or start it with `--appimage-extract-and-run`.
+
+After that, the app updates itself. When a new version exists it tells you, and when you
+click Install it replaces the AppImage file where it is and starts the new version. If
+the file is in a folder you cannot write to, such as `/opt`, the update asks for an
+administrator password through `pkexec`. This update path is new: an update from one
+version to the next has not yet been proven on a real Linux machine (#352).
+
+Your data is not stored beside the AppImage. It is in `~/.local/share/DAQiFi` (or
+`$XDG_DATA_HOME/DAQiFi`), so you can move or rename the file and the app still finds
+your settings and recordings.
+
+There is no `.deb` or `.rpm`. The in-app updater (Velopack) can update only an AppImage,
+and a distribution package is updated by the package manager instead, which would be a
+second release process with updates the app does not control.
+
 ## Building
 
 Requires the **.NET 10 SDK**, pinned in `global.json` to `10.0.303` with
