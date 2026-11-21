@@ -146,12 +146,13 @@ public partial class ProfilesPaneViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Why a profile was refused when the board it was saved from has no serial number and no MAC
-    /// address, and more than one device of that model is connected.
+    /// Why a profile was refused when a board it was saved from has no serial number and no MAC
+    /// address, and the profile's devices and the connected devices of that model do not pair one
+    /// to one: two connected devices for one saved board, or two saved boards for one device.
     /// </summary>
     internal const string WhichDeviceMessage =
-        "The device this profile was saved from has no serial number or MAC address, and more than one device of that model is connected. " +
-        "Disconnect the devices that are not for this profile, then try again.";
+        "This profile cannot tell which connected device to change. The devices it was saved from have no serial number or MAC address. " +
+        "A profile like this applies only when it has one device of a model and one device of that model is connected.";
 
     /// <summary>Live view of the saved profiles backed by <see cref="LoggingManager"/>.</summary>
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.Profiles
@@ -489,17 +490,19 @@ public partial class ProfilesPaneViewModel : ObservableObject
 
     /// <summary>
     /// Two-pass match: first the board each <see cref="ProfileDevice"/> was saved from
-    /// (<see cref="IsSavedDevice"/>), then a fall back to a device of the same model (part number).
-    /// Each connected device is claimed at most once.
+    /// (<see cref="IsSavedDevice"/>), then, for an entry that holds no serial number and no MAC
+    /// address, a device of the same model (part number) when the two pair one to one. Each
+    /// connected device is claimed at most once.
     /// </summary>
     /// <remarks>
-    /// A profile that records its inputs (<see cref="RecordsInputs"/>) never falls back to a board
-    /// it can tell is not its own. The input number finds an input on any board of the model, so the
-    /// fall back turned on the saved input of the first such board, not the board the user chose
-    /// (PR #678 review). Such an entry falls back only when it holds no serial number and no MAC
-    /// address, and only to the one device of its model that is left; <see cref="UnresolvedDevice"/>
-    /// says why when it cannot. An older profile matches its channels by name, which still keeps the
-    /// fall back as it was.
+    /// Upstream lets every entry fall back to the first unclaimed device of its model. That guess
+    /// turned on or cleared a board the user did not choose (PR #678 review): an input number finds
+    /// an input on any board of the model, an entry with no channel on clears whatever board it gets,
+    /// and default channel names are the same on every board. So an entry that holds a serial number
+    /// or a MAC address applies only to that board. An entry with neither has nothing to find its
+    /// board by, so it takes a device only when it is the one such entry of its model and that
+    /// device is the one device of the model left. <see cref="UnresolvedDevice"/> says why when an
+    /// entry gets no device.
     /// </remarks>
     // @port: Daqifi.Desktop.ViewModels.ProfilesPaneViewModel.MatchProfileToConnected
     private static Dictionary<ProfileDevice, IStreamingDevice> MatchProfileToConnected(Profile profile)
@@ -510,31 +513,28 @@ public partial class ProfilesPaneViewModel : ObservableObject
         var claimed = new HashSet<IStreamingDevice>(ReferenceComparer<IStreamingDevice>.Instance);
         var result = new Dictionary<ProfileDevice, IStreamingDevice>();
         var connected = ConnectionManager.Instance.ConnectedDevices.ToList();
-        var recordsInputs = RecordsInputs(profile);
 
-        foreach (var pd in profile.Devices)
+        void Claim(ProfileDevice pd, IStreamingDevice device)
         {
-            var exact = connected.FirstOrDefault(cd => IsSavedDevice(pd, cd) && !claimed.Contains(cd));
-            if (exact != null)
-            {
-                result[pd] = exact;
-                claimed.Add(exact);
-            }
+            result[pd] = device;
+            claimed.Add(device);
         }
 
         foreach (var pd in profile.Devices)
         {
-            if (result.ContainsKey(pd)) continue;
-            var sameModel = connected
-                .Where(cd => cd.DevicePartNumber == pd.DevicePartName && !claimed.Contains(cd))
+            var exact = connected.FirstOrDefault(cd => IsSavedDevice(pd, cd) && !claimed.Contains(cd));
+            if (exact != null) Claim(pd, exact);
+        }
+
+        var unidentified = profile.Devices
+            .Where(pd => !result.ContainsKey(pd) && !HasDeviceIdentity(pd))
+            .GroupBy(pd => pd.DevicePartName);
+        foreach (var entries in unidentified)
+        {
+            var candidates = connected
+                .Where(cd => cd.DevicePartNumber == entries.Key && !claimed.Contains(cd))
                 .ToList();
-            if (recordsInputs && (HasDeviceIdentity(pd) || sameModel.Count > 1)) continue;
-            var modelMatch = sameModel.FirstOrDefault();
-            if (modelMatch != null)
-            {
-                result[pd] = modelMatch;
-                claimed.Add(modelMatch);
-            }
+            if (entries.Count() == 1 && candidates.Count == 1) Claim(entries.Single(), candidates[0]);
         }
 
         return result;
@@ -563,20 +563,11 @@ public partial class ProfilesPaneViewModel : ObservableObject
         !Daqifi.Core.Device.DeviceIdentity.Create(pd.DeviceSerialNo, pd.MacAddress).IsEmpty;
 
     /// <summary>
-    /// Whether the profile records the input of its channels (<see cref="ProfileChannel.Index"/>),
-    /// which every profile saved since PR #678 does. Older profiles hold only names.
-    /// </summary>
-    // Downstream-only: no upstream counterpart.
-    private static bool RecordsInputs(Profile profile) =>
-        profile.Devices.Any(pd => pd.Channels.Any(c => c.Index is not null));
-
-    /// <summary>
     /// Why activation must stop at a board the profile cannot find, or <see langword="null"/>. It
     /// stops when an entry has no matched device while a device of that entry's model is left over:
-    /// the fall back would have guessed that device, which <see cref="MatchProfileToConnected"/> no
-    /// longer does for a profile that records its inputs. (An older profile never gets here: its fall
-    /// back claims any device of the model that is left.) When no device of the model is left over,
-    /// the entry's board is only away, and the profile's other devices still apply (#530).
+    /// the upstream fall back would have guessed that device, which
+    /// <see cref="MatchProfileToConnected"/> no longer does. When no device of the model is left
+    /// over, the entry's board is only away, and the profile's other devices still apply (#530).
     /// </summary>
     // Downstream-only: no upstream counterpart.
     private static string? UnresolvedDevice(Profile profile, Dictionary<ProfileDevice, IStreamingDevice> matches)
