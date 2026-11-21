@@ -49,7 +49,10 @@ namespace Daqifi.Desktop.Logger;
 /// copy is behind exactly when its old session has a sample with a higher ID. The check for the
 /// offer and every import compare this again (see <c>BehindCopies</c>), also after the offer of new
 /// sessions is retired, and an import copies the missing samples into the copy. A session that is
-/// still being recorded is copied as far as it goes, and a later import copies the rest.
+/// still being recorded is copied as far as it goes, and a later import copies the rest. A copy is
+/// continued only from the same recording: its old session has the same first sample ID and start,
+/// and the old sample at the copy's last sample ID is the copy's last sample (see <c>Continues</c>).
+/// Sample IDs are unique only within one database file, so they alone cannot show this.
 /// </para>
 /// <para>
 /// <b>Short locks.</b> Samples are copied in small batches, each in its own transaction, so the
@@ -243,19 +246,21 @@ public sealed class PreviousSessionImport
         }
 
         // The copies made earlier that are behind their old session, with the last old sample each
-        // holds and the old session's last sample now.
-        var behind = new List<(long CopyId, long OldId, long Cursor, long Last)>();
+        // holds, the old session's last sample now, and the samples in between. Those are counted
+        // (an index range): other sessions can hold most of the IDs in between.
+        var behind = new List<(long CopyId, long OldId, long Cursor, long Last, long Missing)>();
         if (SampleIdsAreNeverReused(connection))
         {
-            using var read = Command(connection, $"SELECT m.ID, x.Id, m.PreviousLastSampleId, x.LastId {BehindCopies(complete)} ORDER BY m.ID");
+            using var read = Command(connection, "SELECT m.ID, x.Id, m.PreviousLastSampleId, x.LastId, " +
+                $"(SELECT COUNT(*) FROM old.Samples WHERE LoggingSessionID = x.Id AND ID > m.PreviousLastSampleId) {BehindCopies(complete)} ORDER BY m.ID");
             using var reader = read.ExecuteReader();
             while (reader.Read())
             {
-                behind.Add((reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3)));
+                behind.Add((reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetInt64(4)));
             }
         }
 
-        var total = pending.Sum(s => s.Last - s.First + 1) + behind.Sum(c => c.Last - c.Cursor);
+        var total = pending.Sum(s => s.Last - s.First + 1) + behind.Sum(c => c.Missing);
         CheckDiskSpace(connection, total);
         long done = 0;
         progress?.Report(0);
@@ -368,25 +373,45 @@ public sealed class PreviousSessionImport
             outcome.Imported.Add((int)newId);
         }
 
-        // The samples each copy made earlier is behind. Each batch moves the copy's last sample ID
-        // with its samples, in one transaction, so a crash leaves the two in step and the next
-        // import goes on from there. The copy stays complete throughout: it always holds every old
-        // sample up to its last sample ID.
-        foreach (var (copyId, oldId, cursor, last) in behind)
+        // The samples each copy made earlier is behind. Each batch moves the copy's last sample ID to
+        // the last sample it adds, with its samples and the devices, in one transaction: a crash
+        // leaves them in step, and the next import goes on from there. The copy stays complete
+        // throughout: it always holds every old sample up to its last sample ID. Each batch checks
+        // first that the copy still continues from the old session (see Continues): the user can
+        // delete the copy meanwhile, and a new session can get its ID.
+        foreach (var (copyId, oldId, cursor, last, _) in behind)
         {
+            var at = cursor;
             var added = false;
             for (var from = cursor + 1; from <= last; from += BatchSpan)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var to = Math.Min(last, from + BatchSpan - 1);
 
+                long? next;
+                using (var find = Command(connection, "SELECT MAX(ID) FROM old.Samples WHERE LoggingSessionID = $old AND ID BETWEEN $from AND $to"))
+                {
+                    find.Parameters.AddWithValue("$old", oldId);
+                    find.Parameters.AddWithValue("$from", from);
+                    find.Parameters.AddWithValue("$to", to);
+                    next = find.ExecuteScalar() is long id ? id : null;
+                }
+
+                // Other sessions' samples only.
+                if (next is null)
+                {
+                    continue;
+                }
+
                 using (var transaction = connection.BeginTransaction(deferred: false))
                 {
-                    // The user deleted the copy meanwhile: nothing to bring up to date.
                     using var move = Command(connection,
-                        "UPDATE main.Sessions SET PreviousLastSampleId = $to WHERE ID = $copy", transaction);
-                    move.Parameters.AddWithValue("$to", to);
+                        $"UPDATE main.Sessions SET PreviousLastSampleId = $next WHERE ID = $copy AND {Continues("$copy", "$old", "$at")}",
+                        transaction);
+                    move.Parameters.AddWithValue("$next", next.Value);
                     move.Parameters.AddWithValue("$copy", copyId);
+                    move.Parameters.AddWithValue("$old", oldId);
+                    move.Parameters.AddWithValue("$at", at);
                     if (move.ExecuteNonQuery() == 0)
                     {
                         break;
@@ -395,11 +420,11 @@ public sealed class PreviousSessionImport
                     using var copy = Command(connection,
                         "INSERT INTO main.Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
                         "SELECT $copy, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type FROM old.Samples " +
-                        "WHERE ID BETWEEN $from AND $to AND LoggingSessionID = $old ORDER BY ID", transaction);
+                        "WHERE ID BETWEEN $from AND $next AND LoggingSessionID = $old ORDER BY ID", transaction);
                     copy.Parameters.AddWithValue("$copy", copyId);
                     copy.Parameters.AddWithValue("$old", oldId);
                     copy.Parameters.AddWithValue("$from", from);
-                    copy.Parameters.AddWithValue("$to", to);
+                    copy.Parameters.AddWithValue("$next", next.Value);
                     var copied = copy.ExecuteNonQuery();
 
                     using var count = Command(connection,
@@ -407,31 +432,32 @@ public sealed class PreviousSessionImport
                     count.Parameters.AddWithValue("$copied", copied);
                     count.Parameters.AddWithValue("$copy", copyId);
                     count.ExecuteNonQuery();
+
+                    // A device the recording picked up after the copy.
+                    if (hasMetadata)
+                    {
+                        using var metadata = Command(connection,
+                            "INSERT OR IGNORE INTO main.SessionDeviceMetadata (LoggingSessionID, DeviceSerialNo, DeviceName, SamplingFrequencyHz) " +
+                            "SELECT $copy, DeviceSerialNo, DeviceName, SamplingFrequencyHz FROM old.SessionDeviceMetadata WHERE LoggingSessionID = $old",
+                            transaction);
+                        metadata.Parameters.AddWithValue("$copy", copyId);
+                        metadata.Parameters.AddWithValue("$old", oldId);
+                        metadata.ExecuteNonQuery();
+                    }
+
                     transaction.Commit();
+                    at = next.Value;
+                    added = true;
+                    done += copied;
                 }
 
-                added = true;
-                done += to - from + 1;
                 progress?.Report((double)done / total);
             }
 
-            if (!added)
+            if (added)
             {
-                continue;
+                outcome.Imported.Add((int)copyId);
             }
-
-            // A device the recording picked up after the copy.
-            if (hasMetadata)
-            {
-                using var metadata = Command(connection,
-                    "INSERT OR IGNORE INTO main.SessionDeviceMetadata (LoggingSessionID, DeviceSerialNo, DeviceName, SamplingFrequencyHz) " +
-                    "SELECT $copy, DeviceSerialNo, DeviceName, SamplingFrequencyHz FROM old.SessionDeviceMetadata WHERE LoggingSessionID = $old");
-                metadata.Parameters.AddWithValue("$copy", copyId);
-                metadata.Parameters.AddWithValue("$old", oldId);
-                metadata.ExecuteNonQuery();
-            }
-
-            outcome.Imported.Add((int)copyId);
         }
 
         // Nothing here can be proved a copy, so a later check would offer every session again and
@@ -624,23 +650,41 @@ public sealed class PreviousSessionImport
     internal int LockTimeoutSeconds { get; init; } = 30;
 
     /// <summary>
-    /// The copies that are behind their old session: copies whose old session has a sample with a
-    /// higher ID than the last one the copy holds. Only a complete copy has a last sample ID: it is
-    /// written when the copy is marked complete, and bringing it up to date keeps it complete. A <c>FROM</c> clause with the copy as
-    /// <c>m</c>, and its old session as <c>x</c> with <c>x.Id</c> and <c>x.LastId</c>. Only for an old
-    /// database that never gives a sample ID twice (see <see cref="SampleIdsAreNeverReused"/>): there a
-    /// new sample always gets a higher ID, so every old sample at or below a copy's last sample ID is
-    /// in the copy. A copy with no last sample ID (none made by a release) is never behind.
+    /// The copies that are behind their old session and continue from it: the old session has a
+    /// sample with a higher ID than the last one the copy holds, and <see cref="Continues"/> holds. A
+    /// <c>FROM</c> clause with the copy as <c>m</c>, and its old session as <c>x</c> with <c>x.Id</c>
+    /// and <c>x.LastId</c>. Only a complete copy has a last sample ID: it is written when the copy is
+    /// marked complete, and bringing it up to date keeps it complete. Only for an old database that
+    /// never gives a sample ID twice (see <see cref="SampleIdsAreNeverReused"/>): there a new sample
+    /// always gets a higher ID, so every old sample at or below a copy's last sample ID is in the
+    /// copy. A copy with no last sample ID (none made by a release) is never behind.
     /// </summary>
     /// <remarks>
     /// The first and last sample of each old session are two index lookups, and a copy is matched to
-    /// its old session by the first one, as <c>IsCopy</c> does.
+    /// its old session as <c>IsCopy</c> does: the first sample ID and the start.
     /// </remarks>
     private static string BehindCopies(string complete) =>
-        "FROM (SELECT o.ID AS Id, (SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) AS FirstId, " +
+        "FROM (SELECT o.ID AS Id, o.SessionStart AS Start, (SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) AS FirstId, " +
         $"(SELECT MAX(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) AS LastId FROM old.Sessions o WHERE {complete}) x " +
-        "JOIN main.Sessions m ON m.PreviousFirstSampleId = x.FirstId " +
-        "WHERE m.PreviousLastSampleId < x.LastId";
+        "JOIN main.Sessions m ON m.PreviousFirstSampleId = x.FirstId AND m.SessionStart = x.Start " +
+        $"WHERE m.PreviousLastSampleId < x.LastId AND {Continues("m.ID", "x.Id", "m.PreviousLastSampleId")}";
+
+    /// <summary>
+    /// The condition that copy <paramref name="copy"/> continues from old session
+    /// <paramref name="old"/> where it ends: the old sample at the copy's last sample ID
+    /// (<paramref name="cursor"/>) belongs to that session and is the copy's last sample.
+    /// </summary>
+    /// <remarks>
+    /// Sample IDs are unique only within one database file. A new database at the same path (a
+    /// reinstall, a restored backup) starts them again at 1, and this user's database can give a
+    /// deleted copy's ID to a new session. Either way the IDs still match, but the samples do not.
+    /// When this does not hold, the copy is left as it is. Three index lookups.
+    /// </remarks>
+    private static string Continues(string copy, string old, string cursor) =>
+        "EXISTS (SELECT 1 FROM old.Samples s JOIN main.Samples c " +
+        $"ON c.ID = (SELECT MAX(ID) FROM main.Samples WHERE LoggingSessionID = {copy}) " +
+        $"WHERE s.ID = {cursor} AND s.LoggingSessionID = {old} AND s.TimestampTicks = c.TimestampTicks " +
+        "AND s.Value IS c.Value AND s.ChannelName = c.ChannelName AND s.DeviceSerialNo = c.DeviceSerialNo)";
 
     /// <summary>
     /// Only sessions with samples count: the app drops sample-less sessions as litter on load, so
@@ -660,11 +704,13 @@ public sealed class PreviousSessionImport
     /// samples while its clean-up runs. The old session's ID and start are not enough either: the
     /// earlier version gives a new session the maximum ID plus one, so a different log from the same
     /// second can get both again. Its samples cannot get the same IDs when the samples table has
-    /// AUTOINCREMENT (see <see cref="SampleIdsAreNeverReused"/>). The old first sample is one index
-    /// lookup.
+    /// AUTOINCREMENT (see <see cref="SampleIdsAreNeverReused"/>), but only within one database file:
+    /// a new database at the same path (a reinstall, a restored backup) starts them again at 1. So the
+    /// start must match too. The import writes the old start unchanged, and nothing rewrites it. The
+    /// old first sample is one index lookup.
     /// </remarks>
     private const string IsCopy =
-        "m.PreviousFirstSampleId = (SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID)";
+        "m.PreviousFirstSampleId = (SELECT MIN(ID) FROM old.Samples WHERE LoggingSessionID = o.ID) AND m.SessionStart = o.SessionStart";
 
     /// <summary>
     /// The one rule that decides if session <c>m</c> is proved to be this import's copy of old

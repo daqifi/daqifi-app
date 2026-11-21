@@ -942,6 +942,22 @@ public sealed class PreviousSessionImportTests : IDisposable
     }
 
     [Fact]
+    public async Task Brings_a_copy_up_to_date_across_batch_boundaries_in_one_import()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Long recording", 1);
+        var copy = Assert.Single((await RunImport()).Imported);
+        var later = PreviousSessionImport.BatchSpan + 10;
+        AddBulkPreviousSamples(1, 2, later);
+
+        Assert.Equal([copy], (await RunImport()).Imported);
+
+        Assert.Equal(1 + later, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+        Assert.Equal(1 + later, Scalar<long>(_current, $"SELECT PreviousLastSampleId FROM Sessions WHERE ID = {copy}"));
+        Assert.False(Import().HasSessionsToImport());
+    }
+
+    [Fact]
     public async Task Needs_disk_space_only_for_the_samples_a_copy_is_behind()
     {
         CreatePreviousDatabase();
@@ -956,6 +972,154 @@ public sealed class PreviousSessionImportTests : IDisposable
 
         Assert.Single((await RunImport(WithFreeSpace(fileLength * 3 / 4))).Imported);
         Assert.Equal(40_000L, Scalar<long>(_current, "SELECT COUNT(*) FROM Samples"));
+    }
+
+    // A new database at the same path, as a reinstall or a restored backup can leave. Its sample IDs
+    // start again at 1.
+    private void ReplacePreviousDatabase()
+    {
+        File.Delete(_previous);
+        CreatePreviousDatabase();
+    }
+
+    [Fact]
+    public async Task A_copy_is_not_continued_from_a_later_recording_in_a_new_database_at_the_same_path()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Original recording", 1, 2);
+        var copy = Assert.Single((await RunImport()).Imported);
+        Import().MarkDone();
+
+        // Its samples have the same IDs, and (as all test samples, made from the ID) the same
+        // values. Only the start tells the two recordings apart.
+        ReplacePreviousDatabase();
+        AddPreviousSession(1, "2026-11-20 09:00:00.0000000", "Later recording", 1, 2, 3);
+
+        Assert.False(Import().HasSessionsToImport());
+        Assert.Empty((await RunImport()).Imported);
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+    }
+
+    [Fact]
+    public async Task A_later_recording_in_a_new_database_at_the_same_path_is_imported_as_a_session_of_its_own()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Original recording", 1, 2);
+        await RunImport();
+        ReplacePreviousDatabase();
+        AddPreviousSession(1, "2026-11-20 09:00:00.0000000", "Later recording", 1, 2, 3);
+
+        Assert.True(Import().HasSessionsToImport(), "The later recording must be offered.");
+        await RunImport();
+
+        Assert.Equal(2L, CopiedSamples("Original recording"));
+        Assert.Equal(3L, CopiedSamples("Later recording"));
+    }
+
+    [Fact]
+    public async Task A_copy_is_not_continued_unless_the_old_sample_at_its_last_sample_ID_is_its_last_sample()
+    {
+        // Two SD card logs from the same second can share the start, and in a new database also the
+        // first sample ID. Here even the first sample is the same; the second one has another time.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41", "Card log", 1, 2);
+        var copy = Assert.Single((await RunImport()).Imported);
+        Import().MarkDone();
+
+        ReplacePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41", "Card log", 1);
+        Execute(_previous,
+            "INSERT INTO Samples (ID, LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            "VALUES (2, 1, 2.5, 25, 'Nq1', 'AI0', 'SN-TEST', '#FF0000', 1);");
+        AddPreviousSample(1, 3);
+
+        Assert.False(Import().HasSessionsToImport());
+        Assert.Empty((await RunImport()).Imported);
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+    }
+
+    [Fact]
+    public async Task A_copy_is_not_continued_when_the_old_sample_at_its_last_sample_ID_belongs_to_another_session()
+    {
+        // In the new database the sample at the copy's last ID has the same values (test samples are
+        // made from their ID), but another session recorded it.
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41", "Card log", 1, 2);
+        var copy = Assert.Single((await RunImport()).Imported);
+        Import().MarkDone();
+
+        ReplacePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41", "Card log", 1);
+        AddPreviousSession(9, "2026-03-29 18:51:41", "Another card log", 2);
+        AddPreviousSample(1, 3);
+
+        Assert.False(Import().HasSessionsToImport());
+        Assert.Empty((await RunImport()).Imported);
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+    }
+
+    [Fact]
+    public async Task A_session_that_takes_a_copied_session_ID_during_the_import_gets_no_old_samples()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Kept", 1, 2);
+        AddPreviousSession(2, "2026-03-30 18:51:41.7774381", "Deleted meanwhile", 3, 4);
+        Execute(_previous, "INSERT INTO SessionDeviceMetadata VALUES (2, 'SN-TEST', 'Nq1', 1000);");
+        await RunImport();
+        AddPreviousSample(1, 5);
+        AddPreviousSample(2, 6);
+        var kept = Scalar<long>(_current, "SELECT ID FROM Sessions WHERE Name = 'Kept'");
+        var reused = Scalar<long>(_current, "SELECT ID FROM Sessions WHERE Name = 'Deleted meanwhile'");
+
+        // Once the first copy is brought up to date, the user deletes the second one, and the app
+        // logs a new session that gets the same ID (the allocator takes the highest one plus one).
+        var outcome = await RunImport(progress: AfterTheFirstBatch(() => Execute(_current,
+            $"DELETE FROM SessionDeviceMetadata WHERE LoggingSessionID = {reused};" +
+            $"DELETE FROM Samples WHERE LoggingSessionID = {reused}; DELETE FROM Sessions WHERE ID = {reused};" +
+            $"INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES ({reused}, '2026-11-20 10:00:00', 'Logged meanwhile', 0);" +
+            "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+            $"VALUES ({reused}, 9.5, 90, 'Nq1', 'AI0', 'SN-NEW', '#FF0000', 1);")));
+
+        Assert.Equal([(int)kept], outcome.Imported);
+        Assert.Equal(3L, CopiedSamples("Kept"));
+        Assert.Equal(1L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {reused}"));
+        Assert.Equal(1L, Scalar<long>(_current, $"SELECT SampleCount IS NULL AND PreviousLastSampleId IS NULL FROM Sessions WHERE ID = {reused}"));
+        Assert.Equal(0L, Scalar<long>(_current, $"SELECT COUNT(*) FROM SessionDeviceMetadata WHERE LoggingSessionID = {reused}"));
+    }
+
+    [Fact]
+    public async Task A_copy_stopped_right_after_its_last_new_samples_has_the_devices_its_recording_picked_up()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Recording", 1);
+        Execute(_previous, "INSERT INTO SessionDeviceMetadata VALUES (1, 'SN-TEST', 'Nq1', 1000);");
+        var copy = Assert.Single((await RunImport()).Imported);
+        AddPreviousSample(1, 2);
+        Execute(_previous, "INSERT INTO SessionDeviceMetadata VALUES (1, 'SN-OTHER', 'Nq2', 500);");
+
+        // The import stops right after the batch with the new sample is in (a crash, say).
+        await Assert.ThrowsAsync<IOException>(() => RunImport(progress: AfterTheFirstBatch(() => throw new IOException("Stopped"))));
+        await RunImport();
+
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {copy}"));
+        Assert.Equal(2L, Scalar<long>(_current, $"SELECT COUNT(*) FROM SessionDeviceMetadata WHERE LoggingSessionID = {copy}"));
+    }
+
+    [Fact]
+    public async Task Needs_disk_space_only_for_the_samples_a_sparse_tail_holds()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Quiet recording", 1);
+        await RunImport();
+        Import().MarkDone();
+        // Another recording takes 100,000 sample IDs, and then the first one adds one sample.
+        AddBulkPreviousSession(2, "2026-03-30 18:51:41.7774381", 2, 100_000);
+        AddPreviousSample(1, 100_002);
+        var fileLength = new FileInfo(_previous).Length;
+
+        // Room for a hundredth of the old file: plenty for one sample, not for the ID span.
+        Assert.Single((await RunImport(WithFreeSpace(fileLength / 100))).Imported);
+        Assert.Equal(2L, CopiedSamples("Quiet recording"));
     }
 
     [Fact]
