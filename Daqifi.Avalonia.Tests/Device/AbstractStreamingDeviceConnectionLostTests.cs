@@ -92,8 +92,9 @@ public class AbstractStreamingDeviceConnectionLostTests
     /// <summary>
     /// The user asking to disconnect is not a drop, and must not produce the "device disconnected"
     /// notification. In the app this is guaranteed structurally — <c>Disconnect</c> detaches Core's
-    /// <c>StatusChanged</c> before the Core device is touched — so this pins the outcome that
-    /// depends on it.
+    /// <c>StatusChanged</c> before the Core device is touched. This double has no Core device, so
+    /// the outcome here holds without that detach; <see cref="LostDuringDisconnectTests"/> pins
+    /// the detach itself, with Core reporting a drop during the teardown (#690).
     /// </summary>
     [Fact]
     public void An_app_initiated_disconnect_does_not_raise_it()
