@@ -570,14 +570,12 @@ public sealed class ProfileActivationTests : IDisposable
     public async Task A_profile_whose_channels_match_nothing_is_refused_with_the_reason()
     {
         var original = Connect("PROFILE-MISS-1");
-        Enable(original, "AI3");
-        var profile = CaptureCurrentSettings("Bench other model");
-        Disable(original, "AI3");
+        var profile = OlderProfile("Bench other model", original, "AI3");
         Disconnect(original);
 
-        // Same part number, so the model fallback matches it; it has no input 3. (This used to give
-        // the device other channel NAMES, which stood for "other channels" while the name was the
-        // channel's identity. Since PR #678 a profile records the input, and names are labels.)
+        // Same part number, so the model fallback matches it; it has no channel AI3. The profile is
+        // in the older shape (names only): since PR #678 a captured profile records its board and
+        // its inputs, and does not fall back to another board of the model at all.
         var other = Connect("PROFILE-MISS-2", channelCount: 2);
         Enable(other, "AI1");
 
