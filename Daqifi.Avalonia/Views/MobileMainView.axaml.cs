@@ -10,6 +10,7 @@ using Avalonia.Threading;
 using Daqifi.Avalonia.Views.Mobile;
 using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Common.Loggers;
+using Daqifi.Desktop.Device;
 using Daqifi.Desktop.Logger;
 using Daqifi.Desktop.Models;
 using Daqifi.Desktop.ViewModels;
@@ -84,6 +85,7 @@ public partial class MobileMainView : UserControl
         _backSource = TopLevel.GetTopLevel(this);
         if (_backSource is not null) { _backSource.BackRequested += OnBackRequested; }
         AbstractChannel.ScaleResultsRejected += OnScaleResultsRejected;
+        AbstractStreamingDevice.StreamGapDetected += OnStreamGapDetected;
         // The on-screen keyboard (#589). Only a phone top level has an input pane.
         _inputPane = TopLevel.GetTopLevel(this)?.InputPane;
         if (_inputPane is not null) { _inputPane.StateChanged += OnInputPaneStateChanged; }
@@ -97,6 +99,7 @@ public partial class MobileMainView : UserControl
         if (_backSource is not null) { _backSource.BackRequested -= OnBackRequested; }
         _backSource = null;
         AbstractChannel.ScaleResultsRejected -= OnScaleResultsRejected;
+        AbstractStreamingDevice.StreamGapDetected -= OnStreamGapDetected;
         if (_inputPane is not null) { _inputPane.StateChanged -= OnInputPaneStateChanged; }
         _inputPane = null;
         if (_activatable is not null) { _activatable.Deactivated -= OnAppDeactivated; }
@@ -186,6 +189,14 @@ public partial class MobileMainView : UserControl
     /// </summary>
     private void OnScaleResultsRejected(AbstractChannel channel) =>
         _notifications.AddOnce(new Notifications { Message = channel.RejectedScaleResultsNotification });
+
+    /// <summary>
+    /// The phone's half of #595: Core found a gap in a device's stream. <c>Add</c>, not
+    /// <c>AddOnce</c>: the device raises this once per device per session, and two devices with one
+    /// friendly name can raise the same text (review of PR #663). <c>Add</c> marshals too.
+    /// </summary>
+    private void OnStreamGapDetected(AbstractStreamingDevice device, Notifications notice) =>
+        _notifications.Add(notice);
 
     /// <summary>Landscape → desktop-style left rail; portrait → bottom nav.</summary>
     private void UpdateOrientation()

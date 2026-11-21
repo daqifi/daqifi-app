@@ -39,4 +39,18 @@ public class Notifications
 
     /// <summary>Runs when the user dismisses the notification, or <c>null</c> when it cannot be dismissed.</summary>
     public System.Windows.Input.ICommand? Dismiss { get; init; }
+
+    /// <summary>
+    /// A notice owned by the device with <paramref name="deviceSerialNo"/>, so the desktop's
+    /// per-device pruning removes it when that device disconnects. Downstream addition.
+    /// </summary>
+    /// <remarks>
+    /// An empty serial is stored as null: the pruning would match an empty serial to no device and
+    /// remove the notice on the same pass that added it.
+    /// </remarks>
+    public static Notifications ForDevice(string? deviceSerialNo, string message) => new()
+    {
+        DeviceSerialNo = string.IsNullOrEmpty(deviceSerialNo) ? null : deviceSerialNo,
+        Message = message
+    };
 }
