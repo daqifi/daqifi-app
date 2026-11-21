@@ -180,10 +180,10 @@ public partial class LoggedDataPanePrototype : UserControl
 
     private void OnNameBoxHostPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        // Another session, or the drawer opening or closing, ends the edit too. Closing has to be
-        // here: a click on the scrim takes no focus, so the box gets no LostFocus from it.
-        if (e.PropertyName is nameof(DaqifiViewModel.SelectedLoggingSession)
-                           or nameof(DaqifiViewModel.IsLoggingSessionSettingsOpen))
+        // The box now edits another session, so it shows that session's name. The drawer closing
+        // needs nothing here, though a click on the scrim takes no focus: Avalonia takes the focus
+        // from the box when the drawer hides, so LostFocus ends that edit (measured, #681).
+        if (e.PropertyName == nameof(DaqifiViewModel.SelectedLoggingSession))
         {
             ShowSessionName();
         }

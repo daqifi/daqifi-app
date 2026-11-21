@@ -978,9 +978,10 @@
                             <!-- NAME. No Text binding on purpose (#681): LoggingSession.Name returns
                                  "Session {ID}" for an empty name, so a binding filled the box again the
                                  moment the user emptied it, caret first, and the next name typed was
-                                 saved as "Pump testSession 2". The code-behind shows the name when a
-                                 session is shown and when an edit ends (LostFocus, Enter, the drawer
-                                 opening or closing), and never while the user types. -->
+                                 saved as "Pump testSession 2". The code-behind shows the name when
+                                 another session is selected and when an edit ends (LostFocus, which
+                                 the drawer closing also raises, or Enter), and never while the user
+                                 types. -->
                             <TextBlock Text="NAME"
                                        Classes="sectionLabel"
                                        Margin="0,8,0,8"/>
