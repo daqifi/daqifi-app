@@ -229,8 +229,9 @@ public partial class LoggingManager : ObservableObject
     /// input's label.
     /// </para>
     /// <para>
-    /// The names stay fixed after the session stops, so the live plot of that session still finds its
-    /// series when the user hides or shows a channel. Unsubscribing a channel releases its name.
+    /// The names stay fixed after the session stops, until the next session fixes them again, so the
+    /// live plot of the session that ended still finds its series when the user hides or shows a
+    /// channel. Nothing else reads them outside a session.
     /// </para>
     /// </remarks>
     internal static void FixRecordedNames(IEnumerable<IChannel> channels)
@@ -779,7 +780,6 @@ public partial class LoggingManager : ObservableObject
             }
 
             subscribedChannel.IsActive = false;
-            subscribedChannel.SetRecordedName(null);
 
             // Remove event handler if it's attached
             subscribedChannel.OnChannelUpdated -= HandleChannelUpdate;
@@ -1323,7 +1323,6 @@ public partial class LoggingManager : ObservableObject
             {
                 channel.IsActive = false;
                 channel.OnChannelUpdated -= HandleChannelUpdate;
-                channel.SetRecordedName(null);
             }
 
             // Copy-on-write -- see SubscribedChannels' remarks. Clear() would empty the very list a

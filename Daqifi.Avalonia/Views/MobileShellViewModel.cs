@@ -233,7 +233,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     private readonly Dictionary<int, long> _lastTicksByIndex = [];
 
     // Channels whose samples are being counted. REFERENCE identity, not AbstractChannel.Equals
-    // — that compares by Name, so a replacement instance for the same channel would look like
+    // — that compares the input, so a replacement instance for the same channel would look like
     // one already subscribed and its samples would never be counted. Guarded by its own lock:
     // the teardown paths can be reached from a device property-change raised off the UI thread,
     // while the render poll re-arms from the UI thread.

@@ -196,10 +196,17 @@ internal sealed class DroppableTestDevice : AbstractStreamingDevice
 /// </summary>
 internal sealed class FakeChannel : AbstractChannel
 {
-    public FakeChannel(string name, string deviceSerialNo)
+    /// <param name="name">The channel's label.</param>
+    /// <param name="deviceSerialNo">The owning device's serial number.</param>
+    /// <param name="index">
+    /// The input number. Channel identity is the device, the type and this index (#670), so a device
+    /// with several fake channels must give each its own.
+    /// </param>
+    public FakeChannel(string name, string deviceSerialNo, int index = 0)
     {
         _name = name;
         DeviceSerialNo = deviceSerialNo;
+        Index = index;
     }
 
     private string _name;
@@ -218,7 +225,7 @@ internal sealed class FakeChannel : AbstractChannel
         set => _direction = value;
     }
 
-    public override int Index => 0;
+    public override int Index { get; }
 
     public override ChannelType Type => ChannelType.Analog;
 

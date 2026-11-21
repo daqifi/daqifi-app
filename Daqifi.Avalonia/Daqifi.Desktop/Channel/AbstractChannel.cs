@@ -42,7 +42,7 @@ public abstract partial class AbstractChannel : ObservableObject, IChannel
     public string RecordedName => Volatile.Read(ref _recordedName) ?? Name;
 
     /// <inheritdoc />
-    public void SetRecordedName(string? recordedName) => Volatile.Write(ref _recordedName, recordedName);
+    public void SetRecordedName(string recordedName) => Volatile.Write(ref _recordedName, recordedName);
 
     [ObservableProperty]
     private double _outputValue;

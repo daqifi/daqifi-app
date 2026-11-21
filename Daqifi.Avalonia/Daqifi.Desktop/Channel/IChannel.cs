@@ -33,18 +33,14 @@ public interface IChannel
     /// The name this channel's samples carry. The live plot, the database, the CSV export and Logged
     /// Data group a session's samples by it, so it must not change during a session (#668) and must
     /// differ from every other channel of the device (#670). <see cref="Daqifi.Desktop.Logger.LoggingManager"/>
-    /// sets it when a session starts; until then, and after <see cref="SetRecordedName"/> with
-    /// <see langword="null"/>, it is <see cref="Name"/>.
+    /// fixes it each time a session starts. Until the first session it is <see cref="Name"/>.
     /// </summary>
     // Downstream-only: upstream samples take Name as each one arrives.
     string RecordedName { get; }
 
-    /// <summary>
-    /// Fixes <see cref="RecordedName"/> at <paramref name="recordedName"/>, or with
-    /// <see langword="null"/>, makes it follow <see cref="Name"/> again.
-    /// </summary>
+    /// <summary>Fixes <see cref="RecordedName"/> at <paramref name="recordedName"/>.</summary>
     // Downstream-only: no upstream counterpart.
-    void SetRecordedName(string? recordedName);
+    void SetRecordedName(string recordedName);
 
     // @port: Daqifi.Desktop.Channel.IChannel.DeviceName
     string DeviceName { get; set; }
