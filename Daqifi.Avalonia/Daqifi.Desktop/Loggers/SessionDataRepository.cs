@@ -551,8 +551,8 @@ public sealed class SessionDataRepository
     /// </summary>
     /// <param name="session">The session to delete.</param>
     /// <exception cref="SessionReplacedException">
-    /// The stored row with the session's ID is gone, or holds another recording (another start). Nothing
-    /// was deleted.
+    /// The stored row with the session's ID is gone, or holds another recording (another
+    /// <see cref="LoggingSession.RecordingId"/>). Nothing was deleted.
     /// </exception>
     /// <exception cref="Exception">Rethrown when the delete transaction fails.</exception>
     // @port: Daqifi.Desktop.Logger.SessionDataRepository.DeleteSession
@@ -571,16 +571,19 @@ public sealed class SessionDataRepository
             // A deleted session's ID goes to the next session, and another writer (a second DAQiFi
             // instance, say) can delete this recording and store a new one at its ID while the
             // confirmation is open; a delete by ID alone would then remove the new recording.
-            // SessionStart is written once, when a session is created, so it tells the two apart.
-            // The read is in the delete's transaction, which takes the write lock at BEGIN, so the row
-            // cannot change between this check and the deletes below.
+            // RecordingId tells the two apart: a GUID given once, when the row is created. The start
+            // does not (second review: two boards' files with the same name get the same start). The
+            // read is in the delete's transaction, which takes the write lock at BEGIN, so the row
+            // cannot change between this check and the deletes below. A row written without the
+            // column holds null, and so does the object loaded from it: nothing to compare, so the
+            // delete goes by the ID, as before the column.
             using (var cmd = connection.CreateCommand())
             {
                 cmd.Transaction = transaction;
-                cmd.CommandText = "SELECT SessionStart FROM Sessions WHERE ID = @id";
+                cmd.CommandText = "SELECT RecordingId FROM Sessions WHERE ID = @id";
                 AddParameter(cmd, "@id", session.ID);
                 using var reader = cmd.ExecuteReader();
-                if (!reader.Read() || reader.GetDateTime(0) != session.SessionStart)
+                if (!reader.Read() || (reader.IsDBNull(0) ? (Guid?)null : reader.GetGuid(0)) != session.RecordingId)
                 {
                     throw new SessionReplacedException(session.ID);
                 }

@@ -130,6 +130,28 @@ public sealed class PreviousSessionImportTests : IDisposable
             $"SELECT COUNT(*) FROM Samples WHERE LoggingSessionID = {imported[1]} AND DeviceSerialNo = 'SN-TEST' AND Type = 1"));
     }
 
+    /// <summary>
+    /// #693 review: each copy is a new recording in this database, so it gets its own identity (the
+    /// earlier version's schema has none to copy). A delete compares it, so a copy without one, or
+    /// two copies with one, would make a stale delete undetectable.
+    /// </summary>
+    [Fact]
+    public async Task Each_copy_gets_its_own_recording_identity()
+    {
+        CreatePreviousDatabase();
+        AddPreviousSession(1, "2026-03-29 18:51:41.7774381", "Session_1", 1, 2);
+        AddPreviousSession(2, "2026-06-19 00:00:20.3617132", "Bench run", 3);
+
+        var imported = (await RunImport()).Imported;
+
+        using var context = TestDatabase.Contexts(_current).CreateDbContext();
+        var identities = context.Sessions.AsNoTracking()
+            .Where(s => imported.Contains(s.ID)).Select(s => s.RecordingId).ToList();
+        Assert.Equal(2, identities.Count);
+        Assert.All(identities, id => Assert.True(id is { } g && g != Guid.Empty));
+        Assert.NotEqual(identities[0], identities[1]);
+    }
+
     [Fact]
     public async Task Never_changes_the_old_database()
     {

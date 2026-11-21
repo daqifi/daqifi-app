@@ -159,7 +159,7 @@ public class DeleteSessionFailureTests
     {
         var kept = new LoggingSession(6, "Session_6");
         var confirmed = new LoggingSession(7, "Session_7");
-        var fresh = new LoggingSession(7, "Session_7") { SessionStart = confirmed.SessionStart };
+        var fresh = new LoggingSession(7, "Session_7") { SessionStart = confirmed.SessionStart, RecordingId = confirmed.RecordingId };
         RecordingHost? host = null;
         host = new RecordingHost(kept, confirmed) { WhileConfirming = () => host!.LoggingSessions[1] = fresh };
         var listViewModel = NewListViewModel(host);

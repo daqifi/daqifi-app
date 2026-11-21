@@ -85,6 +85,17 @@ public class LoggingSession : ObservableObject
     public long? PreviousLastSampleId { get; set; }
 
     /// <summary>
+    /// The identity of this recording: a GUID given once, when the session is created, and never
+    /// changed (#693 review). The ID is not an identity, because the app gives a deleted session's
+    /// ID to the next one, and neither is <see cref="SessionStart"/>: two boards can each log a file
+    /// with the same name, and the SD importer gives both the same start. A delete compares this in
+    /// its transaction (<see cref="SessionDataRepository.DeleteSession"/>). Null only for a row that
+    /// something wrote without the column (an older build, after the migration backfilled the rest).
+    /// Downstream addition.
+    /// </summary>
+    public Guid? RecordingId { get; set; }
+
+    /// <summary>
     /// True when this row came from an import that did not finish, so what it holds is a prefix of
     /// the log rather than the whole of it. Downstream addition: the session-list rows on both
     /// heads show a chip on this, which is the difference between "your import failed" and "your
@@ -268,11 +279,15 @@ public class LoggingSession : ObservableObject
     #region Constructors
     public LoggingSession() { }
 
+    /// <summary>A new recording: the two places that create a session row (a logging run and an SD
+    /// card import) use this constructor, so this is where a recording gets its identity. EF loads a
+    /// stored row through the parameterless one and sets the stored identity.</summary>
     public LoggingSession(int id, string name)
     {
         ID = id;
         SessionStart = DateTime.Now;
         Name = name;
+        RecordingId = Guid.NewGuid();
     }
     #endregion
 

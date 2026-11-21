@@ -28,6 +28,9 @@ public class LoggingContext : DbContext
                 .IsRequired()
                 .OnDelete(DeleteBehavior.Cascade);
             entity.Property(ls => ls.Name).IsRequired();
+            // Unique, so no two recordings share an identity. Null is allowed (and SQLite lets many
+            // rows hold it) for a row written without the column (#693 review).
+            entity.HasIndex(ls => ls.RecordingId).IsUnique().HasDatabaseName("IX_Sessions_RecordingId");
         });
 
         modelBuilder.Entity<SessionDeviceMetadata>(entity =>

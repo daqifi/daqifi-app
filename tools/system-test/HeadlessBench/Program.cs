@@ -1331,6 +1331,9 @@ internal static partial class HeadlessBench
         SessionStart = startedAt,
         SampleCount = sampleCount,
         Status = SessionStatus.Complete,
+        // As the app gives a recording when it creates its row, and the migration gives every
+        // older row (#693 review).
+        RecordingId = Guid.NewGuid(),
     };
 
     private static SessionDeviceMetadata NewMetadata(int sessionId, int frequencyHz = 1) => new()

@@ -1,7 +1,11 @@
+using System.Text;
 using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Logger;
+using Daqifi.Desktop.Loggers;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Xunit;
 
 namespace Daqifi.Avalonia.Tests.Loggers;
@@ -14,9 +18,10 @@ namespace Daqifi.Avalonia.Tests.Loggers;
 /// <remarks>
 /// <see cref="SessionDataRepository.DeleteSession"/> deletes by ID, so it now first checks, inside its
 /// transaction, that the stored row is still the recording it was given: the same
-/// <see cref="LoggingSession.SessionStart"/>, which is written once, when a session is created. The
-/// controls below matter as much as the refusal: a check that refused a session the list loaded
-/// honestly would make every delete fail.
+/// <see cref="LoggingSession.RecordingId"/>, a GUID given once, when the row is created. The start is
+/// not enough (second review: two boards' files with the same name get the same start). The controls
+/// below matter as much as the refusals: a check that refused a session the list loaded honestly would
+/// make every delete fail.
 /// </remarks>
 public sealed class DeleteReplacedSessionTests : IDisposable
 {
@@ -56,6 +61,28 @@ public sealed class DeleteReplacedSessionTests : IDisposable
         Assert.Equal(50, StoredSampleCount(2));
         Assert.Equal(1, StoredMetadataCount(2));
         Assert.Empty(logger.Errors);
+    }
+
+    /// <summary>
+    /// The second review's case, through the app's own SD importer: two boards each log a different
+    /// file named <c>log_20261111_120000.csv</c>, so the importer gives both the same start. The first
+    /// is deleted, and the second gets its ID. A stale delete of the first must delete nothing.
+    /// </summary>
+    [Fact]
+    public async Task TwoBoardsFilesWithTheSameNameAndStart_AtTheSameId_TheStaleDeleteDeletesNothing()
+    {
+        var first = await ImportCsv("board-4104", "7E2815914104", samples: 3);
+        var listed = LoadListed(first.ID);
+        Repository().DeleteSession(listed);
+        var second = await ImportCsv("board-9107", "7E2815919107", samples: 2);
+
+        Assert.Equal(first.ID, second.ID);
+        Assert.Equal(first.SessionStart, second.SessionStart);
+
+        Assert.Throws<SessionReplacedException>(() => Repository().DeleteSession(listed));
+
+        Assert.Equal(2, StoredSampleCount(second.ID));
+        Assert.Equal(["7E2815919107"], StoredSerials(second.ID));
     }
 
     /// <summary>A recording that another writer deleted and nothing replaced: nothing to delete.</summary>
@@ -106,11 +133,12 @@ public sealed class DeleteReplacedSessionTests : IDisposable
     }
 
     /// <summary>
-    /// Control: the import of earlier sessions copies the old start as text, which may have no
-    /// fraction. The list reads it through EF; the check must read the same value.
+    /// Control: a row that something wrote without the identity column (an older build, after the
+    /// migration) has no identity, and the list loads it with none. The delete cannot tell it from a
+    /// replacement, so it falls back to the ID, as before the column: the row is deleted.
     /// </summary>
     [Fact]
-    public void ARecordingWithAStartStoredAsPlainText_IsDeleted()
+    public void ARowWrittenWithoutTheIdentityColumn_IsDeletedById()
     {
         using (var connection = new SqliteConnection(TestDatabase.ConnectionString(DatabasePath)))
         {
@@ -123,6 +151,76 @@ public sealed class DeleteReplacedSessionTests : IDisposable
         Repository().DeleteSession(LoadListed(4));
 
         Assert.Null(StoredName(4));
+    }
+
+    /// <summary>
+    /// The migration: every row in an older database gets its own identity, and a row that the list
+    /// then loads from it is deleted, while the other rows stay.
+    /// </summary>
+    [Fact]
+    public void AnOlderDatabase_GivesEachRowItsOwnIdentity_AndALoadedRowIsDeleted()
+    {
+        var older = Path.Combine(_directory, "older", "DAQiFiDatabase.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(older)!);
+        using (var context = TestDatabase.Contexts(older).CreateDbContext())
+        {
+            context.GetService<IMigrator>().Migrate("20261120190000_AddSessionPreviousLastSampleId");
+        }
+        using (var connection = new SqliteConnection(TestDatabase.ConnectionString(older)))
+        {
+            connection.Open();
+            using var insert = connection.CreateCommand();
+            insert.CommandText =
+                "INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES " +
+                "(1, '2026-01-01 00:00:00', 'One', 0), (2, '2026-01-01 00:00:00', 'Two', 0), (3, '2026-01-02 00:00:00', 'Three', 0)";
+            insert.ExecuteNonQuery();
+        }
+
+        DatabaseMigrator.ApplyMigrations(TestDatabase.Contexts(older), older);
+
+        using (var context = TestDatabase.Contexts(older).CreateDbContext())
+        {
+            var identities = context.Sessions.AsNoTracking().OrderBy(s => s.ID).Select(s => s.RecordingId).ToList();
+            Assert.Equal(3, identities.Count);
+            Assert.All(identities, id => Assert.True(id is { } g && g != Guid.Empty));
+            Assert.Equal(3, identities.Distinct().Count());
+        }
+
+        LoggingSession loaded;
+        using (var context = TestDatabase.Contexts(older).CreateDbContext())
+        {
+            loaded = context.Sessions.AsNoTracking().Single(s => s.ID == 2);
+        }
+        new SessionDataRepository(TestDatabase.Contexts(older), new RecordingAppLogger()).DeleteSession(loaded);
+
+        using (var context = TestDatabase.Contexts(older).CreateDbContext())
+        {
+            Assert.Equal([1, 3], context.Sessions.AsNoTracking().OrderBy(s => s.ID).Select(s => s.ID).ToList());
+        }
+    }
+
+    /// <summary>A CSV log as a board writes it, imported through the app's own SD importer.</summary>
+    private async Task<LoggingSession> ImportCsv(string folder, string serial, int samples)
+    {
+        var directory = Path.Combine(_directory, folder);
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "log_20261111_120000.csv");
+        var csv = new StringBuilder("# Device: Nyquist 1\n" + $"# Serial Number: {serial}\n" +
+                                    "# Timestamp Tick Rate: 50000000 Hz\n" + "ain0_ts,ain0_val\n");
+        for (var i = 0; i < samples; i++) { csv.Append(1000 * (i + 1)).Append(',').Append(100 + i).Append('\n'); }
+        File.WriteAllText(path, csv.ToString(), Encoding.ASCII);
+
+        var result = await new SdCardSessionImporter(
+            TestDatabase.Contexts(DatabasePath), SdCardSessionImporter.DOWNLOAD_STALL_TIMEOUT, new RecordingAppLogger())
+            .ImportFromFileAsync(path);
+        Assert.True(result.SessionPersisted);
+        return result.Session;
+    }
+
+    private List<string> StoredSerials(int id)
+    {
+        using var context = TestDatabase.Contexts(DatabasePath).CreateDbContext();
+        return context.Samples.AsNoTracking().Where(s => s.LoggingSessionID == id).Select(s => s.DeviceSerialNo).Distinct().ToList();
     }
 
     private SessionDataRepository Repository() => new(TestDatabase.Contexts(DatabasePath), new RecordingAppLogger());

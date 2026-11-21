@@ -83,6 +83,9 @@ partial class LoggingContextModelSnapshot : ModelSnapshot
                 b.Property<long?>("PreviousLastSampleId")
                     .HasColumnType("INTEGER");
 
+                b.Property<Guid?>("RecordingId")
+                    .HasColumnType("TEXT");
+
                 b.Property<long?>("SampleCount")
                     .HasColumnType("INTEGER");
 
@@ -93,6 +96,10 @@ partial class LoggingContextModelSnapshot : ModelSnapshot
                     .HasColumnType("INTEGER");
 
                 b.HasKey("ID");
+
+                b.HasIndex("RecordingId")
+                    .IsUnique()
+                    .HasDatabaseName("IX_Sessions_RecordingId");
 
                 b.ToTable("Sessions");
             });
