@@ -21,8 +21,30 @@ public interface IChannel
     // @port: Daqifi.Desktop.Channel.IChannel.ID
     int ID { get; set; }
 
+    /// <summary>
+    /// The label the user sees and edits. It is not the channel's identity: two channels can share
+    /// one, and it changes on every keystroke in the NAME box. The identity is the device's serial
+    /// number, the type and the <see cref="Index"/> (see <see cref="AbstractChannel.IsSameInput"/>).
+    /// </summary>
     // @port: Daqifi.Desktop.Channel.IChannel.Name
     string Name { get; set; }
+
+    /// <summary>
+    /// The name this channel's samples carry. The live plot, the database, the CSV export and Logged
+    /// Data group a session's samples by it, so it must not change during a session (#668) and must
+    /// differ from every other channel of the device (#670). <see cref="Daqifi.Desktop.Logger.LoggingManager"/>
+    /// sets it when a session starts; until then, and after <see cref="SetRecordedName"/> with
+    /// <see langword="null"/>, it is <see cref="Name"/>.
+    /// </summary>
+    // Downstream-only: upstream samples take Name as each one arrives.
+    string RecordedName { get; }
+
+    /// <summary>
+    /// Fixes <see cref="RecordedName"/> at <paramref name="recordedName"/>, or with
+    /// <see langword="null"/>, makes it follow <see cref="Name"/> again.
+    /// </summary>
+    // Downstream-only: no upstream counterpart.
+    void SetRecordedName(string? recordedName);
 
     // @port: Daqifi.Desktop.Channel.IChannel.DeviceName
     string DeviceName { get; set; }

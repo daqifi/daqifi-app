@@ -540,15 +540,24 @@ public partial class ProfilesPaneViewModel : ObservableObject
     }
 
     /// <summary>The connected device's channels that a profile entry switches on.</summary>
+    /// <remarks>
+    /// The profiles file holds each channel's name and type, not its index, so the match is by name.
+    /// Each entry claims a channel no earlier entry claimed: a profile saved with two channels of
+    /// one name switched on the first of them twice and the second never (#670).
+    /// </remarks>
     // Downstream-only: extracted from ApplyProfileToDevices so activation can check it first.
-    private static List<IChannel> ResolveChannels(ProfileDevice pd, IStreamingDevice device) =>
-        pd.Channels
-            .Where(c => c.IsChannelActive)
-            .Select(c => device.DataChannels.FirstOrDefault(x =>
-                x.Name == c.Name.Trim() && x.TypeString == c.Type.Trim()))
-            .Where(c => c != null)
-            .Cast<IChannel>()
-            .ToList();
+    private static List<IChannel> ResolveChannels(ProfileDevice pd, IStreamingDevice device)
+    {
+        var resolved = new List<IChannel>();
+        foreach (var entry in pd.Channels.Where(c => c.IsChannelActive))
+        {
+            var channel = device.DataChannels.FirstOrDefault(x =>
+                x.Name == entry.Name.Trim() && x.TypeString == entry.Type.Trim() && !resolved.Contains(x));
+            if (channel != null) resolved.Add(channel);
+        }
+
+        return resolved;
+    }
 
     /// <summary>Whether a profile entry switches on any channel at all.</summary>
     // Downstream-only: no upstream counterpart.

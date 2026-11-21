@@ -13,8 +13,9 @@ namespace Daqifi.Avalonia.Tests.Loggers;
 ///
 /// <para>
 /// Devices name their channels by index, so every DAQiFi board exposes <c>AI0</c>, <c>AI1</c>, and
-/// so on. <see cref="AbstractChannel.Equals(object)"/> compares <c>Name</c> alone — it does not
-/// look at the device — so any value-based collection operation over
+/// so on. <see cref="AbstractChannel.Equals(object)"/> compared <c>Name</c> alone when this was
+/// written — it did not look at the device (since #670 it compares the input) — so any value-based
+/// collection operation over
 /// <see cref="LoggingManager.SubscribedChannels"/> is ambiguous the moment a second board is
 /// connected. <c>Unsubscribe</c> resolved its target with a device-qualified predicate but then
 /// dropped it with a value-based <c>List.Remove</c>, which re-matched by name and removed
@@ -37,11 +38,11 @@ namespace Daqifi.Avalonia.Tests.Loggers;
 /// the same fix in daqifi-desktop <c>60dc32b6</c>. One deliberate difference: upstream builds real
 /// <c>AnalogChannel</c>s over a mocked <c>IStreamingDevice</c>, which needs a mocking package this
 /// repo's test project does not carry. <see cref="TestChannel"/> below derives from the production
-/// <see cref="AbstractChannel"/> instead, so it inherits the real name-only
+/// <see cref="AbstractChannel"/> instead, so it inherits the real
 /// <c>Equals</c>/<c>GetHashCode</c> rather than falling back to reference equality — the mechanism
 /// under test is the production one either way, and
-/// <see cref="Channel_equality_is_name_only_across_devices"/> asserts that premise directly so it
-/// cannot rot silently.
+/// <see cref="Channel_equality_tells_the_same_name_on_two_devices_apart"/> asserts the current
+/// contract directly so it cannot rot silently.
 /// </para>
 /// </summary>
 public class LoggingManagerSubscribedChannelsTests
@@ -211,23 +212,25 @@ public class LoggingManagerSubscribedChannelsTests
     }
 
     /// <summary>
-    /// Guards the premise the tests above rest on: the production channel base really does compare
-    /// by name alone, so a value-based removal from the subscribed list is genuinely ambiguous. If
-    /// channel equality is ever made device-aware, this test fails and points at the removal
-    /// comment in <c>Unsubscribe</c>.
+    /// The premise the tests above were written against was that channel equality is name-only.
+    /// #670 made it the input (device serial number, type, index), so the same channel name on two
+    /// devices is no longer one channel, through <c>Equals</c> or through the default comparer that
+    /// <c>List.Remove</c> uses. The removal in <c>Unsubscribe</c> stays by reference: two instances
+    /// of one input (an earlier connection's and the current one) are still equal.
     /// </summary>
     [Fact]
-    public void Channel_equality_is_name_only_across_devices()
+    public void Channel_equality_tells_the_same_name_on_two_devices_apart()
     {
         var channelA = new TestChannel("AI0", DeviceA);
         var channelB = new TestChannel("AI0", DeviceB);
         Assert.NotEqual(channelA.DeviceSerialNo, channelB.DeviceSerialNo);
 
-        Assert.True(
-            channelA.Equals(channelB),
-            "Channel equality is name-only, which is why removal must go by reference.");
-        Assert.True(
+        Assert.False(channelA.Equals(channelB), "The same name on two devices is two channels.");
+        Assert.False(
             EqualityComparer<IChannel>.Default.Equals(channelA, channelB),
             "List<IChannel>.Remove goes through the default comparer, which lands on that same equality.");
+        Assert.True(
+            channelA.Equals(new TestChannel("Temp", DeviceA)),
+            "Two instances of one input of one device are one channel, whatever their names.");
     }
 }

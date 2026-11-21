@@ -223,13 +223,14 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
     // Rolling per-channel buffers the LivePlot renders. Each one is drawn in its
     // channel's OWN colour — see SeriesColorArgb.
     public ObservableCollection<ChannelSeries> Series { get; } = [];
-    // Keyed by channel NAME (stable "AI0".."AI15"), NOT instance: enabling
-    // channels makes the device re-sync DataChannels with fresh instances,
-    // so an instance-keyed map (or a PropertyChanged subscription on the
-    // originals) would miss every sample. The render timer polls the CURRENT
-    // DataChannels each tick — immune to that instance churn.
-    private readonly Dictionary<string, ChannelSeries> _seriesByName = [];
-    private readonly Dictionary<string, long> _lastTicksByName = [];
+    // Keyed by analog input INDEX, NOT instance: enabling channels makes the device
+    // re-sync DataChannels with fresh instances, so an instance-keyed map (or a
+    // PropertyChanged subscription on the originals) would miss every sample. The
+    // render timer polls the CURRENT DataChannels each tick — immune to that
+    // instance churn. Not by name either: the user can rename a channel in the
+    // Channels pane at any time, and give two channels one name (#668, #670).
+    private readonly Dictionary<int, ChannelSeries> _seriesByIndex = [];
+    private readonly Dictionary<int, long> _lastTicksByIndex = [];
 
     // Channels whose samples are being counted. REFERENCE identity, not AbstractChannel.Equals
     // — that compares by Name, so a replacement instance for the same channel would look like
@@ -721,10 +722,12 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         // Enable the analog INPUT channels the user selected (AddChannel sends
         // the EnableAdcChannels SCPI + marks it active), wire a rolling series
         // per channel, set the rate, and start streaming. Look each selected
-        // name up in the CURRENT DataChannels (immune to instance churn).
-        var selected = Channels.Where(c => c.IsSelected).Select(c => c.Name).ToHashSet();
+        // input up by index in the CURRENT DataChannels (immune to instance churn).
+        // Not by name: the selector holds the names from connect time, so a channel
+        // renamed since then was never streamed (#668).
+        var selected = Channels.Where(c => c.IsSelected).Select(c => c.Index).ToHashSet();
         var analog = device.DataChannels
-            .Where(c => c.Type == ChannelType.Analog && !c.IsOutput && selected.Contains(c.Name))
+            .Where(c => c.Type == ChannelType.Analog && !c.IsOutput && selected.Contains(c.Index))
             .OrderBy(c => c.Index)
             .ToList();
         if (analog.Count == 0)
@@ -745,8 +748,8 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
         catch { /* best-effort; InitializeStreaming still gates on IsStreaming */ }
 
         Series.Clear();
-        _seriesByName.Clear();
-        _lastTicksByName.Clear();
+        _seriesByIndex.Clear();
+        _lastTicksByIndex.Clear();
         StopCountingSamples();
         Interlocked.Exchange(ref _totalSamples, 0);
         _samplesAtLastPoll = 0;
@@ -771,7 +774,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             foreach (var channel in device.DataChannels.ToList())
             {
                 if (channel.Type != ChannelType.Analog || channel.IsOutput) { continue; }
-                if (!channel.IsActive || selected.Contains(channel.Name)) { continue; }
+                if (!channel.IsActive || selected.Contains(channel.Index)) { continue; }
                 device.RemoveChannel(channel);
             }
 
@@ -780,7 +783,7 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
                 device.AddChannel(channel);
                 var s = new ChannelSeries(channel.Name, SeriesColorArgb(channel), 600);
                 Series.Add(s);
-                _seriesByName[channel.Name] = s;
+                _seriesByIndex[channel.Index] = s;
             }
 
             // Count every channel the device will actually stream — driven off IsActive, not off
@@ -988,15 +991,15 @@ public partial class MobileShellViewModel : ObservableObject, IDisposable
             // channel per tick in the steady state. Ahead of the series lookup on purpose —
             // an active channel is streaming and must be counted whether or not it is plotted.
             CountSamplesFrom(channel);
-            if (!_seriesByName.TryGetValue(channel.Name, out var series)) { continue; }
+            if (!_seriesByIndex.TryGetValue(channel.Index, out var series)) { continue; }
             var sample = channel.ActiveSample;
             if (sample == null) { continue; }
             var ticks = sample.TimestampTicks;
-            if (_lastTicksByName.TryGetValue(channel.Name, out var last) && last == ticks)
+            if (_lastTicksByIndex.TryGetValue(channel.Index, out var last) && last == ticks)
             {
                 continue;   // same frame as last poll — don't plot it twice
             }
-            _lastTicksByName[channel.Name] = ticks;
+            _lastTicksByIndex[channel.Index] = ticks;
             series.Append(sample.Value);
         }
 

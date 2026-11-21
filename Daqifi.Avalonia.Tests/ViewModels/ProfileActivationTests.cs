@@ -197,6 +197,36 @@ public sealed class ProfileActivationTests : IDisposable
     }
 
     /// <summary>
+    /// #670 through a profile: two channels the user gave one name, both switched on and captured.
+    /// Activating the profile must switch on both inputs, not the first of them twice.
+    /// </summary>
+    [Fact]
+    public async Task A_profile_with_two_channels_of_one_name_switches_on_both_inputs()
+    {
+        var device = Connect("PROFILE-DUP-1");
+        var temps = device.DataChannels.Skip(2).ToList();   // AI2 and AI3
+        foreach (var channel in temps)
+        {
+            channel.Name = "Temp";
+            device.AddChannel(channel);
+            LoggingManager.Instance.Subscribe(channel);
+        }
+        var profile = CaptureCurrentSettings("Two of one name");
+        foreach (var channel in temps)
+        {
+            LoggingManager.Instance.Unsubscribe(channel);
+            device.RemoveChannel(channel);
+        }
+
+        await Activate(profile);
+
+        Assert.True(profile.IsProfileActive);
+        Assert.Equal("12", device.LastAdcMask()); // AI2 | AI3
+        Assert.All(temps, channel => Assert.True(channel.IsActive));
+        Assert.Equal(2, LoggingManager.Instance.SubscribedChannels.Count(c => temps.Any(t => ReferenceEquals(t, c))));
+    }
+
+    /// <summary>
     /// The same round trip through the file: the profile activated is the one read back from the
     /// profiles XML, which is what a profile saved in an earlier session is. Passes on the unfixed
     /// code too; it pins that the save and the load agree, which the issue asked to be checked.

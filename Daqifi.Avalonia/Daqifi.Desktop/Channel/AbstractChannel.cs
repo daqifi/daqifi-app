@@ -34,6 +34,16 @@ public abstract partial class AbstractChannel : ObservableObject, IChannel
     // @port: Daqifi.Desktop.Channel.AbstractChannel.Name
     public abstract string Name { get; set; }
 
+    // Written on the UI thread when a session starts, read on the device reader thread by every
+    // sample, hence the volatile accesses.
+    private string? _recordedName;
+
+    /// <inheritdoc />
+    public string RecordedName => Volatile.Read(ref _recordedName) ?? Name;
+
+    /// <inheritdoc />
+    public void SetRecordedName(string? recordedName) => Volatile.Write(ref _recordedName, recordedName);
+
     [ObservableProperty]
     private double _outputValue;
 
@@ -637,18 +647,33 @@ public abstract partial class AbstractChannel : ObservableObject, IChannel
     #endregion
 
     #region Object overrides
+    /// <summary>
+    /// Whether two channels stand for the same input: the same device (serial number), the same
+    /// type and the same index. Those three are what the device and Core key their channels by.
+    /// </summary>
+    /// <remarks>
+    /// The name is not part of it. Upstream compares the name alone, and the user can edit the name
+    /// at any time and give two channels the same one. With two channels named <c>AI0</c>, a click on
+    /// the second tile found the first channel, so the board streamed the input nobody chose and the
+    /// session recorded nothing (#670).
+    /// </remarks>
+    // @port-divergence: upstream compares Name only.
+    public static bool IsSameInput(IChannel left, IChannel right) =>
+        left.Type == right.Type
+        && left.Index == right.Index
+        && DeviceSerials.SameDevice(left.DeviceSerialNo, right.DeviceSerialNo);
+
+    /// <summary>Same input of the same device; see <see cref="IsSameInput"/>.</summary>
     // @port: Daqifi.Desktop.Channel.AbstractChannel.Equals
-    public override bool Equals(object? obj)
-    {
-        if (obj is not AbstractChannel channel) { return false; }
+    public override bool Equals(object? obj) => obj is AbstractChannel channel && IsSameInput(this, channel);
 
-        return channel.Name == Name;
-    }
-
+    /// <summary>
+    /// Type and index only. The serial number takes part in <see cref="Equals(object?)"/> but not
+    /// here, because the device fills it in after the channel exists and a hash code must not change
+    /// while the channel is in a hashed collection. Equal channels still hash equally. The name hash
+    /// that this replaces moved a channel to another bucket on every rename.
+    /// </summary>
     // @port: Daqifi.Desktop.Channel.AbstractChannel.GetHashCode
-    public override int GetHashCode()
-    {
-        return Name?.GetHashCode() ?? 0;
-    }
+    public override int GetHashCode() => HashCode.Combine(Type, Index);
     #endregion
 }
