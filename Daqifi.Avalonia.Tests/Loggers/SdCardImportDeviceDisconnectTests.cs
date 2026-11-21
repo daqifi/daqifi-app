@@ -1,6 +1,7 @@
 using Daqifi.Avalonia.Tests.Device;
 using Daqifi.Core.Device;
 using Daqifi.Core.Device.SdCard;
+using Daqifi.Desktop.Channel;
 using Daqifi.Desktop.Logger;
 using Daqifi.Desktop.Loggers;
 using Google.Protobuf;
