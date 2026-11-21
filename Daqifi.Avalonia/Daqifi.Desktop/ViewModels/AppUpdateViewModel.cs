@@ -75,6 +75,9 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
         _now = now ?? (() => DateTime.Now);
         _delay = delay ?? Task.Delay;
         _notifier = new AppUpdateNotifier(service, blocker, confirm, ShowNotice, logger, _delay, attempts);
+        // Concurrent runs allowed: the download's own Cancel goes through this same button while
+        // the download it started is still running.
+        _action = new AsyncRelayCommand(RunNoticeActionAsync, () => !IsChecking, AsyncRelayCommandOptions.AllowConcurrentExecutions);
     }
 
     /// <summary>
@@ -115,10 +118,16 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
     [NotifyPropertyChangedFor(nameof(Status))]
     private bool _lastCheckFailed;
 
+    // The notification that was shown when the last check failed, or null. While it is still the one
+    // shown, the line says that the check failed (#346 review, round 2); once the update moves on,
+    // for example to a download, the failure no longer describes what is on screen.
+    private Notifications? _noticeAtFailedCheck;
+
     /// <summary>One line that tells the state of updates for this copy.</summary>
     public string Status => _service.Support switch
     {
-        AppUpdateSupport.Supported => Notice is { } notice ? notice.Message
+        AppUpdateSupport.Supported => Notice is { } notice
+                ? ReferenceEquals(notice, _noticeAtFailedCheck) ? $"Couldn't check for updates. {notice.Message}" : notice.Message
             : IsChecking ? "Checking for updates..."
             : LastCheckFailed ? "Couldn't check for updates."
             : LastChecked is { } at ? $"Up to date. Checked at {at:t}."
@@ -132,8 +141,25 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
     /// <summary>The label of the notification's button: download, restart, try again or cancel. <c>null</c> when it has none.</summary>
     public string? ActionText => Notice?.ActionText;
 
-    /// <summary>What the notification's button runs.</summary>
-    public ICommand? ActionCommand => Notice?.Action;
+    /// <summary>
+    /// The drawer's button for the notification: it runs the notification's own command. It is
+    /// disabled while a check runs, and a click that comes then does nothing (#346 review, round 2).
+    /// The check can replace the offer with a newer version, so a download or a restart started
+    /// during it could finish for a version that is no longer offered.
+    /// </summary>
+    public ICommand? ActionCommand => Notice?.Action is null ? null : _action;
+
+    private readonly AsyncRelayCommand _action;
+
+    private Task RunNoticeActionAsync()
+    {
+        if (IsChecking || Notice?.Action is not { } action) { return Task.CompletedTask; }
+        if (action is IAsyncRelayCommand asyncAction) { return asyncAction.ExecuteAsync(null); }
+        action.Execute(null);
+        return Task.CompletedTask;
+    }
+
+    partial void OnIsCheckingChanged(bool value) => _action.NotifyCanExecuteChanged();
 
     /// <summary>True when the notification has a button.</summary>
     public bool HasAction => ActionText is not null;
@@ -204,9 +230,13 @@ public sealed partial class AppUpdateViewModel : ObservableObject, IDisposable
             var endedAt = _now();
             _post(() =>
             {
+                // A failed check leaves an offer on screen as it was, so the line has to say that
+                // the feed was not reached; see Status.
+                _noticeAtFailedCheck = failed ? Notice : null;
                 LastCheckFailed = failed;
                 if (!failed) { LastChecked = endedAt; }
                 IsChecking = false;
+                OnPropertyChanged(nameof(Status));
             });
         }
 

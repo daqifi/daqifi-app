@@ -588,6 +588,118 @@ public class AppUpdateViewModelTests
         Assert.Equal("Cancel", h.ViewModel.ActionText);              // the bell did not cancel it
     }
 
+    // ---- PR #661 review, round 2 ----
+
+    /// <summary>
+    /// A refresh is under way when the user clicks Download. The click must not start a download of
+    /// the version the refresh may replace: when the refresh returns 3.4.1, a finished download of
+    /// 3.4.0 would show "3.4.0 is ready", and its restart would fail (round 2, thread 1).
+    /// </summary>
+    [Fact]
+    public async Task DownloadClickedDuringARefresh_DownloadsNothing_ThenTheNewOffer()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        await h.CheckNowAsync();
+        var downloading = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Service.DownloadBody = (_, _) => downloading.Task;
+
+        h.Service.CheckGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Service.Offer = new("3.4.1", null);
+        var refresh = h.CheckNowAsync();
+        Assert.False(h.ViewModel.ActionCommand!.CanExecute(null));
+        var click = h.ClickAction();
+
+        h.Service.CheckGate.SetResult();
+        await refresh;
+        downloading.SetResult();
+        await click.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(0, h.Service.Downloads);
+        Assert.Equal("DAQiFi 3.4.1 is available.", h.ViewModel.Status);
+
+        h.Service.CheckGate = null;
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1, h.Service.Downloads);
+        Assert.Equal("DAQiFi 3.4.1 is ready.", h.ViewModel.Status);
+    }
+
+    /// <summary>The button greys out when a refresh starts and comes back when it ends: the view hears both changes.</summary>
+    [Fact]
+    public async Task Refresh_TellsTheButtonWhenItStartsAndEnds()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        await h.CheckNowAsync();
+        var command = h.ViewModel.ActionCommand!;
+        var changes = new List<bool>();
+        command.CanExecuteChanged += (_, _) => changes.Add(command.CanExecute(null));
+
+        await h.CheckNowAsync();
+
+        Assert.Equal([false, true], changes);
+    }
+
+    /// <summary>"Restart to update" is held during a refresh as well, which can replace the ready version.</summary>
+    [Fact]
+    public async Task RestartClickedDuringARefresh_RestartsNothing()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        await h.CheckNowAsync();
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal("Restart to update", h.ViewModel.ActionText);
+
+        h.Service.CheckGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var refresh = h.CheckNowAsync();
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+        h.Service.CheckGate.SetResult();
+        await refresh;
+
+        Assert.Equal(0, h.Service.Applies);
+        Assert.True(h.ViewModel.ActionCommand!.CanExecute(null));
+    }
+
+    /// <summary>
+    /// Offline, a refresh over an offer says so, and the offer stays (round 2, thread 2). The line
+    /// goes back to the plain offer when a check works, and when the user moves the update on.
+    /// </summary>
+    [Fact]
+    public async Task FailedRefresh_OverAnOffer_SaysSo_AndKeepsTheOffer()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        await h.CheckNowAsync();
+
+        h.Service.CheckFailure = new HttpRequestException("offline");
+        await h.CheckNowAsync();
+
+        Assert.Equal("Couldn't check for updates. DAQiFi 3.4.0 is available.", h.ViewModel.Status);
+        Assert.Equal("Download update", h.ViewModel.ActionText);
+        Assert.Equal("DAQiFi 3.4.0 is available.", h.Bell.Last()!.Message);
+
+        h.Service.CheckFailure = null;
+        await h.CheckNowAsync();
+
+        Assert.Equal("DAQiFi 3.4.0 is available.", h.ViewModel.Status);
+    }
+
+    /// <summary>The failure belongs to the offer it was checked over: a download that starts after it shows its own line.</summary>
+    [Fact]
+    public async Task FailedRefresh_ThenDownload_ShowsTheDownloadAlone()
+    {
+        using var h = new Harness();
+        h.Service.Offer = new("3.4.0", null);
+        await h.CheckNowAsync();
+        h.Service.CheckFailure = new HttpRequestException("offline");
+        await h.CheckNowAsync();
+
+        await h.ClickAction().WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal("DAQiFi 3.4.0 is ready.", h.ViewModel.Status);
+    }
+
     // ---- PR #661 review, thread 4: the short build ID in every build ----
 
     /// <summary>
