@@ -618,6 +618,8 @@ public sealed class PreviousSettingsImportTests : IDisposable
     [InlineData("new delimiter", true)]
     [InlineData("unsupported delimiter", false)]
     [InlineData("delimiter the user chose", false)]
+    [InlineData("comma chosen in an earlier session", false)]
+    [InlineData("comma in a file from an earlier build", false)]
     [InlineData("locked profiles file", true)]
     [InlineData("damaged profiles file", false)]
     [InlineData("locked settings file", true)]
@@ -646,6 +648,17 @@ public sealed class PreviousSettingsImportTests : IDisposable
             case "delimiter the user chose":
                 settings.CsvDelimiter = ";";
                 WriteDelimiter(OldSettings, ",");
+                break;
+            case "comma chosen in an earlier session":
+                // Loaded from the file at this launch, so the offer depends on what the load read.
+                File.WriteAllText(CurrentSettings, "<DAQifiSettings><CsvDelimiter chosenByUser=\"true\">,</CsvDelimiter></DAQifiSettings>");
+                settings = Settings();
+                WriteDelimiter(OldSettings, ";");
+                break;
+            case "comma in a file from an earlier build":
+                File.WriteAllText(CurrentSettings, "<DAQifiSettings><CsvDelimiter>,</CsvDelimiter></DAQifiSettings>");
+                settings = Settings();
+                WriteDelimiter(OldSettings, ";");
                 break;
             case "locked profiles file":
             case "damaged profiles file":
