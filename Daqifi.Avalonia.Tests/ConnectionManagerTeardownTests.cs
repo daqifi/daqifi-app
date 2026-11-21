@@ -185,26 +185,120 @@ public class ConnectionManagerTeardownTests
     /// condition itself, so the fixed second only delayed every connect.
     /// </summary>
     /// <remarks>
-    /// The double connects at once, so the connect does almost no work: on main it took 1000 ms
-    /// and more, all of it the fixed wait. The 500 ms limit is far above the real work and far
-    /// below the old wait, so a slow CI runner does not fail it and a fixed wait that comes back
-    /// does.
+    /// <para>
+    /// This test reads no clock (#688). An earlier version asserted that the connect took less
+    /// than 500 ms. That limit also measured the wait for a thread-pool thread before
+    /// <c>device.Connect()</c>, so it failed on a busy CI runner when no fixed wait was present.
+    /// </para>
+    /// <para>
+    /// A fixed wait is a timer. Its continuation is not ready until the timer fires, and then
+    /// the timer's thread posts it. So the test starts the connect on a UI thread that it turns
+    /// by hand, lets <c>device.Connect()</c> return, and runs only the work that is ready at that
+    /// moment. If the connect is not complete then, it waits for something that is not ready: a
+    /// fixed wait came back. The result does not change with the load on the machine. The awaits
+    /// in this test have no time limit, so a slow runner only makes the test take longer.
+    /// </para>
+    /// <para>
+    /// This works only if the code after <c>device.Connect()</c> comes back to the caller's thread,
+    /// as it does on Avalonia's dispatcher. If that code runs on the thread pool, a wait there is
+    /// not seen here: the connect then posts to this thread only when it is complete. So the test
+    /// also asserts that the device is listed on the caller's thread.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task Connect_returns_without_a_fixed_settle_after_the_device_is_ready()
     {
         var subs = new FakeSubscriptions();
         var manager = NewManager(subs);
-        var device = new DroppableTestDevice("SN-PROMPT") { PretendConnectSucceeds = true };
+        var deviceReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var device = new DroppableTestDevice("SN-PROMPT") { PretendConnectSucceeds = true, ConnectGate = deviceReady };
+        var ui = new HandPumpedUiThread();
+        SynchronizationContext? listedOn = null;
+        manager.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ConnectionManager.ConnectedDevices))
+            {
+                listedOn = SynchronizationContext.Current;
+            }
+        };
 
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        var result = await manager.Connect(device);
-        stopwatch.Stop();
+        // device.Connect() is held, so the connect must stop at its await before the device is
+        // ready. Without the gate, device.Connect() could return before that await, and the rest
+        // of the connect would then run here, not on the UI thread.
+        var connecting = ui.Start(() => manager.Connect(device));
+        Assert.False(connecting.IsCompleted);
 
+        deviceReady.SetResult();
+        await Task.WhenAny(ui.FirstPost, connecting);
+        ui.RunReadyWork();
+
+        Assert.True(connecting.IsCompleted,
+            "Connect still waits after device.Connect() returned and no work is ready: a fixed wait came back.");
+        Assert.True(ReferenceEquals(ui, listedOn),
+            "Connect did not list the device on the caller's thread, so this test cannot see a wait after device.Connect().");
+        var result = await connecting;
         Assert.True(result.IsConnected);
         Assert.Contains(device, manager.ConnectedDevices);
-        Assert.True(stopwatch.ElapsedMilliseconds < 500,
-            $"Connect took {stopwatch.ElapsedMilliseconds} ms for a device that connected at once.");
+    }
+
+    /// <summary>
+    /// A UI thread that the test turns by hand. A continuation posted to it stays in a queue until
+    /// the test runs it, and the queue records which thread posted it.
+    /// </summary>
+    private sealed class HandPumpedUiThread : SynchronizationContext
+    {
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(SendOrPostCallback Callback, object? State, int Poster)> _posts = new();
+        private readonly TaskCompletionSource _firstPost = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>Completes when the first continuation is posted.</summary>
+        public Task FirstPost => _firstPost.Task;
+
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            _posts.Enqueue((d, state, Environment.CurrentManagedThreadId));
+            _firstPost.TrySetResult();
+        }
+
+        /// <summary>Calls <paramref name="start"/> with this context current, so its awaits come back here.</summary>
+        public T Start<T>(Func<T> start)
+        {
+            var previous = Current;
+            SetSynchronizationContext(this);
+            try
+            {
+                return start();
+            }
+            finally
+            {
+                SetSynchronizationContext(previous);
+            }
+        }
+
+        /// <summary>
+        /// Runs the continuations that are ready now: the ones in the queue when this is called,
+        /// and the ones that they post from this thread while they run. A continuation that
+        /// another thread posts during this call (a timer that fires) stays in the queue.
+        /// </summary>
+        public void RunReadyWork()
+        {
+            var pumpThread = Environment.CurrentManagedThreadId;
+            var queuedBefore = _posts.Count;
+            var previous = Current;
+            SetSynchronizationContext(this);
+            try
+            {
+                while (_posts.TryPeek(out var next) && (queuedBefore > 0 || next.Poster == pumpThread))
+                {
+                    _posts.TryDequeue(out _);
+                    queuedBefore--;
+                    next.Callback(next.State);
+                }
+            }
+            finally
+            {
+                SetSynchronizationContext(previous);
+            }
+        }
     }
 
     [Fact]
