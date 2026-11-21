@@ -102,7 +102,10 @@ partial class AddSessionRecordingId
                     .IsUnique()
                     .HasDatabaseName("IX_Sessions_RecordingId");
 
-                b.ToTable("Sessions");
+                b.ToTable("Sessions", t =>
+                    {
+                        t.HasTrigger("TR_Sessions_RecordingId");
+                    });
             });
 
         modelBuilder.Entity("Daqifi.Desktop.Logger.SessionDeviceMetadata", b =>

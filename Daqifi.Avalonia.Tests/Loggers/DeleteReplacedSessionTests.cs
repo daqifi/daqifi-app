@@ -133,12 +133,95 @@ public sealed class DeleteReplacedSessionTests : IDisposable
     }
 
     /// <summary>
-    /// Control: a row that something wrote without the identity column (an older build, after the
-    /// migration) has no identity, and the list loads it with none. The delete cannot tell it from a
-    /// replacement, so it falls back to the ID, as before the column: the row is deleted.
+    /// Third review: an older build on this file inserts rows without the identity column. Its first
+    /// row is listed, then replaced at the same ID by another such row. The database gives each its
+    /// own identity, so the stale delete deletes nothing, and the replacement and its sample survive.
     /// </summary>
     [Fact]
-    public void ARowWrittenWithoutTheIdentityColumn_IsDeletedById()
+    public void TwoRowsFromAnOlderBuild_AtTheSameId_TheStaleDeleteDeletesNothing()
+    {
+        Execute("INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES (5, '2026-01-01 00:00:00', 'Legacy first', 0)");
+        var listed = LoadListed(5);
+        RemoveStoredRows(5);
+        Execute("INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES (5, '2026-01-02 00:00:00', 'Legacy replacement', 0);" +
+                "INSERT INTO Samples (LoggingSessionID, Value, TimestampTicks, DeviceName, ChannelName, DeviceSerialNo, Color, Type) " +
+                "VALUES (5, 1.5, 10, 'Nq1', 'AI0', 'SERIAL-A', '#FF0000', 0)");
+
+        Assert.Throws<SessionReplacedException>(() => Repository().DeleteSession(listed));
+
+        Assert.Equal("Legacy replacement", StoredName(5));
+        Assert.Equal(1, StoredSampleCount(5));
+    }
+
+    /// <summary>The database gives a row inserted without the identity column one of its own.</summary>
+    [Fact]
+    public void TheDatabaseGivesEachRowInsertedWithoutAnIdentityItsOwn()
+    {
+        Execute("INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES (6, '2026-01-01 00:00:00', 'Legacy A', 0);" +
+                "INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES (7, '2026-01-01 00:00:00', 'Legacy B', 0)");
+
+        var a = LoadListed(6).RecordingId;
+        var b = LoadListed(7).RecordingId;
+        Assert.True(a is { } ga && ga != Guid.Empty);
+        Assert.True(b is { } gb && gb != Guid.Empty);
+        Assert.NotEqual(a, b);
+    }
+
+    /// <summary>
+    /// Defence in depth: two missing identities are never taken as the same recording. A stored row
+    /// with no identity (the trigger removed, say) is not deleted through an object with none, and an
+    /// object with no identity does not delete a stored row that has one.
+    /// </summary>
+    [Fact]
+    public void ADeleteWithAMissingIdentityOnEitherSide_DeletesNothing()
+    {
+        Store(new LoggingSession(8, "No stored identity") { SessionStart = OldStart }, samples: 2);
+        Execute("UPDATE Sessions SET RecordingId = NULL WHERE ID = 8");
+        var listedWithNone = LoadListed(8);
+        Assert.Null(listedWithNone.RecordingId);
+        Assert.Throws<SessionReplacedException>(() => Repository().DeleteSession(listedWithNone));
+        Assert.Equal(2, StoredSampleCount(8));
+
+        Store(new LoggingSession(9, "Stored identity") { SessionStart = OldStart }, samples: 2);
+        var callerWithNone = new LoggingSession { ID = 9, Name = "Stored identity", SessionStart = OldStart };
+        Assert.Throws<SessionReplacedException>(() => Repository().DeleteSession(callerWithNone));
+        Assert.Equal(2, StoredSampleCount(9));
+    }
+
+    /// <summary>
+    /// The trigger is part of the schema that every path builds: a fresh database, and the empty file
+    /// DELETE ALL puts in place (both run the migrations). The corruption quarantine runs them too;
+    /// <c>DatabaseMigratorUnusableDatabaseTests</c> checks the trigger there.
+    /// </summary>
+    [Fact]
+    public void TheIdentityTriggerExists_InAFreshDatabase_AndAfterDeleteAll()
+    {
+        Assert.True(HasIdentityTrigger(DatabasePath));
+
+        Assert.Null(DatabaseMigrator.ReplaceWithEmptyDatabase(TestDatabase.Contexts(DatabasePath), DatabasePath));
+
+        Assert.True(HasIdentityTrigger(DatabasePath));
+        Execute("INSERT INTO Sessions (ID, SessionStart, Name, Status) VALUES (1, '2026-01-01 00:00:00', 'After the purge', 0)");
+        Assert.NotNull(LoadListed(1).RecordingId);
+    }
+
+    /// <summary>True when the database holds the trigger that gives a row inserted without an
+    /// identity one of its own.</summary>
+    internal static bool HasIdentityTrigger(string databasePath)
+    {
+        using var connection = new SqliteConnection(TestDatabase.ConnectionString(databasePath));
+        connection.Open();
+        using var query = connection.CreateCommand();
+        query.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'TR_Sessions_RecordingId' AND tbl_name = 'Sessions'";
+        return (long)query.ExecuteScalar()! == 1;
+    }
+
+    /// <summary>
+    /// Control: a row that an older build wrote without the identity column gets one from the
+    /// database, the list loads it with that identity, and the delete goes through.
+    /// </summary>
+    [Fact]
+    public void ARowWrittenWithoutTheIdentityColumn_GetsOneFromTheDatabase_AndIsDeleted()
     {
         using (var connection = new SqliteConnection(TestDatabase.ConnectionString(DatabasePath)))
         {

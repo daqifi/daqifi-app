@@ -89,9 +89,10 @@ public class LoggingSession : ObservableObject
     /// changed (#693 review). The ID is not an identity, because the app gives a deleted session's
     /// ID to the next one, and neither is <see cref="SessionStart"/>: two boards can each log a file
     /// with the same name, and the SD importer gives both the same start. A delete compares this in
-    /// its transaction (<see cref="SessionDataRepository.DeleteSession"/>). Null only for a row that
-    /// something wrote without the column (an older build, after the migration backfilled the rest).
-    /// Downstream addition.
+    /// its transaction (<see cref="SessionDataRepository.DeleteSession"/>), and refuses when either side
+    /// has none. The database gives a row inserted without it one of its own (the migration's trigger),
+    /// so a stored row always has one; a session built in memory without the creating constructor has
+    /// none until it is stored and loaded again. Downstream addition.
     /// </summary>
     public Guid? RecordingId { get; set; }
 

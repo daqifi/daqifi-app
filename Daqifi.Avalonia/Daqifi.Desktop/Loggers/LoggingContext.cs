@@ -20,7 +20,9 @@ public class LoggingContext : DbContext
     {
         modelBuilder.Entity<LoggingSession>(entity =>
         {
-            entity.ToTable("Sessions");
+            // The migration's trigger gives a row inserted without RecordingId one of its own (#693
+            // review). Declared so EF does not read values back from an insert that a trigger changes.
+            entity.ToTable("Sessions", t => t.HasTrigger(Migrations.AddSessionRecordingId.IdentityTrigger));
             entity.HasMany(c => c.DataSamples).WithOne(p => p.LoggingSession).IsRequired().OnDelete(DeleteBehavior.Cascade);
             entity.HasMany(c => c.DeviceMetadata)
                 .WithOne(m => m.LoggingSession)
