@@ -316,6 +316,12 @@ jobs:
               return 1
             fi
             echo "${name}: running after $(( waited + 10 )) s"
+            # A picture of the virtual screen, for a reviewer: it shows that the window drew, not
+            # only that the process stayed up. Best effort; it judges nothing.
+            mkdir -p "${RUNNER_TEMP}/screenshot"
+            ffmpeg -loglevel error -f x11grab -video_size 1280x800 -i :99 -frames:v 1 \
+              "${RUNNER_TEMP}/screenshot/${name}.png" \
+              || echo "::warning::${name}: no screenshot (ffmpeg could not capture the display)."
             kill -TERM -- "-${pid}" 2> /dev/null || true
             for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "${pid}" 2> /dev/null || break; sleep 1; done
             kill -KILL -- "-${pid}" 2> /dev/null || true
@@ -358,3 +364,12 @@ jobs:
           if-no-files-found: error
           # A pull request run's AppImage is for looking at, not for keeping.
           retention-days: ${{ github.event_name == 'pull_request' && 14 || 0 }}
+
+      # Apart from the release files, so release.yml never attaches it.
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: linux-screenshot-${{ steps.version.outputs.version }}
+          path: ${{ runner.temp }}/screenshot
+          if-no-files-found: ignore
+          retention-days: 14
