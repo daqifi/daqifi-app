@@ -121,6 +121,96 @@ internal sealed class ProfileXmlStore
     }
 
     /// <summary>
+    /// Reads the profiles in a file that this app does not own: the one an earlier DAQiFi version
+    /// left in <c>%ProgramData%\DAQiFi</c>, which the release WPF app still uses (#512).
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="TryLoad"/>, this never moves, repairs or creates the file. A damaged file
+    /// stays where it is, because it is not this app's to move. The file is opened for reading only
+    /// and shared for writing and deletion, so that the other app can still save it during the read.
+    /// </remarks>
+    /// <returns>The profiles in the file. An empty list when there is no file.</returns>
+    /// <exception cref="Exception">
+    /// The file could not be read. <see cref="IsUnreadableContent"/> tells whether its content is
+    /// the cause (a damaged file) or the file could not be reached (locked, no access).
+    /// </exception>
+    internal static List<Profile> ReadWithoutRepair(string filePath) => ReadWithoutRepair(filePath, out _);
+
+    /// <inheritdoc cref="ReadWithoutRepair(string)"/>
+    /// <param name="filePath">The profiles file.</param>
+    /// <param name="hasImportRecord">Whether the file says the import from an earlier version ran (<see cref="HasImportRecord"/>).</param>
+    internal static List<Profile> ReadWithoutRepair(string filePath, out bool hasImportRecord)
+    {
+        hasImportRecord = false;
+        XDocument document;
+        try
+        {
+            // Opened, not tested with File.Exists first: File.Exists is also false for a file the
+            // process may not look at, and "cannot read" must not pass for "nothing there" (#512
+            // review round 3). Only a file or folder that is really not there counts as absent.
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            document = XDocument.Load(stream);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return [];
+        }
+
+        hasImportRecord = HasImportRecord(document);
+        return ReadProfiles(document);
+    }
+
+    /// <summary>
+    /// The attribute on <c>&lt;Profiles&gt;</c> that records that the import from an earlier
+    /// version ran (#512 review round 3).
+    /// </summary>
+    /// <remarks>
+    /// It is written in the same atomic write as the profiles that the import adds, under the
+    /// writers' lock, so the record and the work can only exist together: a run cut off at any
+    /// point leaves both or neither. A separate marker file could not do that. Written after the
+    /// work it could be lost, so a later run brought back a profile the user had deleted; written
+    /// first it could stand without the work. Older builds ignore the attribute when they read the
+    /// file and keep it when they write it.
+    /// </remarks>
+    internal const string ImportRecordAttribute = "importedFromEarlierVersion";
+
+    /// <summary>Whether the document records that the import from an earlier version ran.</summary>
+    internal static bool HasImportRecord(XDocument document) =>
+        (string?)document.Root?.Attribute(ImportRecordAttribute) == "true";
+
+    /// <summary>Records in the document that the import from an earlier version ran.</summary>
+    internal static void SetImportRecord(XDocument document) =>
+        document.Root?.SetAttributeValue(ImportRecordAttribute, "true");
+
+    /// <summary>
+    /// Reads the document, lets <paramref name="change"/> change it, and writes it back, while it
+    /// holds the writers' lock (<see cref="AppDataFile.HoldWriteLock"/>) that every writer of this
+    /// file takes, in this copy of the app or another.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Save"/> replaces the file atomically, which keeps the XML whole, but it cannot
+    /// keep a second writer's change: two windows that each read the file and then write it back
+    /// lose the save of the one that wrote first (#512 review). With the lock, the second writer
+    /// reads only after the first has written. The wait for the lock is short and bounded, because
+    /// the Profiles pane saves on the UI thread (#512 review round 2).
+    /// </remarks>
+    /// <param name="change">Changes the document; returns whether there is anything to write.</param>
+    /// <exception cref="IOException">
+    /// Another writer held the lock for longer than <see cref="AppDataFile.WriteLockWait"/>, or the
+    /// file could not be read or written. Nothing was written, and the caller can try again.
+    /// </exception>
+    internal void Edit(Func<XDocument, bool> change)
+    {
+        EnsureDirectory();
+        using var held = AppDataFile.HoldWriteLock(FilePath);
+        var document = Open();
+        if (change(document))
+        {
+            Save(document);
+        }
+    }
+
+    /// <summary>
     /// Opens the document for a write, creating an empty one when the file is absent and
     /// quarantining it when it is not well-formed XML.
     /// </summary>

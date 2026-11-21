@@ -439,21 +439,24 @@ public partial class LoggingManager : ObservableObject
     {
         try
         {
-            var doc = _profileStore.Open();
-            var updated = BuildProfileElement(profile);
-            var existing = FindProfileElement(doc, profile.ProfileId);
-
-            if (existing != null)
+            // Under the writers' lock, so a save in another window is not lost (#512 review).
+            _profileStore.Edit(doc =>
             {
-                existing.ReplaceWith(updated);
-            }
-            else
-            {
-                AppLogger.Warning($"Profile with ID {profile.ProfileId} was not in the profiles file; writing it back.");
-                doc.Root?.Add(updated);
-            }
+                var updated = BuildProfileElement(profile);
+                var existing = FindProfileElement(doc, profile.ProfileId);
 
-            _profileStore.Save(doc);
+                if (existing != null)
+                {
+                    existing.ReplaceWith(updated);
+                }
+                else
+                {
+                    AppLogger.Warning($"Profile with ID {profile.ProfileId} was not in the profiles file; writing it back.");
+                    doc.Root?.Add(updated);
+                }
+
+                return true;
+            });
             return true;
         }
         catch (Exception ex)
@@ -480,21 +483,23 @@ public partial class LoggingManager : ObservableObject
     {
         try
         {
-            var doc = _profileStore.Open();
-
-            if (profile != null)
+            // Under the writers' lock, so a save in another window is not lost (#512 review).
+            _profileStore.Edit(doc =>
             {
-                if (AddProfileFlag)
+                if (profile != null)
                 {
-                    doc.Root?.Add(BuildProfileElement(profile));
+                    if (AddProfileFlag)
+                    {
+                        doc.Root?.Add(BuildProfileElement(profile));
+                    }
+                    else
+                    {
+                        FindProfileElement(doc, profile.ProfileId)?.Remove();
+                    }
                 }
-                else
-                {
-                    FindProfileElement(doc, profile.ProfileId)?.Remove();
-                }
-            }
 
-            _profileStore.Save(doc);
+                return true;
+            });
             return true;
         }
         catch (Exception ex)
@@ -545,6 +550,109 @@ public partial class LoggingManager : ObservableObject
     {
         AddAndRemoveProfileXml(null, false);
         LoadProfilesFromXml();
+    }
+
+    /// <summary>
+    /// Saves each of <paramref name="candidates"/> whose ID is not in the profiles file and not on
+    /// display, in one write, and then shows them. Used by the import from an earlier version
+    /// (#512). A profile that is already here is never replaced, even when the two differ.
+    /// </summary>
+    /// <remarks>
+    /// Both are checked. The file, because another copy of the app may have written to it since
+    /// this one loaded it. The display, because after a damaged file was moved aside the pane can
+    /// hold profiles that the new file does not have yet. The read, the check and the write are one
+    /// step under the writers' lock (<see cref="ProfileXmlStore.Edit"/>), so a profile that another
+    /// window saves meanwhile is kept. The same write records that the import ran
+    /// (<see cref="ProfileXmlStore.ImportRecordAttribute"/>), so the record exists exactly when
+    /// the work does. When the file already has the record, nothing is added and nothing is
+    /// written: a profile missing then was deleted by the user (#512 review round 3).
+    /// </remarks>
+    /// <returns>The profiles added, in the order given.</returns>
+    /// <exception cref="IOException">The profiles file could not be read or written. Nothing was added.</exception>
+    /// <exception cref="UnauthorizedAccessException">As above.</exception>
+    internal List<Profile> AddProfilesNotYetSaved(IEnumerable<Profile> candidates)
+    {
+        var added = new List<Profile>();
+
+        _profileStore.Edit(doc =>
+        {
+            // The import ran here before: a profile missing now was deleted by the user, so nothing
+            // is added and nothing is written (#512 review round 3).
+            if (ProfileXmlStore.HasImportRecord(doc))
+            {
+                return false;
+            }
+
+            foreach (var profile in candidates)
+            {
+                // The file check also catches the same ID twice in candidates: the first is in doc by now.
+                if (FindProfileElement(doc, profile.ProfileId) is not null
+                    || SubscribedProfiles.Any(p => p.ProfileId == profile.ProfileId))
+                {
+                    continue;
+                }
+
+                doc.Root?.Add(BuildProfileElement(profile));
+                added.Add(profile);
+            }
+
+            // In the same write as the profiles, so a run cut off at any point leaves both or
+            // neither (#512 review round 3). Written even when nothing was added: the import ran.
+            ProfileXmlStore.SetImportRecord(doc);
+            return true;
+        });
+
+        foreach (var profile in added)
+        {
+            SubscribedProfiles.Add(profile);
+        }
+
+        return added;
+    }
+
+    /// <summary>The profiles file this manager reads and writes.</summary>
+    internal string ProfilesFilePath => _profileStore.FilePath;
+
+    /// <summary>
+    /// Whether this user's profiles file records that the import from an earlier version ran or
+    /// was dismissed. The import asks this first, so a finished part ends before the old file is
+    /// read (#512 review round 4). Read only; <c>false</c> when the file cannot be read, and the
+    /// import then finds out under the writers' lock.
+    /// </summary>
+    internal bool HasEarlierVersionImportRecord()
+    {
+        try
+        {
+            ProfileXmlStore.ReadWithoutRepair(_profileStore.FilePath, out var recorded);
+            return recorded;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Records in the profiles file that the import from an earlier version is finished with,
+    /// without adding anything: what the user's Dismiss means. Best effort: logged, never thrown.
+    /// </summary>
+    /// <returns>Whether the file now has the record.</returns>
+    internal bool RecordEarlierVersionImport()
+    {
+        try
+        {
+            _profileStore.Edit(doc =>
+            {
+                ProfileXmlStore.SetImportRecord(doc);
+                return true;
+            });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warning(ex, "Could not record that the import of profiles from an earlier DAQiFi version is finished with");
+            return false;
+        }
     }
 
     // @port: Daqifi.Desktop.Logger.LoggingManager.UnsubscribeProfile

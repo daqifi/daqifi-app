@@ -226,7 +226,9 @@ public sealed class LoggingManagerProfilesTests : IDisposable
     }
 
     /// <summary>
-    /// A clean run must not leave recovery litter beside the profiles file.
+    /// A clean run must not leave recovery litter beside the profiles file. The one other file is
+    /// the empty lock that every writer holds (#512 review), which stays in place on purpose:
+    /// deleting it while another window waits on it would let two writers in at once.
     /// </summary>
     [Fact]
     public void An_ordinary_save_moves_nothing_aside()
@@ -234,7 +236,41 @@ public sealed class LoggingManagerProfilesTests : IDisposable
         Assert.True(NewManager().SubscribeProfile(NewProfile()));
 
         Assert.Empty(Directory.GetFiles(_directory, "*.corrupt-*"));
-        Assert.Equal(ProfilePath, Assert.Single(Directory.GetFiles(_directory)));
+        Assert.Equal(
+            new[] { ProfilePath, ProfilePath + ".lock" }.Order(StringComparer.Ordinal),
+            Directory.GetFiles(_directory).Order(StringComparer.Ordinal));
+        Assert.Equal(0, new FileInfo(ProfilePath + ".lock").Length);
+    }
+
+    /// <summary>
+    /// #512 review round 2. The Profiles pane saves and deletes on the UI thread. When another
+    /// window holds the writers' lock, the save must fail soon, with nothing changed, so the pane
+    /// can say so, instead of freezing the window while it waits. After the lock is gone, the same
+    /// save works.
+    /// </summary>
+    /// <remarks>
+    /// The bound here is many times the wait in the code, so that a busy test machine cannot make
+    /// it fail, and still far below the ten seconds that froze the window.
+    /// </remarks>
+    [Fact]
+    public void A_save_while_another_window_holds_the_lock_fails_soon_and_can_be_tried_again()
+    {
+        var manager = NewManager();
+        var profile = NewProfile();
+        bool savedWhileLocked;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        using (new FileStream(ProfilePath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            savedWhileLocked = manager.SubscribeProfile(profile);
+        }
+
+        Assert.False(savedWhileLocked);
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(3), $"The save blocked for {clock.Elapsed}.");
+        Assert.Empty(manager.SubscribedProfiles);
+
+        Assert.True(manager.SubscribeProfile(profile));
+        Assert.Equal(profile.ProfileId, Assert.Single(NewManager().LoadProfilesFromXml()).ProfileId);
     }
 
     /// <summary>
