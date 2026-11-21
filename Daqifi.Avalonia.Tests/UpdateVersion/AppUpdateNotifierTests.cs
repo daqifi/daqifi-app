@@ -462,6 +462,25 @@ public class AppUpdateNotifierTests
     }
 
     /// <summary>
+    /// On an install for all users, a refused click asks nothing: the administrator question is for
+    /// a restart that can happen now, not one that waits for logging to stop.
+    /// </summary>
+    [Fact]
+    public async Task AllUsersInstall_RestartClickWhileWorkRuns_AsksNothing()
+    {
+        var h = new Harness();
+        h.Service.ApplyNeedsElevation = true;
+        await h.DownloadAsync();
+
+        h.Blocker = UpdateBlocker.Logging;
+        await h.ClickAsync();
+
+        Assert.Empty(h.Confirms);
+        Assert.Equal("DAQiFi 3.4.0 is ready. Restart when logging stops.", h.Last.Message);
+        Assert.Equal(0, h.Service.Applies);
+    }
+
+    /// <summary>
     /// #348 review: "Try again" after a failed install leads to a restart too, so a click on it
     /// before the watch looks again is refused in the same way.
     /// </summary>
