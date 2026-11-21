@@ -70,8 +70,9 @@ chmod +x DAQiFi-*-linux-x64.AppImage
 ./DAQiFi-*-linux-x64.AppImage
 ```
 
-The AppImage needs FUSE 2 to start. If it stops with an error about `libfuse.so.2`,
-install your distribution's FUSE 2 library (on Ubuntu 24.04 and later, `libfuse2t64`).
+The AppImage mounts itself with FUSE, which almost every desktop distribution has. It
+does not need the older `libfuse2`. If it stops with a FUSE error, install your
+distribution's `fuse3` package, or start it with `--appimage-extract-and-run`.
 
 After that, the app updates itself. When a new version exists it tells you, and when you
 click Install it replaces the AppImage file where it is and starts the new version. If

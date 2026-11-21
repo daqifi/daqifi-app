@@ -230,10 +230,10 @@ jobs:
           echo "### Linux AppImage" >> "$GITHUB_STEP_SUMMARY"
           echo "\`DAQiFi-${VERSION}-linux-x64.AppImage\`: ${type}, ${size} bytes" >> "$GITHUB_STEP_SUMMARY"
 
-          # vpk uses AppImageKit's runtime, which loads libfuse.so.2 to mount the image. The
-          # README tells users who lack it what to install; this records whether this runner has it.
+          # The runtime vpk embeds (static type2-runtime) needs no libfuse2, only FUSE's
+          # fusermount3 to mount the image. The README says so; this records what this runner has.
           echo "runtime: $("${appimage}" --appimage-version 2>&1 || true)"
-          if ldconfig -p | grep -q 'libfuse\.so\.2'; then echo "libfuse.so.2: present"; else echo "libfuse.so.2: absent"; fi
+          echo "fusermount3: $(command -v fusermount3 || echo absent)"
 
           mkdir "${RUNNER_TEMP}/extract"
           cd "${RUNNER_TEMP}/extract"

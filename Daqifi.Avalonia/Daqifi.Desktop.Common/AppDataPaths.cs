@@ -175,8 +175,25 @@ public static class AppDataPaths
     /// and <see cref="IsTestMode"/> — see the type remarks for why elevation must not move it.
     /// </summary>
     // Downstream change (#353): upstream picks CommonApplicationData when elevated.
-    internal static string DefaultDataDirectory() =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DAQiFi");
+    internal static string DefaultDataDirectory() => DefaultDataDirectory(Environment.GetFolderPath);
+
+    /// <summary>
+    /// <see cref="DefaultDataDirectory()"/> over a given <c>GetFolderPath</c>, so a test can stand
+    /// in for a platform where the per-user folder does not exist yet.
+    /// </summary>
+    /// <remarks>
+    /// <c>DoNotVerify</c> is the fix for #351. With the default option, .NET on Linux returns an
+    /// empty string when <c>~/.local/share</c> does not exist (a new account, a minimal desktop),
+    /// so the data folder became the RELATIVE path <c>DAQiFi</c>. SQLite then resolved the database
+    /// under a folder nobody created, and the AppImage stopped at startup with "unable to open
+    /// database file". <c>DoNotVerify</c> returns the path either way; App.Initialize creates it.
+    /// It changes nothing where the folder exists, which is every Windows and macOS account.
+    /// </remarks>
+    internal static string DefaultDataDirectory(
+        Func<Environment.SpecialFolder, Environment.SpecialFolderOption, string> getFolderPath) =>
+        Path.Combine(
+            getFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify),
+            "DAQiFi");
 
     // Where a run is pointed when DAQIFI_DATA_DIR is set but unusable. Deliberately NOT the
     // default store: the override exists to keep a test/tooling boot away from the developer's
