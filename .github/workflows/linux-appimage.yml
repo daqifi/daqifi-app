@@ -258,14 +258,16 @@ jobs:
 
       # Start the AppImage itself on this Ubuntu runner, under a virtual display, twice: once
       # where it was downloaded, then again after the file is moved and renamed, the way a user
-      # (or AppImageLauncher) relocates it. Each run must stay up, and both runs must use the one
-      # data folder under $HOME/.local/share/DAQiFi, and write nothing beside the AppImage: the
-      # AppImage's own folder is a read-only mount, and the database must survive a move.
+      # (or AppImageLauncher) relocates it. Each run must itself open the database in the one
+      # data folder under $HOME/.local/share/DAQiFi (a process of that run holds it open), stay
+      # up, and write nothing beside the AppImage: the AppImage's own folder is a read-only
+      # mount, and the database must survive a move.
       #
       # HOME is a fresh folder and XDG_DATA_HOME and DAQIFI_DATA_DIR are unset, so this is the
       # default data path a user gets. DAQIFI_TEST_MODE=1 keeps crash reports from this runner
       # out of Sentry and starts no hardware discovery; it does not move the data folder.
-      # APPIMAGE_EXTRACT_AND_RUN=1 starts the AppImage without FUSE, which the runner lacks.
+      # APPIMAGE_EXTRACT_AND_RUN=1 starts the AppImage without a FUSE mount, so the check does
+      # not depend on the runner's FUSE support.
       - name: Start the AppImage on Ubuntu
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -291,8 +293,24 @@ jobs:
           cp "${RUNNER_TEMP}/upload/DAQiFi-${VERSION}-linux-x64.AppImage" "${smoke}/downloads/DAQiFi.AppImage"
           chmod +x "${smoke}/downloads/DAQiFi.AppImage"
 
-          # launch <AppImage> <name>: start it, wait for its database and log, check that it is
-          # still running 10 s later, then stop it.
+          # holder <process group>: prints the first process in the group that has the database
+          # open. The app's EF connection is pooled, so a process that opened the database keeps
+          # a descriptor to it while it runs. That is evidence from THIS process: a second run
+          # cannot pass on files the first run left behind.
+          holder() {
+            local p
+            for p in $(pgrep -g "$1"); do
+              if [ -n "$(find "/proc/${p}/fd" -lname "${data}/DAQiFiDatabase.db" -print -quit 2> /dev/null)" ]; then
+                echo "${p}"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          # launch <AppImage> <name>: start it, wait until a process of it holds the database at
+          # the expected path and the log exists, check that it is still running 10 s later, then
+          # stop it.
           launch() {
             local app="$1" name="$2" output="${smoke}/$2.out"
             echo "::group::${name}: ${app}"
@@ -300,10 +318,10 @@ jobs:
               HOME="${home}" DISPLAY=:99 DAQIFI_TEST_MODE=1 APPIMAGE_EXTRACT_AND_RUN=1 \
               "${app}" > "${output}" 2>&1 &
             local pid=$!
-            local waited=0
-            while [ ! -f "${data}/DAQiFiDatabase.db" ] || [ ! -f "${data}/Logs/DAQifiAppLog.log" ]; do
+            local waited=0 holding=""
+            until [ -f "${data}/Logs/DAQifiAppLog.log" ] && holding=$(holder "${pid}"); do
               if ! kill -0 "${pid}" 2> /dev/null || [ "${waited}" -ge 120 ]; then
-                echo "::error::${name}: the app exited, or wrote no database and log in 120 s."
+                echo "::error::${name}: the app exited, or did not open ${data}/DAQiFiDatabase.db in 120 s."
                 cat "${output}"
                 find "${home}" -type f
                 echo "::endgroup::"
@@ -320,7 +338,7 @@ jobs:
               echo "::endgroup::"
               return 1
             fi
-            echo "${name}: running after $(( waited + 10 )) s"
+            echo "${name}: process ${holding} has ${data}/DAQiFiDatabase.db open; running after $(( waited + 10 )) s"
             # A picture of the virtual screen, for a reviewer: it shows that the window drew, not
             # only that the process stayed up. Best effort; it judges nothing.
             mkdir -p "${RUNNER_TEMP}/screenshot"

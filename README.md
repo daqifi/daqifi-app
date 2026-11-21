@@ -77,7 +77,8 @@ distribution's `fuse3` package, or start it with `--appimage-extract-and-run`.
 After that, the app updates itself. When a new version exists it tells you, and when you
 click Install it replaces the AppImage file where it is and starts the new version. If
 the file is in a folder you cannot write to, such as `/opt`, the update asks for an
-administrator password through `pkexec`.
+administrator password through `pkexec`. This update path is new: an update from one
+version to the next has not yet been proven on a real Linux machine (#352).
 
 Your data is not stored beside the AppImage. It is in `~/.local/share/DAQiFi` (or
 `$XDG_DATA_HOME/DAQiFi`), so you can move or rename the file and the app still finds
