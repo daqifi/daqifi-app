@@ -14,8 +14,14 @@ name: Release
 # vpk also builds Daqifi.App-win-Setup.exe. It is deliberately NOT uploaded: the plan in #480
 # is one installer, and two would mean two install locations to support.
 #
-# macOS and Linux are not here yet: each needs its own packaging decisions (notarisation, the
-# AppImage update story), tracked on #344.
+# And for Linux (#351), built by linux-appimage.yml, the same workflow that checks a pull
+# request that changes the packaging:
+#
+#   DAQiFi-<version>-linux-x64.AppImage     the app; it updates itself in place
+#   Daqifi.App-<version>-linux-full.nupkg   the package the in-app updater downloads
+#   releases.linux.json                     the feed for the "linux" channel
+#
+# macOS is not here yet: it needs notarisation first (#350, tracked on #344).
 #
 # Pack identity is permanent once shipped. packId Daqifi.App decides the install folder
 # (Program Files\Daqifi.App) and the updater's identity; changing it later strands every
@@ -313,6 +319,57 @@ jobs:
             gh release create "${TAG}" --draft --verify-tag "${pre[@]}" \
               --title "${TAG}" --notes "Built by the release workflow from ${TAG}. Notes to follow."
           elif [ "${draft}" != "true" ]; then
+            echo "::error::Release ${TAG} is already published, so its files are not replaced: a failed upload would break the live update feed. Ship the correction as a new version; nothing was uploaded."
+            exit 1
+          elif [ "${existing}" != "${PRERELEASE}" ]; then
+            echo "::error::Release ${TAG} has prerelease=${existing}, but the tag says prerelease=${PRERELEASE}. Fix the release's 'Set as a pre-release' box and re-run; nothing was uploaded."
+            exit 1
+          fi
+          gh release upload "${TAG}" "${RUNNER_TEMP}"/upload/* --clobber
+
+  # The AppImage, built and started on Ubuntu by the same workflow a packaging pull request
+  # runs, so the release builds exactly what the pull request checked. It runs beside the
+  # Windows job and uploads its files as the artifact linux-<version>.
+  linux:
+    name: Linux AppImage
+    needs: version
+    uses: ./.github/workflows/linux-appimage.yml
+    with:
+      ref: ${{ needs.version.outputs.sha }}
+      version: ${{ needs.version.outputs.version }}
+
+  # Attached only after the Windows job, for two reasons. That job creates the draft release
+  # when none exists, and two jobs that create it at the same time would race. And it has
+  # already checked the release is a draft with the prerelease flag the tag implies, so this
+  # job only checks that nothing changed since. A release without its Windows files is not
+  # one to publish, so a failed Windows job also leaves the Linux files out.
+  linux-release:
+    name: Attach the Linux AppImage
+    needs: [version, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-${{ needs.version.outputs.version }}
+          path: ${{ runner.temp }}/upload
+
+      # The same rules as the Windows job's step of the same name: never touch a published
+      # release, and never upload to one whose prerelease flag disagrees with the tag.
+      - name: Attach to the GitHub Release
+        run: |
+          set -euo pipefail
+          ls -la "${RUNNER_TEMP}/upload"
+          state=$(gh release view "${TAG}" --json isDraft,isPrerelease -q '"\(.isDraft) \(.isPrerelease)"' | tr -d '\r')
+          draft=${state%% *}
+          existing=${state##* }
+          if [ "${draft}" != "true" ]; then
             echo "::error::Release ${TAG} is already published, so its files are not replaced: a failed upload would break the live update feed. Ship the correction as a new version; nothing was uploaded."
             exit 1
           elif [ "${existing}" != "${PRERELEASE}" ]; then
