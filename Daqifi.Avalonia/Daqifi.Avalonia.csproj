@@ -102,7 +102,7 @@
 		<PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
 		<PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.15" />
 		<!-- Desktop-only transport: serial (mobile is WiFi/TCP only, DIV-UI-003) -->
-		<PackageReference Include="System.IO.Ports" Version="10.0.15" />
+		<PackageReference Include="System.IO.Ports" Version="11.0.0" />
 	</ItemGroup>
 
 	<ItemGroup>
